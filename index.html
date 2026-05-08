@@ -165,6 +165,11 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
     <h4>Actions</h4>
     <div style="display:flex;flex-direction:column;gap:0.5rem">
       <button class="btn" onclick="fetchFromBinance()" style="background:var(--cyan)">🔄 Fetch live data</button>
+      <button class="btn" onclick="fetchAvgCosts()" style="background:var(--purple)">🧮 Compute avg cost (myTrades)</button>
+      <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.78rem;color:var(--text2);cursor:pointer">
+        <input type="checkbox" id="auto-refresh-toggle" onchange="toggleAutoRefresh(this.checked)">
+        🔄 Auto-refresh prices (60s)
+      </label>
       <button class="btn btn-secondary" onclick="saveBinanceCreds()">💾 Save creds (this device)</button>
       <button class="btn btn-secondary" onclick="testWorkerConnection()">🩺 Test connection</button>
       <button class="btn btn-secondary" onclick="clearBinanceCreds()">🗑️ Clear creds</button>
@@ -1267,14 +1272,127 @@ function loadBinanceCreds() {
   if (url && token) { setApiStatus('Creds đã load (chưa test)', 'info'); setApiBadge('🟡 Saved', 'warn'); }
 }
 
+// Snapshot save/load for plan-change detection
+function saveSnapshot() {
+  const snap = {
+    ts: Date.now(),
+    net: state.holdings ? Object.values(state.holdings).reduce((s,h)=>s+h.qty*h.price,0) - state.loan : 0,
+    gross: state.holdings ? Object.values(state.holdings).reduce((s,h)=>s+h.qty*h.price,0) : 0,
+    loan: state.loan,
+    fg: state.market.fg_cg,
+    btc_price: state.holdings.BTC?.price || 0,
+    pool_value: state.pool.value,
+    pool_alloc: { ...state.pool.plan_alloc },
+  };
+  localStorage.setItem('lastSnapshot', JSON.stringify(snap));
+}
+function loadSnapshot() {
+  try {
+    const raw = localStorage.getItem('lastSnapshot');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+// RSI helper
+function computeRSI(closes, period = 6) {
+  if (!closes || closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i-1];
+    if (diff > 0) gains += diff;
+    else losses += -diff;
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+// Compute avg cost from trade history
+async function fetchAvgCosts() {
+  setApiStatus('Đang tính avg cost từ /api/v3/myTrades...', 'info');
+  const pairs = { BTC: 'BTCUSDT', WBETH: 'WBETHUSDT', LINK: 'LINKUSDT', BNB: 'BNBUSDT', BNSOL: 'BNSOLUSDT' };
+  const updates = {}, errors = [];
+  for (const [asset, symbol] of Object.entries(pairs)) {
+    try {
+      const trades = await callWorker('/api/v3/myTrades', { symbol, limit: 1000 });
+      if (!Array.isArray(trades) || trades.length === 0) { errors.push(`${asset}:no-trades`); continue; }
+      let totalQty = 0, totalCost = 0;
+      for (const t of trades) {
+        if (t.isBuyer) {
+          totalQty += parseFloat(t.qty);
+          totalCost += parseFloat(t.quoteQty);
+        }
+      }
+      if (totalQty === 0) { errors.push(`${asset}:no-buys`); continue; }
+      updates[asset] = totalCost / totalQty;
+    } catch (e) {
+      errors.push(`${asset}:err`);
+    }
+  }
+  for (const [asset, avg] of Object.entries(updates)) {
+    if (state.holdings[asset]) state.holdings[asset].avg = avg;
+  }
+  const okMsg = Object.entries(updates).map(([a,v]) => `${a}=$${v.toFixed(a==='LINK'||a==='BNSOL'?2:2)}`).join(' · ');
+  setApiStatus(`✅ avg: ${okMsg}${errors.length ? ' | ⚠ '+errors.join(',') : ''}`, errors.length === 5 ? 'err' : 'ok');
+  buildEditor();
+  render();
+}
+
+// Lightweight: fetch prices only (for auto-refresh)
+let autoRefreshTimer = null;
+async function fetchPricesOnly() {
+  try {
+    const prices = await fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`);
+    const pmap = Object.fromEntries(prices.map(p => [p.symbol, parseFloat(p.price)]));
+    if (pmap.BTCUSDT) state.holdings.BTC.price = pmap.BTCUSDT;
+    if (pmap.WBETHUSDT) state.holdings.WBETH.price = pmap.WBETHUSDT;
+    else if (pmap.ETHUSDT) state.holdings.WBETH.price = pmap.ETHUSDT * 1.095;
+    if (pmap.LINKUSDT) state.holdings.LINK.price = pmap.LINKUSDT;
+    if (pmap.BNBUSDT) state.holdings.BNB.price = pmap.BNBUSDT;
+    if (pmap.BNSOLUSDT) state.holdings.BNSOL.price = pmap.BNSOLUSDT;
+    else if (pmap.SOLUSDT) state.holdings.BNSOL.price = pmap.SOLUSDT * 1.108;
+    if (pmap.ETHUSDT) state.market.eth_price = pmap.ETHUSDT;
+    if (pmap.SOLUSDT) state.market.sol_price = pmap.SOLUSDT;
+    render();
+    const ts = new Date().toLocaleTimeString('vi-VN');
+    setApiStatus(`🔄 Prices refreshed at ${ts} · BTC $${state.holdings.BTC.price.toFixed(2)}`, 'info');
+  } catch (e) {
+    setApiStatus(`❌ Auto-refresh failed: ${e.message}`, 'err');
+  }
+}
+function toggleAutoRefresh(enabled) {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  if (enabled) {
+    autoRefreshTimer = setInterval(fetchPricesOnly, 60000);
+    fetchPricesOnly();
+    localStorage.setItem('autoRefresh', '1');
+  } else {
+    localStorage.removeItem('autoRefresh');
+  }
+}
+
 async function fetchFromBinance() {
   setApiStatus('Đang fetch live data...', 'info');
   const t0 = Date.now();
   try {
+    // Load saved snapshot AS prev (so plan-changes diff against actual last fetch, not v73 defaults)
+    const savedSnap = loadSnapshot();
+    if (savedSnap) {
+      state.prev = {
+        net: savedSnap.net, gross: savedSnap.gross, loan: savedSnap.loan,
+        fg: savedSnap.fg, btc_price: savedSnap.btc_price,
+        pool_value: savedSnap.pool_value,
+        pool_alloc: savedSnap.pool_alloc || state.prev.pool_alloc,
+      };
+    }
+
     const tasks = {
       spot: callWorker('/api/v3/account'),
       loans: callWorker('/sapi/v2/loan/flexible/ongoing/orders'),
       autoPlan: callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' }).catch(e => ({ list: [], _err: e.message })),
+      funding: callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' }).catch(() => null),
       prices: fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`),
       klines: fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400').catch(() => null),
       fg: fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value)).catch(() => null),
@@ -1342,10 +1460,16 @@ async function fetchFromBinance() {
     // F&G
     if (r.fg !== null) state.market.fg_cg = r.fg;
 
-    // Returns from BTC daily klines
+    // Funding rate (BTCUSDT-PERP)
+    if (r.funding && r.funding.lastFundingRate !== undefined) {
+      state.market.funding_btc_pct = parseFloat(r.funding.lastFundingRate) * 100;
+      state.market.funding_binance = parseFloat(r.funding.lastFundingRate) * 100; // mirror
+    }
+
+    // Returns + RSI from BTC daily klines
     if (r.klines && r.klines.length > 0) {
       const closes = r.klines.map(k => parseFloat(k[4]));
-      const opens = r.klines.map(k => parseFloat(k[1]));
+      const volumes = r.klines.map(k => parseFloat(k[5]));
       const closeNow = closes[closes.length - 1];
       const ret = n => closes.length > n ? (closeNow / closes[closes.length - 1 - n] - 1) * 100 : 0;
       state.market.ret_7d = ret(7);
@@ -1353,20 +1477,29 @@ async function fetchFromBinance() {
       state.market.ret_90d = ret(90);
       state.market.ret_180d = ret(180);
       state.market.ret_1y = ret(364);
-      // YTD
       const yearStart = new Date(); yearStart.setMonth(0, 1); yearStart.setHours(0,0,0,0);
-      const ytdMs = yearStart.getTime();
-      const ytdIdx = r.klines.findIndex(k => k[0] >= ytdMs);
+      const ytdIdx = r.klines.findIndex(k => k[0] >= yearStart.getTime());
       if (ytdIdx > -1) state.market.ret_ytd = (closeNow / parseFloat(r.klines[ytdIdx][4]) - 1) * 100;
-      // 24h change
-      if (closes.length > 1) {
-        state.market.btc_24h = (closeNow / closes[closes.length - 2] - 1) * 100;
+      if (closes.length > 1) state.market.btc_24h = (closeNow / closes[closes.length - 2] - 1) * 100;
+      // RSI 6 (1d)
+      const rsi6 = computeRSI(closes, 6);
+      if (rsi6 !== null) state.market.rsi6_1d = rsi6;
+      // Volume change vs 7d avg
+      if (volumes.length >= 8) {
+        const avg7 = volumes.slice(-8, -1).reduce((s,v)=>s+v,0) / 7;
+        state.market.vol_change = avg7 > 0 ? (volumes[volumes.length-1] / avg7 - 1) * 100 : 0;
       }
     }
 
+    // Save snapshot for next-fetch diff
+    saveSnapshot();
+
     const dt = Date.now() - t0;
     const gross = Object.values(state.holdings).reduce((s, h) => s + h.qty * h.price, 0);
-    setApiStatus(`✅ Fetched ${dt}ms · gross $${gross.toFixed(2)} · loan $${state.loan.toFixed(2)} · NET $${(gross - state.loan).toFixed(2)}`, 'ok');
+    const netNow = gross - state.loan;
+    const deltaNet = savedSnap ? netNow - savedSnap.net : 0;
+    const deltaSign = deltaNet >= 0 ? '+' : '';
+    setApiStatus(`✅ Fetched ${dt}ms · gross $${gross.toFixed(2)} · loan $${state.loan.toFixed(2)} · NET $${netNow.toFixed(2)}${savedSnap ? ` (Δ ${deltaSign}$${deltaNet.toFixed(2)})` : ''} · RSI6 ${state.market.rsi6_1d.toFixed(1)}`, 'ok');
     setApiBadge('🟢 Live', 'ok');
 
     buildEditor();
@@ -1382,5 +1515,10 @@ async function fetchFromBinance() {
 buildEditor();
 render();
 loadBinanceCreds();
+// Restore auto-refresh state from previous session
+if (localStorage.getItem('autoRefresh') === '1') {
+  document.getElementById('auto-refresh-toggle').checked = true;
+  toggleAutoRefresh(true);
+}
 </script>
 </body></html>
