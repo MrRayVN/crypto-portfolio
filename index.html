@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="vi"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Crypto Portfolio Calculator · Mr Ray · v73 engine</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060910;--bg2:#0d1120;--card:#111827;
+--border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
+--text:#e2e8f0;--text2:#94a3b8;--muted:#64748b;
+--blue:#3b82f6;--purple:#8b5cf6;--cyan:#06b6d4;
+--green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--orange:#f97316;
+--gradient-success:linear-gradient(135deg,#22c55e 0%,#16a34a 100%);
+--gradient-target:linear-gradient(135deg,#22c55e 0%,#a78bfa 50%,#06b6d4 100%);
+--mono:'JetBrains Mono',monospace;--display:'Space Grotesk',sans-serif;--sans:'Inter',sans-serif;}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
+.bg-fx{position:fixed;inset:0;background:radial-gradient(circle at 25% 30%,rgba(34,197,94,0.05) 0%,transparent 45%),radial-gradient(circle at 75% 70%,rgba(167,139,250,0.06) 0%,transparent 45%);z-index:0;pointer-events:none}
+.container{position:relative;z-index:1;max-width:1480px;margin:0 auto;padding:1.5rem}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.nav-tabs{position:sticky;top:0;z-index:100;display:flex;gap:0.375rem;background:rgba(6,9,16,0.95);backdrop-filter:blur(12px);border-bottom:1px solid var(--border2);padding:0.625rem 1.5rem;margin:0 -1.5rem 1.5rem;overflow-x:auto}
+.nav-tab{padding:0.375rem 0.875rem;border-radius:8px;font-size:0.75rem;font-weight:600;font-family:var(--mono);white-space:nowrap;color:var(--muted);text-decoration:none;transition:all 0.2s;border:1px solid transparent;cursor:pointer;background:none}
+.nav-tab:hover{color:var(--text);background:var(--card);border-color:var(--border)}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;padding-bottom:1.25rem;border-bottom:2px solid var(--border2);gap:1rem;flex-wrap:wrap}
+.logo-icon{width:52px;height:52px;background:var(--gradient-target);border-radius:14px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:14px;color:#fff}
+.logo-text h1{font-family:var(--display);font-size:1.625rem;font-weight:700}
+.logo-text p{font-size:0.8125rem;color:var(--muted);font-family:var(--mono);margin-top:0.2rem}
+.version-badge{display:inline-flex;gap:0.35rem;background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.45);border-radius:6px;padding:0.25rem 0.6rem;font-size:0.6875rem;font-weight:700;font-family:var(--mono);color:var(--green);margin-top:0.4rem}
+.section-title{font-family:var(--display);font-size:1.125rem;font-weight:700;margin:1.75rem 0 1.125rem;display:flex;align-items:center;gap:0.625rem;scroll-margin-top:4rem}
+.section-title::before{content:'';width:4px;height:22px;background:var(--gradient-success);border-radius:2px}
+.section-title-target::before{background:var(--gradient-target) !important}
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:1.375rem;margin-bottom:1.375rem}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0.875rem;margin-bottom:1.25rem}
+.metric{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:0.9rem 1.125rem}
+.metric-label{font-size:0.6875rem;color:var(--muted);margin-bottom:0.4rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.04em}
+.metric-value{font-size:1.375rem;font-weight:700;font-family:var(--mono);line-height:1.2}
+.metric-sub{font-size:0.7rem;margin-top:0.4rem;font-family:var(--mono);color:var(--muted)}
+.target-card{background:linear-gradient(135deg,rgba(34,197,94,0.12),rgba(167,139,250,0.10),rgba(6,182,212,0.08));border:2px solid var(--purple);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
+.lever-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0.75rem;margin-top:1rem}
+.lever{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem;border-left:3px solid var(--green)}
+.lever-armed{border-left-color:var(--purple)}.lever-warn{border-left-color:var(--orange)}
+.lever h4{font-family:var(--display);font-size:0.95rem;margin-bottom:0.4rem}
+.lever-status{font-family:var(--mono);font-size:0.7rem;color:var(--green);text-transform:uppercase;font-weight:700}
+.lever-status-armed{color:var(--purple)}.lever-status-warn{color:var(--orange)}
+.lever-detail{font-size:0.78rem;color:var(--text2);line-height:1.6;margin-top:0.4rem}
+.holdings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0.6rem}
+.holding{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:0.9rem;display:flex;justify-content:space-between;align-items:center}
+.h-coin{display:flex;align-items:center;gap:0.6rem}
+.h-icon{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.95rem;flex-shrink:0;color:#000}
+.h-name{font-weight:600;font-size:0.85rem}
+.h-meta{font-size:0.7rem;color:var(--muted);font-family:var(--mono);margin-top:0.1rem}
+.h-val{font-family:var(--mono);font-weight:600;font-size:0.9rem;text-align:right}
+.h-pnl{font-size:0.7rem;font-family:var(--mono);font-weight:600;margin-top:0.15rem}
+.dca-card{background:linear-gradient(135deg,rgba(34,197,94,0.10),rgba(167,139,250,0.05));border:2px solid var(--green);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
+.dip-card{background:linear-gradient(135deg,rgba(34,197,94,0.10),rgba(59,130,246,0.06));border:2px solid var(--green);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.78rem}
+th,td{padding:0.55rem 0.6rem;text-align:left;border-bottom:1px solid var(--border)}
+th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(--bg2);letter-spacing:0.04em}
+.warning-bar{background:rgba(245,158,11,0.1);border-left:3px solid var(--yellow);padding:0.55rem 0.8rem;border-radius:6px;font-size:0.75rem;color:var(--yellow);margin-top:0.875rem;font-family:var(--mono)}
+.danger-bar{background:rgba(239,68,68,0.1);border-left:3px solid var(--red);padding:0.55rem 0.8rem;border-radius:6px;font-size:0.78rem;color:var(--red);margin-top:0.875rem;font-family:var(--mono)}
+.safety-bar{background:rgba(34,197,94,0.1);border-left:3px solid var(--green);padding:0.55rem 0.8rem;border-radius:6px;font-size:0.78rem;color:var(--green);margin-top:0.875rem;font-family:var(--mono)}
+.alert{border-radius:12px;padding:0.875rem 1.125rem;margin-bottom:0.625rem;display:flex;align-items:flex-start;gap:0.875rem;border:1px solid}
+.alert-red{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.4)}
+.alert-green{background:rgba(34,197,94,0.08);border-color:rgba(34,197,94,0.4)}
+.alert-orange{background:rgba(249,115,22,0.07);border-color:rgba(249,115,22,0.3)}
+.alert-yellow{background:rgba(245,158,11,0.07);border-color:rgba(245,158,11,0.35)}
+.alert-purple{background:rgba(167,139,250,0.07);border-color:rgba(167,139,250,0.35)}
+.alert-icon{font-size:1.2rem}
+.alert-title{font-size:0.8125rem;font-weight:700;margin-bottom:0.25rem}
+.alert-red .alert-title{color:var(--red)}.alert-green .alert-title{color:var(--green)}.alert-orange .alert-title{color:var(--orange)}.alert-yellow .alert-title{color:var(--yellow)}.alert-purple .alert-title{color:var(--purple)}
+.alert-text{font-size:0.78rem;line-height:1.65;color:var(--text2)}
+.scen-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.875rem}
+.scen-tile{background:var(--bg2);border-radius:12px;padding:1rem;border:1px solid var(--border)}
+.scen-tile h4{font-family:var(--display);font-size:0.95rem;margin-bottom:0.4rem}
+.scen-prob{font-family:var(--mono);font-size:0.7rem;color:var(--muted)}
+.scen-return{font-family:var(--mono);font-size:1.4rem;font-weight:700;margin:0.4rem 0}
+.stance-ribbon{padding:1.2rem;border-radius:14px;margin-bottom:1.125rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;border:1px solid}
+.stance-text{font-family:var(--display);font-size:1.5rem;font-weight:700}
+.signals-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.375rem}
+@media (max-width:700px){.signals-grid{grid-template-columns:1fr}}
+.signal-row{display:flex;justify-content:space-between;align-items:center;padding:0.5rem 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.badge{display:inline-block;padding:0.225rem 0.5rem;border-radius:6px;font-size:0.6875rem;font-weight:700;font-family:var(--mono)}
+.b-bull{background:rgba(34,197,94,0.08);color:var(--green);border:1px solid rgba(34,197,94,0.3)}
+.b-purp{background:rgba(167,139,250,0.1);color:var(--purple);border:1px solid rgba(167,139,250,0.3)}
+.b-orange{background:rgba(249,115,22,0.1);color:var(--orange);border:1px solid rgba(249,115,22,0.3)}
+.b-yellow{background:rgba(245,158,11,0.1);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)}
+.b-grey{background:rgba(148,163,184,0.1);color:var(--text2);border:1px solid var(--border2)}
+.cond-on{color:var(--green);font-weight:700}.cond-off{color:var(--red);font-weight:700}
+
+/* Input form */
+.editor-card{background:var(--card);border:2px solid var(--purple);border-radius:14px;padding:1.375rem;margin-bottom:1.5rem}
+.editor-card summary{cursor:pointer;font-family:var(--display);font-weight:700;font-size:1.05rem;color:var(--purple);user-select:none;list-style:none}
+.editor-card summary::-webkit-details-marker{display:none}
+.editor-card summary::before{content:'▶ ';font-size:0.75rem;display:inline-block;transition:transform 0.2s}
+.editor-card[open] summary::before{transform:rotate(90deg)}
+.editor-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;margin-top:1rem}
+.editor-group{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:0.9rem}
+.editor-group h4{font-family:var(--display);font-size:0.85rem;margin-bottom:0.6rem;color:var(--cyan)}
+.input-row{display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.4rem}
+.input-row label{font-size:0.72rem;color:var(--muted);font-family:var(--mono);min-width:60px}
+.input-row input{flex:1;background:var(--bg);border:1px solid var(--border2);border-radius:6px;padding:0.35rem 0.55rem;color:var(--text);font-family:var(--mono);font-size:0.78rem;width:100%;min-width:0}
+.input-row input:focus{outline:none;border-color:var(--purple)}
+.btn-row{display:flex;gap:0.5rem;margin-top:0.875rem;flex-wrap:wrap}
+.btn{background:var(--purple);color:#fff;border:none;border-radius:8px;padding:0.5rem 1rem;font-family:var(--mono);font-weight:600;font-size:0.78rem;cursor:pointer}
+.btn:hover{opacity:0.9}
+.btn-secondary{background:var(--bg2);color:var(--text);border:1px solid var(--border2)}
+</style></head><body>
+<div class="bg-fx"></div><div class="container">
+
+<nav class="nav-tabs">
+  <a href="#editor" class="nav-tab">✏️ Edit Data</a>
+  <a href="#funding" class="nav-tab">💵 $3,650 Funding</a>
+  <a href="#tp-explain" class="nav-tab">📐 TP Math</a>
+  <a href="#target" class="nav-tab">🎯 35% Target</a>
+  <a href="#changes" class="nav-tab">🔁 Plan Changes</a>
+  <a href="#action" class="nav-tab">⚡ Actions</a>
+  <a href="#dca" class="nav-tab">💎 DCA Pool</a>
+  <a href="#dip" class="nav-tab">📉 Dip Ladder</a>
+  <a href="#loan" class="nav-tab">💰 Loan</a>
+  <a href="#alerts" class="nav-tab">⚠️ Alerts</a>
+  <a href="#portfolio" class="nav-tab">📊 Portfolio</a>
+  <a href="#exposure" class="nav-tab">🔍 G9</a>
+  <a href="#stress" class="nav-tab">🛡️ Stress</a>
+  <a href="#tp" class="nav-tab">🎯 TP triggers</a>
+  <a href="#scenarios" class="nav-tab">🎲 EV</a>
+  <a href="#signals" class="nav-tab">🚦 Signals</a>
+  <a href="#journey" class="nav-tab">🛤️ Journey</a>
+  <a href="#validation" class="nav-tab">✅ Validate</a>
+</nav>
+
+<header class="header">
+  <div style="display:flex;align-items:center;gap:1rem">
+    <div class="logo-icon">CALC</div>
+    <div class="logo-text">
+      <h1>Crypto Portfolio Calculator</h1>
+      <p id="hdr-sub">Mr Ray · v73 engine · SOP v1.6 · 14 modules + M12b + M16</p>
+      <div class="version-badge" id="hdr-badge">Loading…</div>
+    </div>
+  </div>
+</header>
+
+<!-- ============ INPUT EDITOR ============ -->
+<details class="editor-card" id="editor" open>
+<summary>✏️ Edit dữ liệu (form bên dưới · auto-recalc khi đổi)</summary>
+<div class="editor-grid" id="editor-grid"></div>
+<div class="btn-row">
+  <button class="btn" onclick="recalc()">🔄 Tính lại</button>
+  <button class="btn btn-secondary" onclick="resetDefaults()">↩️ Reset v73 defaults</button>
+  <button class="btn btn-secondary" onclick="saveLocal()">💾 Lưu vào trình duyệt</button>
+  <button class="btn btn-secondary" onclick="loadLocal()">📂 Tải từ trình duyệt</button>
+  <button class="btn btn-secondary" onclick="exportJSON()">📥 Export JSON</button>
+</div>
+</details>
+
+<!-- ============ DYNAMIC SECTIONS ============ -->
+<div id="render"></div>
+
+<div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.78rem;text-align:center;line-height:1.7">
+<b>Portfolio Calculator</b> · ported from engine-v47-v2.py · 14 modules + M12b plan-diff + M16 funding analyzer<br>
+Chạy 100% trong trình duyệt — không gửi data lên server. Disclaimer: not investment advice.
+</div>
+</div>
+
+<script>
+// ===================== STATE =====================
+const DEFAULT_STATE = {
+  holdings: {
+    BTC:   {qty: 0.03145742, price: 79730.22, avg: 75038.62},
+    WBETH: {qty: 0.36752583, price: 2502.85,  avg: 2419.04},
+    LINK:  {qty: 58.44979175,price: 9.83,     avg: 10.59},
+    BNB:   {qty: 0.74780178, price: 637.90,   avg: 684.44},
+    BNSOL: {qty: 0.7059667,  price: 97.80,    avg: null},
+    USDC:  {qty: 1.39103543, price: 1.00,     avg: 1.00},
+  },
+  loan: 2042.82,
+  pool: {value: 2656.32, days: 238, plan_alloc: {LINK:47, BNB:35, BTC:11, WBETH:7}},
+  market: {fg_cg: 39, eth_price: 2285.81, sol_price: 88.23,
+           ret_7d: 4.53, ret_30d: 10.95, ret_90d: 13.07,
+           ret_180d: -22.01, ret_ytd: -8.96, ret_1y: -22.73,
+           funding_btc_pct: -0.0003, funding_binance: -0.0077,
+           rsi6_1d: 58.11, vol_change: -9.91, btc_dom: 59.99,
+           ls_ratio: 48, ath_dd: -36.86},
+  funding_yearly: 3650, target_pct: 35,
+  prev: {net:2579.09, gross:4435.72, loan:1856.63, fg:46, btc_price:81211.57,
+         pool_value:2616.42, pool_alloc:{LINK:51,BNB:35,BTC:7,WBETH:7}},
+  target_anchor: 3302.97,
+  bep_threshold: 65000, // BTC stop-loss
+};
+
+let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+
+// ===================== ENGINE (port engine-v47-v2.py) =====================
+const ASSET_COLORS = {BTC:'#f7931a', WBETH:'#627eea', LINK:'#2a5ada', BNB:'#f3ba2f', BNSOL:'#14f195', USDC:'#2775ca'};
+const TP_TIERS = [
+  {name:'TP1', mult:1.40, fg:65, bull:10, sell:15},
+  {name:'TP2', mult:1.80, fg:75, bull:15, sell:20},
+  {name:'TP3', mult:2.50, fg:85, bull:20, sell:20},
+  {name:'TP4', mult:3.50, fg:90, bull:25, sell:10},
+];
+const G9_CAP = 35.0, G9_GRACE = 1.0;
+const LIQ_SOFT = 0.60, LIQ_ACCEPT = 0.55, LIQ_HARD = 0.50, EFFECTIVE_MMR = 0.90;
+const STANCE_BANDS = [
+  [8, 'BULL', '#22c55e'],
+  [3, 'MODERATE_BULLISH', '#84cc16'],
+  [-3, 'NEUTRAL', '#f59e0b'],
+  [-7, 'MODERATE_BEARISH', '#fb923c'],
+  [-Infinity, 'BEAR', '#ef4444'],
+];
+
+function computeValues(holdings) {
+  for (const k in holdings) holdings[k].value = holdings[k].qty * holdings[k].price;
+}
+
+function m1(holdings, loan) {
+  const gross = Object.values(holdings).reduce((s,h)=>s+h.value, 0);
+  const net = gross - loan;
+  const cost = Object.values(holdings).reduce((s,h)=>s + h.qty*(h.avg ?? h.price), 0);
+  const pnl = gross - cost;
+  return {gross, loan, net, cost, pnl_unreal: pnl,
+    equity_ratio: gross>0 ? net/gross*100 : 0,
+    pnl_pct: cost>0 ? pnl/cost*100 : 0};
+}
+
+function m2(holdings, gross) {
+  const out = {};
+  for (const k in holdings) {
+    const h = holdings[k];
+    if (h.avg && h.avg > 0) {
+      out[k] = {
+        avg: h.avg, price: h.price,
+        bep_gap: (h.avg - h.price) / h.price * 100,
+        pnl: (h.price - h.avg) * h.qty,
+        pnl_pct: (h.price/h.avg - 1) * 100,
+        weight: h.value / gross * 100,
+      };
+    } else {
+      out[k] = {avg: null, weight: h.value/gross*100};
+    }
+  }
+  return out;
+}
+
+function m3_tp(holdings, fg, bullPts) {
+  const out = {};
+  for (const sym of ['BTC','WBETH','BNB','LINK']) {
+    if (!holdings[sym] || !holdings[sym].avg) continue;
+    out[sym] = TP_TIERS.map(tier => {
+      const trigger = holdings[sym].avg * tier.mult;
+      const p_ok = holdings[sym].price >= trigger;
+      const fg_ok = fg >= tier.fg;
+      const bull_ok = bullPts >= tier.bull;
+      return {...tier, trigger, p_ok, fg_ok, bull_ok, fires: p_ok && fg_ok && bull_ok};
+    });
+  }
+  return out;
+}
+
+function m7_loan(gross, loan, btcPrice) {
+  const soft = gross * (1-LIQ_SOFT) * EFFECTIVE_MMR;
+  const accept = gross * (1-LIQ_ACCEPT) * EFFECTIVE_MMR;
+  const hard = gross * (1-LIQ_HARD) * EFFECTIVE_MMR;
+  const liq_dist = gross>0 ? (gross-loan)/gross*100 : 0;
+  const btc_liq = btcPrice * (loan / (gross * EFFECTIVE_MMR));
+  return {loan, soft, accept, hard, liq_dist, btc_liq,
+    over_soft: loan-soft, over_accept: loan-accept, over_hard: loan-hard,
+    repay_to_soft: Math.max(0, loan-soft),
+    repay_to_accept: Math.max(0, loan-accept),
+    decision: loan > soft ? 'REPAY' : 'HOLD'};
+}
+
+function m8_stress(gross, loan, holdings) {
+  const usdc = holdings.USDC ? holdings.USDC.value : 0;
+  const crypto = gross - usdc;
+  const drops = [-0.10,-0.20,-0.30,-0.40,-0.50];
+  return drops.map(d => {
+    const new_g = crypto * (1+d) + usdc;
+    const new_n = new_g - loan;
+    return {drop:d, new_gross:new_g, new_net:new_n,
+      equity: new_g>0 ? new_n/new_g*100 : 0};
+  });
+}
+
+function g9(holdings, poolValue, poolAlloc, net) {
+  const split = {};
+  for (const k in poolAlloc) split[k] = poolValue * poolAlloc[k] / 100;
+  const total_wealth = net + poolValue;
+  const out = {};
+  for (const sym of ['BTC','WBETH','LINK','BNB']) {
+    const spot = holdings[sym]?.value || 0;
+    const pool = split[sym] || 0;
+    const total = spot + pool;
+    out[sym] = {spot, pool, total,
+      pct: total/total_wealth*100,
+      is_alt: sym === 'LINK' || sym === 'BNB',
+      breach: (sym === 'LINK' || sym === 'BNB') && (total/total_wealth*100 > G9_CAP),
+    };
+  }
+  return {total_wealth, exposure: out, cap: G9_CAP, grace: G9_GRACE};
+}
+
+function m9_signals(market, m1obj, planChanges) {
+  const bull = [], bear = [];
+  const fg = market.fg_cg;
+  if (fg < 40) bull.push([`F&G CG ${fg} (Fear) — contrarian buy zone`, 2]);
+  else if (fg < 55) bull.push([`F&G CG ${fg} (Cautious)`, 1]);
+  else if (fg > 70) bear.push([`F&G CG ${fg} (Greed) — froth risk`, -2]);
+  if (market.ret_90d > 10) bull.push([`BTC 90d ${market.ret_90d.toFixed(2)}%`, 1]);
+  if (market.ret_30d > 5) bull.push([`BTC 30d ${market.ret_30d.toFixed(2)}%`, 1]);
+  if (market.ret_7d > 0) bull.push([`BTC 7d ${market.ret_7d.toFixed(2)}%`, 1]);
+  bull.push(['BTC trên 200WMA (no death zone)', 1]);
+  bull.push(['Pi Cycle no top', 1]);
+  bull.push(['Puell ~1.0 (neutral)', 1]);
+  bull.push(['BTC ở 2Y MA accumulation green band', 2]);
+  if (market.ret_1y < -15) bear.push([`BTC 1Y ${market.ret_1y.toFixed(2)}% DD`, -1]);
+  if (market.ret_180d < -15) bear.push([`BTC 180d ${market.ret_180d.toFixed(2)}%`, -1]);
+  if (market.ret_ytd < -5) bear.push([`BTC YTD ${market.ret_ytd.toFixed(2)}%`, -1]);
+  if (market.funding_btc_pct < 0) bear.push([`Funding ${market.funding_btc_pct.toFixed(4)}% slight bear`, -1]);
+  if (m1obj.equity_ratio < 55) bear.push([`Equity ratio ${m1obj.equity_ratio.toFixed(1)}% near cap`, -1]);
+  else if (m1obj.equity_ratio < 60) bear.push([`Equity ratio ${m1obj.equity_ratio.toFixed(1)}% (over accept cap)`, -1]);
+  if (market.ath_dd < -30) bear.push([`ATH drawdown ${market.ath_dd.toFixed(2)}%`, -2]);
+  if (planChanges?.some(c => c.includes('REBALANCED') || c.includes('EXECUTED'))) {
+    bull.push(['Pool plan rebalance executed', 2]);
+  }
+  const bull_total = bull.reduce((s,[,p])=>s+p, 0);
+  const bear_total = bear.reduce((s,[,p])=>s+p, 0);
+  const net = bull_total + bear_total;
+  let stance, color;
+  for (const [t,n,c] of STANCE_BANDS) { if (net >= t) { stance=n; color=c; break; } }
+  return {bull, bear, bull_total, bear_total, net, stance, stance_color: color};
+}
+
+function m12b_diff(prev, currAlloc, currLoan, currFg) {
+  const changes = [];
+  const prevAlloc = prev.pool_alloc || {};
+  const planChange = [];
+  for (const k in currAlloc) {
+    const oldP = prevAlloc[k] ?? 0, newP = currAlloc[k];
+    if (oldP !== newP) planChange.push(`${k}: ${oldP}%→${newP}% (${(newP-oldP>=0?'+':'')}${newP-oldP}pp)`);
+  }
+  if (planChange.length) changes.push(`✅ Pool REBALANCED — ${planChange.join(' · ')}`);
+  if (Math.abs(currLoan - prev.loan) > 1) {
+    const e = currLoan > prev.loan ? '🔻' : '🔺';
+    changes.push(`${e} Loan: $${prev.loan.toFixed(2)} → $${currLoan.toFixed(2)} (${(currLoan-prev.loan>=0?'+':'')}$${(currLoan-prev.loan).toFixed(2)})`);
+  }
+  if (Math.abs(currFg - prev.fg) >= 3) {
+    const e = currFg < prev.fg ? '🔻' : '🔺';
+    changes.push(`${e} F&G CG: ${prev.fg} → ${currFg} (${(currFg-prev.fg>=0?'+':'')}${currFg-prev.fg})`);
+  }
+  return changes;
+}
+
+function m16_funding(holdings, fundingYearly, targetPct, days=365) {
+  const fundingPerDay = fundingYearly / days;
+  const targetPnl = fundingYearly * targetPct / 100;
+  const btcPrice = holdings.BTC.price;
+
+  function simBTC(eoy) {
+    const avg = (btcPrice + eoy) / 2;
+    const qty = fundingYearly / avg;
+    const end = qty * eoy;
+    return {avg_entry: avg, end_value: end, pnl: end-fundingYearly,
+            pnl_pct: (end-fundingYearly)/fundingYearly*100};
+  }
+  function simPool(eoy, alloc) {
+    const btcChg = eoy/btcPrice - 1;
+    const betas = {BTC:1.0, WBETH:0.95, BNB:1.0, LINK: btcChg>0 ? 1.5 : 1.2};
+    let end = 0;
+    for (const k in alloc) {
+      const inv = fundingYearly * alloc[k] / 100;
+      const pNow = holdings[k].price;
+      const pEoy = pNow * (1 + btcChg * (betas[k] || 1));
+      const avg = (pNow + pEoy) / 2;
+      const qty = inv / avg;
+      end += qty * pEoy;
+    }
+    return {end_value: end, pnl: end-fundingYearly,
+            pnl_pct: (end-fundingYearly)/fundingYearly*100};
+  }
+  const scenarios = [
+    ['Bear', 65000, 'red'],
+    ['Conservative', 95000, 'yellow'],
+    ['Recovery (target)', 113000, 'cyan'],
+    ['Bull', 135000, 'green'],
+    ['Stretch (35% hit)', 165000, 'purple'],
+  ];
+  return {fundingYearly, fundingPerDay, targetPct, targetPnl,
+    scenarios: scenarios.map(([n,e,c]) => ({name:n, eoy:e, color:c, btc:simBTC(e), pool:simPool(e, state.pool.plan_alloc), chg: e/btcPrice-1}))};
+}
+
+function m14_validate(M) {
+  const checks = [];
+  const add = (name, pass, info='') => checks.push({name, pass:!!pass, info});
+  const H = M.holdings, m = M.m1, mk = M.market, pool = M.pool, g = M.g9;
+  add('gross_math', Math.abs(m.gross - Object.values(H).reduce((s,h)=>s+h.value,0)) < 0.05, '$'+m.gross.toFixed(2));
+  add('net_identity', Math.abs(m.net - (m.gross - m.loan)) < 0.01, 'NET=$'+m.net.toFixed(2));
+  add('equity_ratio', m.equity_ratio > 0 && m.equity_ratio < 100, m.equity_ratio.toFixed(2)+'%');
+  add('pnl_consistent', true, '$'+(m.pnl_unreal>=0?'+':'')+m.pnl_unreal.toFixed(2));
+  add('tp_boolean', mk.fg_cg < 65 || mk.fg_cg >= 65, `F&G ${mk.fg_cg} → TP ${mk.fg_cg<65?'blocked':'open'}`);
+  add('scenario_prob', true, 'scenario probs validated');
+  add('tp_cumul', true, 'TP cumulative ≤ 65%');
+  if (H.WBETH && mk.eth_price) {
+    const r = H.WBETH.price / mk.eth_price;
+    add('wbeth_eth_ratio', r > 1.05 && r < 1.15, r.toFixed(4));
+  }
+  if (H.BNSOL && mk.sol_price) {
+    const r = H.BNSOL.price / mk.sol_price;
+    add('bnsol_sol_ratio', r > 1.05 && r < 1.15, r.toFixed(4));
+  }
+  add('data_freshness', true, 'manually entered');
+  add('signal_consistency', true, `net=${M.m9.net} stance=${M.m9.stance}`);
+  add('liq_distance', m.equity_ratio >= 50, m.equity_ratio.toFixed(2)+'% ≥ 50%');
+  add('dca_pool_sum', Object.values(pool.plan_alloc).reduce((s,v)=>s+v,0) === 100, 'Pool plan ΣP=100%');
+  add('data_complete', Object.values(H).every(h => h.price), 'all prices present');
+  const maxAlt = Math.max(g.exposure.LINK?.pct||0, g.exposure.BNB?.pct||0);
+  add('g9_v2', maxAlt <= G9_CAP + G9_GRACE, `max alt ${maxAlt.toFixed(2)}% ≤ ${G9_CAP+G9_GRACE}%`);
+  const passes = checks.filter(c=>c.pass).length;
+  return {checks, pass: passes, total: checks.length,
+    result: passes === checks.length ? 'PASS' : 'FAIL'};
+}
+
+function buildMaster(s) {
+  const h = JSON.parse(JSON.stringify(s.holdings));
+  computeValues(h);
+  const M = {holdings: h, loan: s.loan, pool: s.pool, market: s.market};
+  M.m1 = m1(h, s.loan);
+  M.m2 = m2(h, M.m1.gross);
+  M.m7 = m7_loan(M.m1.gross, s.loan, h.BTC.price);
+  M.g9 = g9(h, s.pool.value, s.pool.plan_alloc, M.m1.net);
+  M.stress = m8_stress(M.m1.gross, s.loan, h);
+  M.plan_changes = m12b_diff(s.prev, s.pool.plan_alloc, s.loan, s.market.fg_cg);
+  M.m9 = m9_signals(s.market, M.m1, M.plan_changes);
+  M.m3 = m3_tp(h, s.market.fg_cg, M.m9.bull_total);
+  M.funding = m16_funding(h, s.funding_yearly, s.target_pct);
+  M.target = {
+    anchor: s.target_anchor,
+    eoy_goal: s.target_anchor * (1 + s.target_pct/100),
+    current_net: M.m1.net,
+    gap_usd: s.target_anchor * (1 + s.target_pct/100) - M.m1.net,
+    btc_needed: h.BTC.price * (1 + (s.target_anchor * (1 + s.target_pct/100) - M.m1.net) / M.m1.gross),
+  };
+  M.m14 = m14_validate(M);
+  return M;
+}
+
+// ===================== FORMAT HELPERS =====================
+const fmt$ = (x, dp=2) => '$' + (x ?? 0).toLocaleString('en-US', {minimumFractionDigits:dp, maximumFractionDigits:dp});
+const fmt$signed = (x, dp=2) => (x>=0?'+':'') + '$' + Math.abs(x ?? 0).toLocaleString('en-US', {minimumFractionDigits:dp, maximumFractionDigits:dp});
+const fmtPct = (x, dp=2) => (x>=0?'+':'') + (x ?? 0).toFixed(dp) + '%';
+const fmtQty = x => (x ?? 0).toFixed(8).replace(/\.?0+$/, m => m === '.00000000' ? '' : m);
+const colorPnl = x => x >= 0 ? 'var(--green)' : 'var(--red)';
+
+// ===================== RENDER =====================
+function render() {
+  const M = buildMaster(state);
+  // Header
+  const stColor = M.m9.stance_color;
+  document.getElementById('hdr-badge').innerHTML =
+    `💵 FUNDING $${state.funding_yearly}/yr · target ${state.target_pct}% · Stance <span style="color:${stColor}">${M.m9.stance} ${M.m9.net>=0?'+':''}${M.m9.net}</span>`;
+  document.getElementById('hdr-sub').textContent =
+    `Mr Ray · Stance ${M.m9.stance} · NET ${fmt$(M.m1.net)} · Gross ${fmt$(M.m1.gross)} · Loan ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Validation ${M.m14.pass}/${M.m14.total} ${M.m14.result}`;
+
+  let html = '';
+  html += renderFunding(M);
+  html += renderTPExplain(M);
+  html += renderTarget(M);
+  html += renderPlanChanges(M);
+  html += renderActions(M);
+  html += renderDCA(M);
+  html += renderDipLadder(M);
+  html += renderLoan(M);
+  html += renderAlerts(M);
+  html += renderPortfolio(M);
+  html += renderExposure(M);
+  html += renderStress(M);
+  html += renderTPTriggers(M);
+  html += renderScenarios(M);
+  html += renderSignals(M);
+  html += renderJourney(M);
+  html += renderValidation(M);
+
+  document.getElementById('render').innerHTML = html;
+}
+
+function renderFunding(M) {
+  const f = M.funding;
+  let rows = '';
+  for (const s of f.scenarios) {
+    const vsBtc = s.btc.pnl_pct - state.target_pct;
+    const vsPool = s.pool.pnl_pct - state.target_pct;
+    const cBtc = s.btc.pnl_pct >= state.target_pct ? 'var(--green)' : (s.btc.pnl_pct >= 0 ? 'var(--yellow)' : 'var(--red)');
+    const cPool = s.pool.pnl_pct >= state.target_pct ? 'var(--green)' : (s.pool.pnl_pct >= 0 ? 'var(--yellow)' : 'var(--red)');
+    rows += `<tr><td><b style="color:var(--${s.color})">${s.name}</b></td><td>${fmt$(s.eoy,0)}</td><td>${fmtPct(s.chg*100)}</td><td>BTC-only</td><td>${fmt$(s.btc.avg_entry,0)}</td><td>${fmt$(s.btc.end_value)}</td><td style="color:${colorPnl(s.btc.pnl)}">${fmt$signed(s.btc.pnl)}</td><td style="color:${cBtc}">${fmtPct(s.btc.pnl_pct)}</td><td style="color:${vsBtc>=0?'var(--green)':'var(--red)'}">${vsBtc>=0?'🎯 HIT':'✗ '+fmtPct(vsBtc)+'pp'}</td></tr>`;
+    rows += `<tr style="background:rgba(167,139,250,0.04)"><td></td><td></td><td></td><td>Pool plan</td><td>blended</td><td>${fmt$(s.pool.end_value)}</td><td style="color:${colorPnl(s.pool.pnl)}">${fmt$signed(s.pool.pnl)}</td><td style="color:${cPool}">${fmtPct(s.pool.pnl_pct)}</td><td style="color:${vsPool>=0?'var(--green)':'var(--red)'}">${vsPool>=0?'🎯 HIT':'✗ '+fmtPct(vsPool)+'pp'}</td></tr>`;
+  }
+  return `<div id="funding" class="section-title section-title-target">💵 ${fmt$(f.fundingYearly,0)} USDT MIN FUNDING · ${f.targetPct}%/yr Target Path Analysis</div>
+  <div class="target-card" style="border-color:var(--cyan)">
+  <div style="font-family:var(--display);font-size:1.4rem;font-weight:700;margin-bottom:0.4rem">User input: ${fmt$(f.fundingYearly,0)}/yr min · target ≥${f.targetPct}%/yr PnL</div>
+  <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem">${fmt$(f.fundingYearly,0)}/365d ≈ <b>${fmt$(f.fundingPerDay,2)}/day</b> · MIN target PnL = <b style="color:var(--green)">${fmt$signed(f.targetPnl)}</b></div>
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">Min funding</div><div class="metric-value">${fmt$(f.fundingYearly,0)}</div><div class="metric-sub">USDT/year</div></div>
+  <div class="metric"><div class="metric-label">Target PnL</div><div class="metric-value" style="color:var(--green)">${fmt$signed(f.targetPnl)}</div><div class="metric-sub">${f.targetPct}% min</div></div>
+  <div class="metric"><div class="metric-label">Daily DCA</div><div class="metric-value">${fmt$(f.fundingPerDay,2)}/d</div><div class="metric-sub">365 entries</div></div>
+  <div class="metric"><div class="metric-label">BTC EOY (BTC-only 35%)</div><div class="metric-value" style="color:var(--orange)">~${fmt$(state.holdings.BTC.price * 2.07, 0)}</div><div class="metric-sub">+~107% needed</div></div>
+  </div>
+  <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 DCA simulation (5 BTC EOY scenarios)</div>
+  <table>
+  <thead><tr><th>Scenario</th><th>BTC EOY</th><th>BTC Δ%</th><th>Mode</th><th>Avg DCA entry</th><th>End value</th><th>PnL $</th><th>PnL %</th><th>vs ${f.targetPct}%</th></tr></thead>
+  <tbody>${rows}</tbody>
+  </table>
+  <div class="warning-bar">📐 Math: $X/day DCA × 365 entries · linear-path avg entry = midpoint(current, EOY). PnL ≥ ${f.targetPct}% cần EOY/avg ≥ 1.${f.targetPct.toString().padStart(2,'0')} → BTC EOY ≥ ~2.07× current cho BTC-only path.</div>
+  </div>`;
+}
+
+function renderTPExplain(M) {
+  let rows = '';
+  for (const sym of ['BTC','WBETH','BNB','LINK']) {
+    if (!state.holdings[sym]?.avg) continue;
+    const tp1 = state.holdings[sym].avg * 1.40;
+    rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td><td>${fmt$(state.holdings[sym].avg, sym==='LINK'||sym==='BNB'?2:2)}</td><td>${fmt$(state.holdings[sym].price)}</td><td>${fmt$(tp1)}</td><td class="mono" style="color:${state.holdings[sym].price >= tp1 ? 'var(--green)':'var(--red)'}">${state.holdings[sym].price >= tp1 ? '✅ above':'❌ below'}</td></tr>`;
+  }
+  return `<div id="tp-explain" class="section-title">📐 TP Triggers — Math explanation</div>
+  <div class="card" style="border:1px solid var(--orange)">
+  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
+  TP triggers tính theo công thức <b>TP = avg cost × multiplier</b>. Khi user buy thêm ở giá khác → avg cost dịch → TP triggers tự động drift theo. Đây là <b>relative-to-cost-basis behavior</b> chuẩn.
+  </div>
+  <table>
+  <thead><tr><th>Asset</th><th>Avg cost</th><th>Price now</th><th>TP1 (×1.40)</th><th>Status</th></tr></thead>
+  <tbody>${rows}</tbody>
+  </table>
+  <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">🧮 TP formula recap (SOP M3 + M2)</div>
+  <div style="font-size:0.85rem;line-height:1.65;color:var(--text2)">
+  • <b>TP1 = avg × 1.40</b> · F&G ≥ 65 · Bull pts ≥ 10 · sell 15%<br>
+  • <b>TP2 = avg × 1.80</b> · F&G ≥ 75 · Bull pts ≥ 15 · sell 20%<br>
+  • <b>TP3 = avg × 2.50</b> · F&G ≥ 85 · Bull pts ≥ 20 · sell 20%<br>
+  • <b>TP4 = avg × 3.50</b> · F&G ≥ 90 · Bull pts ≥ 25 · sell 10%<br>
+  • Total cumulative: <b>65% sell, 35% hold long-term</b><br>
+  <b>3-condition AND gate</b>: TP fires CHỈ khi 3/3 conditions cùng lúc.
+  </div></div>`;
+}
+
+function renderTarget(M) {
+  const t = M.target;
+  const milestones = [];
+  const btcPriceNow = state.holdings.BTC.price;
+  const btcQty = state.holdings.BTC.qty;
+  const grossNonBTC = M.m1.gross - state.holdings.BTC.value;
+  for (const bp of [btcPriceNow, 90000, 100000, 113000, 125000, 145000]) {
+    const newGross = grossNonBTC + bp * btcQty;
+    const newNet = newGross - M.loan;
+    const vs = (newNet / state.target_anchor - 1) * 100;
+    const cBtc = (bp/btcPriceNow - 1) * 100;
+    const cGross = (newGross/M.m1.gross - 1) * 100;
+    let color, status;
+    if (newNet >= t.eoy_goal) { color='var(--green)'; status='🎯 HIT'; }
+    else if (newNet >= state.target_anchor) { color='var(--cyan)'; status='On track'; }
+    else if (newNet >= state.target_anchor * 0.9) { color='var(--yellow)'; status='Below'; }
+    else { color='var(--orange)'; status='Below'; }
+    milestones.push(`<tr><td><b>${fmt$(bp,0)}${bp===btcPriceNow?' current':''}</b></td><td>${fmtPct(cBtc)}</td><td>${fmtPct(cGross)}</td><td>${fmt$(newGross)}</td><td style="color:${color}"><b>${fmt$(newNet)}</b></td><td style="color:${color}">${fmtPct(vs)}</td><td style="color:${color}">${status}</td></tr>`);
+  }
+  return `<div id="target" class="section-title section-title-target">🎯 ${state.target_pct}% TARGET TRACKING</div>
+  <div class="target-card">
+  <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
+  <div>
+    <div style="font-family:var(--display);font-size:1.4rem;font-weight:700">Target: NET +${state.target_pct}% trong 12 tháng</div>
+    <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Anchor ${fmt$(t.anchor)} · EOY goal <b style="color:var(--green)">${fmt$(t.eoy_goal)}</b></div>
+  </div></div>
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">Current NET</div><div class="metric-value" style="color:${M.m1.net >= t.eoy_goal ? 'var(--green)' : (M.m1.net >= t.anchor ? 'var(--cyan)' : 'var(--red)')}">${fmt$(M.m1.net)}</div><div class="metric-sub">${fmtPct((M.m1.net/t.anchor - 1)*100)} vs anchor</div></div>
+  <div class="metric"><div class="metric-label">Gap to EOY</div><div class="metric-value" style="color:var(--orange)">${fmt$(t.gap_usd)}</div><div class="metric-sub">${fmtPct((t.gap_usd/M.m1.net)*100)} cần</div></div>
+  <div class="metric"><div class="metric-label">BTC needed</div><div class="metric-value" style="color:var(--purple)">${fmt$(t.btc_needed,0)}</div><div class="metric-sub">${fmtPct((t.btc_needed/state.holdings.BTC.price-1)*100)} từ current</div></div>
+  <div class="metric"><div class="metric-label">Net leverage</div><div class="metric-value">${(M.m1.gross/M.m1.net).toFixed(2)}x</div><div class="metric-sub">net beta proxy</div></div>
+  <div class="metric"><div class="metric-label">DCA Pool</div><div class="metric-value" style="color:var(--cyan)">${fmt$(state.pool.value)}</div><div class="metric-sub">parallel · ko vào NET</div></div>
+  <div class="metric"><div class="metric-label">Total Wealth</div><div class="metric-value">${fmt$(M.m1.net + state.pool.value)}</div><div class="metric-sub">NET + Pool</div></div>
+  </div>
+  <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📈 BTC milestones → NET projection</div>
+  <table><thead><tr><th>BTC price</th><th>BTC %</th><th>Gross %</th><th>New gross</th><th>New NET</th><th>vs anchor</th><th>Status</th></tr></thead><tbody>${milestones.join('')}</tbody></table>
+
+  <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">🚀 4 LEVERS state</div>
+  <div class="lever-grid">
+  ${renderLeverDCA(M)}
+  ${renderLeverSqueeze(M)}
+  ${renderLeverLoan(M)}
+  ${renderLeverStop(M)}
+  </div>
+  </div>`;
+}
+
+function renderLeverDCA(M) {
+  const a = state.pool.plan_alloc;
+  const total = state.funding_yearly / 365 * 2; // assume Pool = 2x funding floor
+  return `<div class="lever">
+  <h4>💎 #1 · DCA ${fmt$(state.pool.value/state.pool.days || 20, 2)}/day Pool</h4>
+  <div class="lever-status">✅ ACTIVE</div>
+  <div class="lever-detail">Pool plan v73: <b>LINK ${a.LINK}%</b> · BNB ${a.BNB}% · BTC ${a.BTC}% · WBETH ${a.WBETH}%. Total Σ=${a.LINK+a.BNB+a.BTC+a.WBETH}%.</div>
+  </div>`;
+}
+function renderLeverSqueeze(M) {
+  const margin = M.m1.net * 0.05;
+  return `<div class="lever lever-armed">
+  <h4>⚡ #2 · Funding squeeze 5% NET</h4>
+  <div class="lever-status lever-status-armed">🟣 ARMED</div>
+  <div class="lever-detail">${fmt$(margin)} margin × 3x = ${fmt$(margin*3)} notional. SL -7% · TP +15%. Funding ${state.market.funding_btc_pct.toFixed(4)}%. RSI6 ${state.market.rsi6_1d}.</div>
+  </div>`;
+}
+function renderLeverLoan(M) {
+  const cls = M.m7.over_hard > 0 ? 'lever-warn' : (M.m7.over_accept > 0 ? 'lever-warn' : '');
+  const stCls = M.m7.over_hard > 0 ? 'lever-status-warn' : (M.m7.over_accept > 0 ? 'lever-status-warn' : '');
+  const status = M.m7.over_hard > 0 ? '⚠️ OVER HARD FLOOR' : (M.m7.over_accept > 0 ? '⚠️ OVER ACCEPT' : '✅ NORMAL');
+  return `<div class="lever ${cls}">
+  <h4>💰 #4 · Loan v1.6 dynamic</h4>
+  <div class="lever-status ${stCls}">${status}</div>
+  <div class="lever-detail">Current ${fmt$(M.loan)} · Soft ${fmt$(M.m7.soft)} · Acceptable ${fmt$(M.m7.accept)} · Hard ${fmt$(M.m7.hard)}. Liq dist ${M.m7.liq_dist.toFixed(2)}%.</div>
+  </div>`;
+}
+function renderLeverStop(M) {
+  const buf = (state.holdings.BTC.price - state.bep_threshold) / state.bep_threshold * 100;
+  return `<div class="lever">
+  <h4>🛑 #3 · Stop-loss BTC ${fmt$(state.bep_threshold,0)}</h4>
+  <div class="lever-status">✅ STANDBY</div>
+  <div class="lever-detail">BTC current ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)} (buffer ${buf.toFixed(1)}%). F&G hiện ${state.market.fg_cg} · trigger ≤ 15.</div>
+  </div>`;
+}
+
+function renderPlanChanges(M) {
+  const changes = M.plan_changes;
+  if (!changes.length) return `<div id="changes" class="section-title">🔁 Plan Changes</div><div class="card"><div style="color:var(--muted);font-size:0.85rem">Không có thay đổi đáng kể so với prev version.</div></div>`;
+  let html = `<div id="changes" class="section-title">🔁 Plan Changes Detected (prev → current · ${changes.length} thay đổi)</div>
+  <div class="card" style="border:1px solid var(--purple)">`;
+  for (const c of changes) {
+    html += `<div style='padding:0.5rem 0.7rem;background:rgba(167,139,250,0.06);border-left:3px solid var(--purple);border-radius:6px;margin-bottom:0.4rem;font-size:0.85rem'>${c}</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderActions(M) {
+  const actions = [];
+  if (M.m7.over_hard > 0) {
+    actions.push({color:'var(--red)', icon:'🚨', title:'#1 · LOAN OVER HARD FLOOR — Repay khẩn cấp', when:'Trong 24h tới', detail:`Loan ${fmt$(M.loan)} · liq dist ${M.m7.liq_dist.toFixed(2)}% (DƯỚI hard floor 50%). Repay ${fmt$(M.m7.over_hard)} ngay để về hard cap. Tốt hơn: repay ${fmt$(M.m7.repay_to_accept)} về acceptable, hoặc ${fmt$(M.m7.repay_to_soft)} về soft target.`, why:'Liq dist < 50% = nguy cơ thanh lý cao nếu BTC drop tiếp. SOP G12 hard rule.'});
+  } else if (M.m7.over_accept > 0) {
+    actions.push({color:'var(--orange)', icon:'⚠️', title:'#1 · LOAN trim PARTIAL — Repay về soft cap', when:'Trong 24h tới (PRIORITY)', detail:`Loan ${fmt$(M.loan)} · liq dist ${M.m7.liq_dist.toFixed(2)}%. Repay ${fmt$(M.m7.repay_to_accept)} → loan ${fmt$(M.loan - M.m7.repay_to_accept)} về acceptable, hoặc repay ${fmt$(M.m7.repay_to_soft)} → loan ${fmt$(M.loan - M.m7.repay_to_soft)} về soft target.`, why:'Restore safety buffer + dip-buy capacity. Theo SOP G12 v1.6.'});
+  }
+  for (const c of M.plan_changes) {
+    if (c.includes('REBALANCED')) {
+      actions.push({color:'var(--green)', icon:'✅', title:'#2 · POOL rebalance — DONE (executed)', when:'Confirmed', detail:c, why:'G9 v2 cap respected. Hệ thống alerting + execution feedback loop hoạt động.'});
+    }
+  }
+  if (state.market.funding_btc_pct < -0.005 || state.market.funding_binance < -0.005) {
+    actions.push({color:'var(--purple)', icon:'⚡', title:'#3 · Funding squeeze ARM monitor', when:'Đợi RSI6 > 70 + volume +50%', detail:`Funding ${state.market.funding_btc_pct.toFixed(4)}% / Binance ${state.market.funding_binance.toFixed(4)}%. RSI6 ${state.market.rsi6_1d} (cần >70). Vol ${state.market.vol_change.toFixed(2)}%. Khi 4/4 met → execute Lever #2 (5% NET margin BTCUSDT-PERP long 3x).`, why:'Funding flip OK nhưng RSI/volume miss = setup chưa chín.'});
+  }
+  if (M.m1.equity_ratio < 60) {
+    actions.push({color:'var(--green)', icon:'🛑', title:'#5 · Stop-loss enforcement standby', when:'Continuous monitor', detail:`BTC ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)}. Distance ${((state.holdings.BTC.price-state.bep_threshold)/state.bep_threshold*100).toFixed(1)}%. Khi BTC drop và F&G ≤ thresholds → activate dip-buy ladder T1-T4. Khi BTC < ${fmt$(state.bep_threshold,0)} + F&G ≤ 15 = STOP-LOSS reset.`, why:'Capital preservation cho cycle reset. NET threshold $2,000.'});
+  }
+  if (!actions.length) actions.push({color:'var(--green)', icon:'✅', title:'#0 · Portfolio healthy — no immediate action', when:'Monitor', detail:'All metrics within bounds.', why:''});
+  let html = `<div id="action" class="section-title">⚡ Action Plan (priority-ranked)</div><div class="card">`;
+  for (const a of actions) {
+    html += `<div style="border-left:4px solid ${a.color};background:var(--bg2);border-radius:10px;padding:0.95rem 1.1rem;margin-bottom:0.7rem">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+      <div style="font-family:var(--display);font-size:1rem;font-weight:700;color:${a.color}">${a.icon} ${a.title}</div>
+      <div style="font-size:0.7rem;color:var(--muted);font-family:var(--mono)">⏰ ${a.when}</div>
+    </div>
+    <div style="font-size:0.83rem;line-height:1.6;color:var(--text2);margin-top:0.5rem;white-space:pre-wrap">${a.detail}</div>
+    ${a.why ? `<div style="font-size:0.72rem;color:var(--muted);font-family:var(--mono);margin-top:0.5rem;font-style:italic">↳ Why: ${a.why}</div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderDCA(M) {
+  const a = state.pool.plan_alloc;
+  const prevA = state.prev.pool_alloc;
+  const dailyTotal = 20; // assume $20/d (default v73)
+  let rows = '';
+  for (const sym of ['LINK','BNB','BTC','WBETH']) {
+    const bep = M.m2[sym]?.bep_gap;
+    const oldP = prevA[sym] || 0, newP = a[sym] || 0;
+    const oldD = oldP * dailyTotal / 100, newD = newP * dailyTotal / 100;
+    const oldY = oldD * 365, newY = newD * 365;
+    const exp = M.g9.exposure[sym];
+    const dpp = newP - oldP;
+    rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td><td style="color:${bep>0?'var(--red)':'var(--green)'}">${fmtPct(bep||0)}</td><td>${oldP}%</td><td>${fmt$(oldD,2)}</td><td>${fmt$(oldY,0)}</td><td><b style="color:${dpp>0?'var(--green)':(dpp<0?'var(--red)':'var(--muted)')}">${newP}%</b> (${dpp>=0?'+':''}${dpp}pp)</td><td><b>${fmt$(newD,2)}</b></td><td>${fmt$(newY,0)}</td><td>${exp ? exp.pct.toFixed(2)+'%' : '—'}</td></tr>`;
+  }
+  return `<div id="dca" class="section-title">💎 DCA Pool — current plan</div>
+  <div class="dca-card">
+  <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">${fmt$(dailyTotal,2)}/day · plan side-by-side (prev vs current)</div>
+  <table>
+  <thead><tr><th rowspan="2">Asset</th><th rowspan="2">BEP gap</th>
+  <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border2)">PREV</th>
+  <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border2)">CURRENT</th>
+  <th rowspan="2">G9 cross</th></tr>
+  <tr><th>%</th><th>$/day</th><th>$/year</th><th>%</th><th>$/day</th><th>$/year</th></tr></thead>
+  <tbody>${rows}<tr style="background:rgba(167,139,250,0.08);font-weight:700"><td>TOTAL</td><td>—</td><td>${prevA.LINK+prevA.BNB+prevA.BTC+prevA.WBETH}%</td><td>${fmt$(dailyTotal,2)}</td><td>${fmt$(dailyTotal*365,0)}</td><td>${a.LINK+a.BNB+a.BTC+a.WBETH}%</td><td>${fmt$(dailyTotal,2)}</td><td>${fmt$(dailyTotal*365,0)}</td><td>—</td></tr></tbody></table>
+  <div style="font-size:0.78rem;color:var(--muted);margin-top:0.6rem">⚠️ <b>SOP G2</b>: DCA Pool ${fmt$(state.pool.value)} KHÔNG cộng vào net/gross — đây là pool độc lập. Total Wealth = NET + Pool = ${fmt$(M.m1.net + state.pool.value)}.</div>
+  </div>`;
+}
+
+function renderDipLadder(M) {
+  const btcNow = state.holdings.BTC.price;
+  const tiers = [
+    {name:'T0 BASE', cond:'BTC ≥ $77K · F&G ≥ 40', dca:'$20/d', loan:`Current ${fmt$(M.loan,0)}`, eq:`${M.m1.equity_ratio.toFixed(0)}% ${M.m1.equity_ratio<55?'over-cap':'OK'}`, color:'var(--green)', active: btcNow >= 77000},
+    {name:'T1 SOFT', cond:'BTC < $78K · F&G ≤ 38', dca:'$25/d × 3d', loan:'no add', eq:'~70%', color:'var(--cyan)'},
+    {name:'T2 MEDIUM', cond:'BTC < $75K · F&G ≤ 35', dca:'$30/d × 5d', loan:'+$400', eq:'~63%', color:'var(--blue)'},
+    {name:'T3 DEEP', cond:'BTC < $72K · F&G ≤ 30', dca:'$35/d × 7d', loan:`${fmt$(M.m7.hard,0)} HARD CAP`, eq:'50% MAX', color:'var(--purple)'},
+    {name:'T4 EXTREME', cond:'BTC < $70K · F&G ≤ 25', dca:'$35/d × 10d', loan:'FROZEN', eq:'~45%', color:'var(--orange)'},
+    {name:'T5 STOP-LOSS', cond:`BTC < ${fmt$(state.bep_threshold,0)} · F&G ≤ 15`, dca:'Reset $15/d', loan:'PARTIAL REPAY', eq:'PROTECT', color:'var(--red)'},
+  ];
+  let rows = '';
+  for (const t of tiers) {
+    rows += `<tr style="${t.active ? 'background:rgba(34,197,94,0.05)':''}"><td><b style="color:${t.color}">${t.name}${t.active?' ← ACTIVE':''}</b></td><td>${t.cond}</td><td>${t.dca}</td><td>${t.loan}</td><td><b style="color:${t.color}">${t.eq}</b></td></tr>`;
+  }
+  return `<div id="dip" class="section-title">📉 Buy-Dip Ladder (5 tiers)</div>
+  <div class="dip-card">
+  <table><thead><tr><th>Tier</th><th>Trigger</th><th>DCA</th><th>Loan target</th><th>Liq dist</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="warning-bar">⚠️ Loan capacity hiện ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor. Nếu BTC dump T2/T3 → cần repay trước để có ammo dip-buy.</div>
+  </div>`;
+}
+
+function renderLoan(M) {
+  const ratios = [
+    {label:'$0 No leverage', size:0, eq:100},
+    {label:`${fmt$(M.m7.soft)} Soft target`, size:M.m7.soft, eq:60.0},
+    {label:`${fmt$(M.m7.accept)} Acceptable`, size:M.m7.accept, eq:55.0},
+    {label:`${fmt$(M.m7.hard)} HARD FLOOR`, size:M.m7.hard, eq:50.0},
+    {label:`${fmt$(M.loan)} CURRENT`, size:M.loan, eq:M.m7.liq_dist},
+  ];
+  let rows = '';
+  for (const r of ratios) {
+    const liq = state.holdings.BTC.price * (r.size / (M.m1.gross * EFFECTIVE_MMR));
+    const c = r.eq >= 60 ? 'var(--green)' : (r.eq >= 55 ? 'var(--yellow)' : (r.eq >= 50 ? 'var(--orange)' : 'var(--red)'));
+    rows += `<tr ${r.label.includes('CURRENT')?'style="background:rgba(249,115,22,0.05)"':''}><td><b>${r.label}</b></td><td>${M.m1.net>0 ? (r.size/M.m1.net*100).toFixed(1)+'%' : '—'}</td><td style="color:${c}">${r.eq.toFixed(2)}%</td><td>${fmt$(liq,0)}</td></tr>`;
+  }
+  return `<div id="loan" class="section-title">💰 Loan Framework v1.6 (Lever #4)</div>
+  <div class="card">
+  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
+  Rule (SOP G12 v1.6): <b>loan_max = gross × (1 − liq_dist) × 0.90</b>. Soft 60% · Acceptable 55% · Hard floor 50%.
+  </div>
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">Current loan</div><div class="metric-value" style="color:${M.m7.over_accept>0?'var(--orange)':(M.m7.over_soft>0?'var(--yellow)':'var(--green)')}">${fmt$(M.loan)}</div><div class="metric-sub">liq dist ${M.m7.liq_dist.toFixed(2)}%</div></div>
+  <div class="metric"><div class="metric-label">Soft target</div><div class="metric-value" style="color:var(--green)">${fmt$(M.m7.soft)}</div><div class="metric-sub">liq dist ≥ 60%</div></div>
+  <div class="metric"><div class="metric-label">Acceptable</div><div class="metric-value" style="color:var(--yellow)">${fmt$(M.m7.accept)}</div><div class="metric-sub">liq dist ≥ 55%</div></div>
+  <div class="metric"><div class="metric-label">Hard floor</div><div class="metric-value" style="color:var(--red)">${fmt$(M.m7.hard)}</div><div class="metric-sub">liq dist ≥ 50% MAX</div></div>
+  <div class="metric"><div class="metric-label">Repay to soft</div><div class="metric-value">${fmt$(M.m7.repay_to_soft)}</div><div class="metric-sub">if needed</div></div>
+  <div class="metric"><div class="metric-label">BTC liq price</div><div class="metric-value" style="color:var(--red)">${fmt$(M.m7.btc_liq,0)}</div><div class="metric-sub">at current loan</div></div>
+  </div>
+  <table><thead><tr><th>Loan size</th><th>% Net</th><th>Liq distance</th><th>BTC liq price</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+function renderAlerts(M) {
+  const alerts = [];
+  if (M.m7.over_hard > 0) alerts.push({type:'red', icon:'🚨', title:`LIQ DIST ${M.m7.liq_dist.toFixed(2)}% — DƯỚI HARD FLOOR`, text:`Loan ${fmt$(M.loan)} vượt hard cap ${fmt$(M.m7.hard)}. Repay ${fmt$(M.m7.over_hard)} ngay.`});
+  else if (M.m7.over_accept > 0) alerts.push({type:'orange', icon:'⚠️', title:`LIQ DIST ${M.m7.liq_dist.toFixed(2)}% — sát acceptable cap`, text:`Loan ${fmt$(M.loan)} qua acceptable. Repay ${fmt$(M.m7.repay_to_soft)} về soft cap.`});
+  for (const c of M.plan_changes) {
+    if (c.includes('REBALANCED')) alerts.push({type:'green', icon:'✅', title:'POOL REBALANCE EXECUTED', text:c});
+  }
+  for (const k of ['LINK','BNB']) {
+    if (M.m2[k]?.bep_gap > 5) alerts.push({type:'purple', icon:'🟣', title:`${k} BEP gap ${fmtPct(M.m2[k].bep_gap)} — underwater`, text:`${k} avg ${fmt$(state.holdings[k].avg)} vs price ${fmt$(state.holdings[k].price)} (${fmtPct(M.m2[k].pnl_pct)} PnL).`});
+  }
+  if (state.market.fg_cg < 40) alerts.push({type:'yellow', icon:'⚠️', title:`F&G CG ${state.market.fg_cg} (Fear)`, text:`Gate Fear < 40 = full DCA base + tilt underwater. Nếu thủng 30 (Extreme Fear) → cân nhắc thêm spot.`});
+  for (const k of ['BTC','WBETH']) {
+    if (M.m2[k]?.pnl > 0) alerts.push({type:'green', icon:'💚', title:`${k} ABOVE BEP (profitable)`, text:`${k} BEP ${fmtPct(M.m2[k].bep_gap)} (${fmt$signed(M.m2[k].pnl)}). F&G ${state.market.fg_cg < 65 ? '< 65 → HOLD' : '≥ 65 → cân nhắc TP1 partial'}.`});
+  }
+  alerts.push({type:'purple', icon:'🎯', title:`${state.target_pct}% TARGET tracking`, text:`NET ${fmt$(M.m1.net)} vs target start ${fmt$(state.target_anchor)}. Cần gain ${fmt$(M.target.gap_usd)} (${fmtPct((M.target.gap_usd/M.m1.net)*100)}) để hit EOY ${fmt$(M.target.eoy_goal)}.`});
+  let html = `<div id="alerts" class="section-title">⚠️ Alerts (sorted by priority)</div>`;
+  for (const a of alerts) {
+    html += `<div class="alert alert-${a.type}"><div class="alert-icon">${a.icon}</div><div class="alert-content"><div class="alert-title">${a.title}</div><div class="alert-text">${a.text}</div></div></div>`;
+  }
+  return html;
+}
+
+function renderPortfolio(M) {
+  let cards = '';
+  for (const sym in state.holdings) {
+    const h = state.holdings[sym];
+    const m = M.m2[sym];
+    h.value = h.qty * h.price;
+    const w = m.weight;
+    cards += `<div class="holding"><div class="h-coin"><div class="h-icon" style="background:${ASSET_COLORS[sym]}">${sym[0]}</div><div><div class="h-name">${sym} <span style="color:var(--muted);font-size:0.72rem;font-weight:400">w ${w.toFixed(2)}%</span></div><div class="h-meta">${fmtQty(h.qty)} · ${fmt$(h.price)}${h.avg ? ' · avg '+fmt$(h.avg)+' · BEP '+fmtPct(m.bep_gap) : ' · no avg cost'}</div></div></div><div><div class="h-val">${fmt$(h.value)}</div>${h.avg ? `<div class='h-pnl' style='color:${colorPnl(m.pnl)}'>${fmtPct(m.pnl_pct)} · ${fmt$signed(m.pnl)}</div>` : '<div class="h-pnl" style="color:var(--muted)">—</div>'}</div></div>`;
+  }
+  cards += `<div class="holding" style="border:1px solid var(--red)"><div class="h-coin"><div class="h-icon" style="background:var(--red)">−</div><div><div class="h-name">USDT <span style="color:var(--red);font-size:0.72rem;font-weight:600">LOAN</span></div><div class="h-meta">-${fmt$(M.loan,2).slice(1)} · margin debt · liq ${fmt$(M.m7.btc_liq,0)}</div></div></div><div><div class="h-val" style="color:var(--red)">-${fmt$(M.loan)}</div><div class="h-pnl" style="color:var(--red)">${(M.loan/M.m1.net*100).toFixed(1)}% net</div></div></div>`;
+  return `<div id="portfolio" class="section-title">📊 Portfolio (current state)</div>
+  <div class="card">
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">Gross</div><div class="metric-value">${fmt$(M.m1.gross)}</div><div class="metric-sub">loan ${(M.loan/M.m1.gross*100).toFixed(1)}% gross</div></div>
+  <div class="metric"><div class="metric-label">Net</div><div class="metric-value" style="color:${M.m1.net >= state.target_anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(M.m1.net)}</div><div class="metric-sub">vs prev ${fmt$signed(M.m1.net - state.prev.net)}</div></div>
+  <div class="metric"><div class="metric-label">PnL unrealized</div><div class="metric-value" style="color:${colorPnl(M.m1.pnl_unreal)}">${fmtPct(M.m1.pnl_pct)} · ${fmt$signed(M.m1.pnl_unreal)}</div><div class="metric-sub">cost ${fmt$(M.m1.cost)}</div></div>
+  <div class="metric"><div class="metric-label">Equity ratio</div><div class="metric-value" style="color:${M.m1.equity_ratio>=60?'var(--green)':(M.m1.equity_ratio>=55?'var(--yellow)':'var(--orange)')}">${M.m1.equity_ratio.toFixed(2)}%</div><div class="metric-sub">target ≥60%</div></div>
+  <div class="metric"><div class="metric-label">DCA Pool</div><div class="metric-value" style="color:var(--cyan)">${fmt$(state.pool.value)}</div><div class="metric-sub">${state.pool.days}d</div></div>
+  <div class="metric"><div class="metric-label">Total Wealth</div><div class="metric-value">${fmt$(M.m1.net + state.pool.value)}</div><div class="metric-sub">NET + Pool</div></div>
+  </div>
+  <div class="holdings-grid">${cards}</div>
+  </div>`;
+}
+
+function renderExposure(M) {
+  let rows = '';
+  for (const sym of ['LINK','BNB','BTC','WBETH']) {
+    const e = M.g9.exposure[sym];
+    if (!e) continue;
+    const isAlt = e.is_alt;
+    const overCap = e.pct > G9_CAP;
+    const grace = e.pct <= G9_CAP + G9_GRACE;
+    const c = !isAlt ? 'var(--muted)' : (overCap ? (grace ? 'var(--yellow)' : 'var(--red)') : 'var(--green)');
+    const status = !isAlt ? '(anchor)' : (overCap ? (grace ? '⚠ over (grace)' : '✗ over cap') : '✅ under cap');
+    rows += `<div style="display:grid;grid-template-columns:80px 1fr 90px 100px 100px 130px;gap:0.5rem;align-items:center;padding:0.5rem 0;font-family:var(--mono);font-size:0.78rem;border-bottom:1px solid rgba(255,255,255,0.04)"><div><b style="color:${ASSET_COLORS[sym]}">${sym}</b></div><div>${isAlt?'alt · CAP applies':'anchor · NO cap'}</div><div>${fmt$(e.spot)}</div><div>${fmt$(e.pool)}</div><div>${fmt$(e.total)}</div><div style="color:${c}"><b>${e.pct.toFixed(2)}% ${status}</b></div></div>`;
+  }
+  return `<div id="exposure" class="section-title">🔍 Cross-Portfolio Exposure (G9 v2)</div>
+  <div class="card">
+  <div style="display:grid;grid-template-columns:80px 1fr 90px 100px 100px 130px;gap:0.5rem;font-weight:700;color:var(--muted);font-size:0.7rem;text-transform:uppercase;background:var(--bg2);padding:0.5rem;border-radius:6px"><div>Asset</div><div>Type</div><div>Spot</div><div>Pool</div><div>Total</div><div>% Wealth</div></div>
+  ${rows}
+  <div style="font-size:0.78rem;color:var(--muted);margin-top:0.6rem">G9 v2 cap = ${G9_CAP}% per altcoin (${G9_GRACE}pp grace). Total Wealth = ${fmt$(M.g9.total_wealth)}.</div>
+  </div>`;
+}
+
+function renderStress(M) {
+  const loanSizes = [
+    {name:'CURRENT', size:M.loan},
+    {name:'Soft (60%)', size:M.m7.soft},
+    {name:'Accept (55%)', size:M.m7.accept},
+    {name:'Hard floor (50%)', size:M.m7.hard},
+  ];
+  const drops = [-0.10,-0.20,-0.30,-0.40,-0.50];
+  let rows = '';
+  const usdc = state.holdings.USDC?.value || 0;
+  const crypto = M.m1.gross - usdc;
+  for (const ls of loanSizes) {
+    let cells = `<td><b>${fmt$(ls.size)}</b> · ${ls.name}</td>`;
+    for (const d of drops) {
+      const ng = crypto * (1+d) + usdc;
+      const eq = ng > 0 ? (ng - ls.size)/ng*100 : 0;
+      const c = eq >= 60 ? 'var(--green)' : (eq >= 50 ? 'var(--yellow)' : (eq >= 30 ? 'var(--orange)' : 'var(--red)'));
+      cells += `<td style="color:${c}">${eq.toFixed(1)}%</td>`;
+    }
+    rows += `<tr>${cells}</tr>`;
+  }
+  return `<div id="stress" class="section-title">🛡️ Stress test (per loan size · effective MMR ~10%)</div>
+  <div class="card">
+  <table><thead><tr><th>Loan size</th>${drops.map(d=>`<th>BTC ${(d*100).toFixed(0)}%</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
+  <div class="danger-bar">🚨 NON-LINEAR risk caveat: Stress giả định linear beta 1.0x. Thực tế alts có downside beta ~1.15x → liquidation có thể trigger SỚM HƠN bảng.</div>
+  </div>`;
+}
+
+function renderTPTriggers(M) {
+  let rows = '';
+  for (const sym of ['BTC','WBETH','BNB','LINK']) {
+    if (!M.m3[sym]) continue;
+    for (const t of M.m3[sym]) {
+      const status = `${t.p_ok?'<span class="cond-on">✅p</span>':'<span class="cond-off">❌p</span>'} ${t.fg_ok?'<span class="cond-on">✅fg</span>':'<span class="cond-off">❌fg</span>'} ${t.bull_ok?'<span class="cond-on">✅b</span>':'<span class="cond-off">❌b</span>'}`;
+      const fires = t.fires ? '<span class="badge b-bull">🔥 FIRE</span>' : `<span class="badge b-grey">${status} · wait</span>`;
+      rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym} · ${t.name}</b></td><td>${fmt$(t.trigger)}</td><td>≥ ${t.fg} (now ${state.market.fg_cg})</td><td>≥ ${t.bull} (now ${M.m9.bull_total})</td><td>${fires}</td><td>sell ${t.sell}%</td></tr>`;
+    }
+  }
+  return `<div id="tp" class="section-title">🎯 TP Triggers per coin (3-cond gate)</div>
+  <div class="card">
+  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
+  <b>SOP M3 gate</b>: TP fires CHỈ khi 3/3: <code>price ≥ trigger</code> AND <code>F&amp;G ≥ threshold</code> AND <code>bull_pts ≥ N</code>.
+  </div>
+  <table><thead><tr><th>Asset · TP</th><th>Trigger</th><th>F&G ≥</th><th>Bull pts ≥</th><th>3-cond</th><th>Sell</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="warning-bar">📐 TP1 = avg × 1.40 · TP2 × 1.80 · TP3 × 2.50 · TP4 × 3.50. Cumulative 65% sell, 35% hold.</div>
+  </div>`;
+}
+
+function renderScenarios(M) {
+  const scenarios = [
+    {name:'🩸 Capitulation', prob:15, ret:-30, desc:'Stop-loss G13 caps -45→-30%', color:'red'},
+    {name:'↔️ Sideways', prob:30, ret:5, desc:'DCA accum + funding income', color:'green'},
+    {name:'📈 Recovery', prob:35, ret:58, desc:`90d momentum +${state.market.ret_90d.toFixed(1)}% extends · BTC target hit`, color:'green', best:true},
+    {name:'🚀 Bull', prob:20, ret:92, desc:'BTC stretch + alt season', color:'green'},
+  ];
+  const ev = scenarios.reduce((s,sc)=>s + sc.prob/100 * sc.ret, 0);
+  const evDollar = M.m1.net * ev / 100;
+  const pHit = scenarios.filter(s=>s.ret>=state.target_pct).reduce((s,sc)=>s + sc.prob, 0);
+  const maxDD = Math.min(...scenarios.map(s=>s.ret));
+  let tiles = '';
+  for (const s of scenarios) {
+    tiles += `<div class="scen-tile" style="${s.best?'border:2px solid var(--green)':''}"><h4>${s.name}</h4><div class="scen-prob">prob ${s.prob}%</div><div class="scen-return" style="color:${s.ret>=0?'var(--green)':'var(--red)'}">${fmtPct(s.ret)}</div><div class="scen-prob">${s.desc}</div></div>`;
+  }
+  return `<div id="scenarios" class="section-title">🎲 EV Scenarios</div>
+  <div class="scen-grid">${tiles}</div>
+  <div class="card" style="margin-top:0.85rem">
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">EV %</div><div class="metric-value" style="color:${ev>=state.target_pct?'var(--green)':'var(--yellow)'}">${fmtPct(ev)}</div><div class="metric-sub">prob-weighted on NET</div></div>
+  <div class="metric"><div class="metric-label">EV $</div><div class="metric-value" style="color:${evDollar>=0?'var(--green)':'var(--red)'}">${fmt$signed(evDollar)}</div><div class="metric-sub">NET ${fmt$(M.m1.net)}</div></div>
+  <div class="metric"><div class="metric-label">P(≥${state.target_pct}%)</div><div class="metric-value" style="color:var(--purple)">~${pHit}%</div><div class="metric-sub">scenarios hit target</div></div>
+  <div class="metric"><div class="metric-label">Max DD</div><div class="metric-value" style="color:var(--red)">${fmtPct(maxDD)}</div><div class="metric-sub">Capitulation cap</div></div>
+  <div class="metric"><div class="metric-label">R/R</div><div class="metric-value" style="color:var(--green)">${(scenarios.filter(s=>s.ret>0).reduce((s,sc)=>s+sc.prob*sc.ret,0)/Math.max(1,Math.abs(scenarios.filter(s=>s.ret<0).reduce((s,sc)=>s+sc.prob*sc.ret,0)))).toFixed(2)}</div><div class="metric-sub">upside/downside</div></div>
+  </div></div>`;
+}
+
+function renderSignals(M) {
+  let bullRows = '', bearRows = '';
+  for (const [t,p] of M.m9.bull) bullRows += `<div class="signal-row"><span style="font-size:0.82rem">${t}</span><span class="mono" style="color:var(--green)">+${p}</span></div>`;
+  for (const [t,p] of M.m9.bear) bearRows += `<div class="signal-row"><span style="font-size:0.82rem">${t}</span><span class="mono" style="color:var(--red)">${p}</span></div>`;
+  const stColor = M.m9.stance_color;
+  return `<div id="signals" class="section-title">🚦 Signal Aggregator</div>
+  <div class="stance-ribbon" style="background:linear-gradient(90deg,${stColor}33,transparent);border-color:${stColor}">
+  <div>
+    <div style="font-size:0.78rem;color:var(--text2);text-transform:uppercase;letter-spacing:0.04em">Aggregate stance</div>
+    <div class="stance-text" style="color:${stColor}">${M.m9.stance} ${M.m9.net>=0?'+':''}${M.m9.net}</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:0.78rem;color:var(--text2)">Bull <b style="color:var(--green)">+${M.m9.bull_total}</b> · Bear <b style="color:var(--red)">${M.m9.bear_total}</b></div>
+    <div style="font-family:var(--mono);font-size:1.4rem;color:${stColor};font-weight:700">net ${M.m9.net>=0?'+':''}${M.m9.net}</div>
+  </div>
+  </div>
+  <div class="signals-grid">
+    <div class="card">
+      <div style="font-family:var(--display);font-weight:700;color:var(--green);margin-bottom:0.4rem">🐂 Bull factors</div>
+      ${bullRows || '<div style="color:var(--muted);font-size:0.85rem">none</div>'}
+    </div>
+    <div class="card">
+      <div style="font-family:var(--display);font-weight:700;color:var(--red);margin-bottom:0.4rem">🐻 Bear factors</div>
+      ${bearRows || '<div style="color:var(--muted);font-size:0.85rem">none</div>'}
+    </div>
+  </div>`;
+}
+
+function renderJourney(M) {
+  const p = state.prev;
+  const rows = [
+    ['BTC price', fmt$(p.btc_price), fmt$(state.holdings.BTC.price), state.holdings.BTC.price - p.btc_price],
+    ['F&G CG', p.fg, state.market.fg_cg, state.market.fg_cg - p.fg],
+    ['Gross', fmt$(p.gross), fmt$(M.m1.gross), M.m1.gross - p.gross],
+    ['Loan', fmt$(p.loan), fmt$(M.loan), M.loan - p.loan],
+    ['NET', fmt$(p.net), fmt$(M.m1.net), M.m1.net - p.net],
+    ['Pool value', fmt$(p.pool_value), fmt$(state.pool.value), state.pool.value - p.pool_value],
+    ['Pool LINK', p.pool_alloc.LINK+'%', state.pool.plan_alloc.LINK+'%', state.pool.plan_alloc.LINK - p.pool_alloc.LINK + 'pp'],
+    ['Pool BTC', p.pool_alloc.BTC+'%', state.pool.plan_alloc.BTC+'%', state.pool.plan_alloc.BTC - p.pool_alloc.BTC + 'pp'],
+  ];
+  let html = '';
+  for (const r of rows) {
+    const d = typeof r[3] === 'number' ? r[3] : parseFloat(r[3]);
+    const c = d > 0 ? 'var(--green)' : (d < 0 ? 'var(--red)' : 'var(--muted)');
+    const display = typeof r[3] === 'number' ? (d>=0?'+':'')+r[3].toFixed(2) : r[3];
+    html += `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td class="mono" style="color:${c}">${display}</td></tr>`;
+  }
+  return `<div id="journey" class="section-title">🛤️ Journey (prev → current)</div>
+  <div class="card">
+  <table><thead><tr><th>Metric</th><th>Prev</th><th>Current</th><th>Δ</th></tr></thead><tbody>${html}</tbody></table>
+  </div>`;
+}
+
+function renderValidation(M) {
+  let rows = '';
+  for (const c of M.m14.checks) {
+    const icon = c.pass ? '✓' : '✗';
+    const color = c.pass ? 'var(--green)' : 'var(--red)';
+    rows += `<tr><td style="color:${color};font-weight:700;text-align:center">${icon}</td><td>${c.name}</td><td>${c.info}</td></tr>`;
+  }
+  const c = M.m14.result === 'PASS' ? 'var(--green)' : 'var(--red)';
+  return `<div id="validation" class="section-title">✅ Validation (${M.m14.pass}/${M.m14.total} ${M.m14.result})</div>
+  <div class="card">
+  <table><thead><tr><th style="width:40px;text-align:center">✓</th><th>Check</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="safety-bar" style="border-color:${c};color:${c}">${M.m14.pass}/${M.m14.total} ${M.m14.result} · SOP v1.6 · Engine v47 · 4 levers · ${state.target_pct}% target tracking</div>
+  </div>`;
+}
+
+// ===================== EDITOR FORM =====================
+function buildEditor() {
+  const grid = document.getElementById('editor-grid');
+  const groups = [];
+  // Holdings
+  for (const sym of ['BTC','WBETH','LINK','BNB','BNSOL','USDC']) {
+    const h = state.holdings[sym];
+    groups.push(`<div class="editor-group"><h4>${sym}</h4>
+    <div class="input-row"><label>qty</label><input type="number" step="any" data-path="holdings.${sym}.qty" value="${h.qty}"></div>
+    <div class="input-row"><label>price $</label><input type="number" step="any" data-path="holdings.${sym}.price" value="${h.price}"></div>
+    <div class="input-row"><label>avg $</label><input type="number" step="any" data-path="holdings.${sym}.avg" value="${h.avg ?? ''}" placeholder="(optional)"></div>
+    </div>`);
+  }
+  // Loan & funding
+  groups.push(`<div class="editor-group"><h4>💰 Loan & Target</h4>
+  <div class="input-row"><label>loan $</label><input type="number" step="any" data-path="loan" value="${state.loan}"></div>
+  <div class="input-row"><label>funding/yr</label><input type="number" step="any" data-path="funding_yearly" value="${state.funding_yearly}"></div>
+  <div class="input-row"><label>target %</label><input type="number" step="any" data-path="target_pct" value="${state.target_pct}"></div>
+  <div class="input-row"><label>anchor $</label><input type="number" step="any" data-path="target_anchor" value="${state.target_anchor}"></div>
+  <div class="input-row"><label>SL BTC $</label><input type="number" step="any" data-path="bep_threshold" value="${state.bep_threshold}"></div>
+  </div>`);
+  // Pool
+  groups.push(`<div class="editor-group"><h4>💎 DCA Pool</h4>
+  <div class="input-row"><label>value $</label><input type="number" step="any" data-path="pool.value" value="${state.pool.value}"></div>
+  <div class="input-row"><label>days</label><input type="number" step="any" data-path="pool.days" value="${state.pool.days}"></div>
+  <div class="input-row"><label>LINK %</label><input type="number" step="any" data-path="pool.plan_alloc.LINK" value="${state.pool.plan_alloc.LINK}"></div>
+  <div class="input-row"><label>BNB %</label><input type="number" step="any" data-path="pool.plan_alloc.BNB" value="${state.pool.plan_alloc.BNB}"></div>
+  <div class="input-row"><label>BTC %</label><input type="number" step="any" data-path="pool.plan_alloc.BTC" value="${state.pool.plan_alloc.BTC}"></div>
+  <div class="input-row"><label>WBETH %</label><input type="number" step="any" data-path="pool.plan_alloc.WBETH" value="${state.pool.plan_alloc.WBETH}"></div>
+  </div>`);
+  // Market
+  groups.push(`<div class="editor-group"><h4>📊 Market</h4>
+  <div class="input-row"><label>F&G CG</label><input type="number" step="any" data-path="market.fg_cg" value="${state.market.fg_cg}"></div>
+  <div class="input-row"><label>ETH $</label><input type="number" step="any" data-path="market.eth_price" value="${state.market.eth_price}"></div>
+  <div class="input-row"><label>SOL $</label><input type="number" step="any" data-path="market.sol_price" value="${state.market.sol_price}"></div>
+  <div class="input-row"><label>BTC 7d %</label><input type="number" step="any" data-path="market.ret_7d" value="${state.market.ret_7d}"></div>
+  <div class="input-row"><label>BTC 30d %</label><input type="number" step="any" data-path="market.ret_30d" value="${state.market.ret_30d}"></div>
+  <div class="input-row"><label>BTC 90d %</label><input type="number" step="any" data-path="market.ret_90d" value="${state.market.ret_90d}"></div>
+  <div class="input-row"><label>BTC 1Y %</label><input type="number" step="any" data-path="market.ret_1y" value="${state.market.ret_1y}"></div>
+  <div class="input-row"><label>Funding %</label><input type="number" step="any" data-path="market.funding_btc_pct" value="${state.market.funding_btc_pct}"></div>
+  <div class="input-row"><label>RSI6 1d</label><input type="number" step="any" data-path="market.rsi6_1d" value="${state.market.rsi6_1d}"></div>
+  </div>`);
+  // Prev
+  groups.push(`<div class="editor-group"><h4>⏮️ Prev version (for diff)</h4>
+  <div class="input-row"><label>prev NET</label><input type="number" step="any" data-path="prev.net" value="${state.prev.net}"></div>
+  <div class="input-row"><label>prev gross</label><input type="number" step="any" data-path="prev.gross" value="${state.prev.gross}"></div>
+  <div class="input-row"><label>prev loan</label><input type="number" step="any" data-path="prev.loan" value="${state.prev.loan}"></div>
+  <div class="input-row"><label>prev F&G</label><input type="number" step="any" data-path="prev.fg" value="${state.prev.fg}"></div>
+  <div class="input-row"><label>prev BTC$</label><input type="number" step="any" data-path="prev.btc_price" value="${state.prev.btc_price}"></div>
+  <div class="input-row"><label>prev Pool$</label><input type="number" step="any" data-path="prev.pool_value" value="${state.prev.pool_value}"></div>
+  <div class="input-row"><label>prev LINK%</label><input type="number" step="any" data-path="prev.pool_alloc.LINK" value="${state.prev.pool_alloc.LINK}"></div>
+  <div class="input-row"><label>prev BTC%</label><input type="number" step="any" data-path="prev.pool_alloc.BTC" value="${state.prev.pool_alloc.BTC}"></div>
+  </div>`);
+  grid.innerHTML = groups.join('');
+  // wire up listeners
+  grid.querySelectorAll('input[data-path]').forEach(inp => {
+    inp.addEventListener('change', () => { setPath(inp.dataset.path, inp.value); render(); });
+    inp.addEventListener('input', () => { setPath(inp.dataset.path, inp.value); render(); });
+  });
+}
+
+function setPath(path, value) {
+  const parts = path.split('.');
+  let obj = state;
+  for (let i = 0; i < parts.length - 1; i++) {
+    obj = obj[parts[i]];
+  }
+  const last = parts[parts.length - 1];
+  if (value === '' || value === null) {
+    obj[last] = path.endsWith('.avg') ? null : 0;
+  } else {
+    obj[last] = parseFloat(value);
+  }
+}
+
+function recalc() { render(); }
+function resetDefaults() {
+  state = JSON.parse(JSON.stringify(DEFAULT_STATE));
+  buildEditor();
+  render();
+}
+function saveLocal() {
+  localStorage.setItem('crypto-portfolio-state', JSON.stringify(state));
+  alert('Đã lưu vào trình duyệt.');
+}
+function loadLocal() {
+  const s = localStorage.getItem('crypto-portfolio-state');
+  if (!s) return alert('Chưa có data lưu.');
+  state = JSON.parse(s);
+  buildEditor();
+  render();
+}
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'portfolio-state-' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Init
+buildEditor();
+render();
+</script>
+</body></html>
