@@ -1388,18 +1388,22 @@ async function fetchFromBinance() {
       };
     }
 
+    // Per-task error tracking — partial fetch tolerated
+    const errors = [];
+    const safe = (name, p) => p.catch(e => { errors.push(`${name}:${e.message.slice(0,60)}`); return null; });
     const tasks = {
-      spot: callWorker('/api/v3/account'),
-      loans: callWorker('/sapi/v2/loan/flexible/ongoing/orders'),
-      autoPlan: callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' }).catch(e => ({ list: [], _err: e.message })),
-      funding: callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' }).catch(() => null),
-      prices: fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`),
-      klines: fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400').catch(() => null),
-      fg: fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value)).catch(() => null),
+      spot: safe('spot', callWorker('/api/v3/account')),
+      loans: safe('loans', callWorker('/sapi/v2/loan/flexible/ongoing/orders')),
+      autoPlan: safe('autoPlan', callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' })),
+      funding: safe('funding', callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' })),
+      prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
+      klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
+      fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
     };
     const keys = Object.keys(tasks);
     const results = await Promise.all(Object.values(tasks));
     const r = Object.fromEntries(keys.map((k, i) => [k, results[i]]));
+    if (errors.length === keys.length) throw new Error('All endpoints failed: ' + errors.join(' · '));
 
     // Build new holdings
     const H = {
@@ -1412,17 +1416,21 @@ async function fetchFromBinance() {
     };
 
     // Spot + Earn Flexible (LD prefix)
-    if (r.spot.balances) {
+    if (r.spot?.balances) {
       for (const b of r.spot.balances) {
         const total = parseFloat(b.free) + parseFloat(b.locked);
         if (total === 0) continue;
         let asset = b.asset.startsWith('LD') ? b.asset.substring(2) : b.asset;
         if (H[asset]) H[asset].qty += total;
       }
+    } else {
+      // Spot fetch failed → preserve previous qty so dashboard still renders
+      for (const k of Object.keys(H)) H[k].qty = state.holdings[k].qty;
     }
     // Flexible Loan collateral
-    let totalLoan = 0;
-    if (r.loans.rows) {
+    let totalLoan = state.loan; // fallback to previous loan
+    if (r.loans?.rows) {
+      totalLoan = 0;
       for (const ln of r.loans.rows) {
         totalLoan += parseFloat(ln.totalDebt);
         if (H[ln.collateralCoin]) H[ln.collateralCoin].qty += parseFloat(ln.collateralAmount);
@@ -1430,7 +1438,7 @@ async function fetchFromBinance() {
     }
 
     // Live prices (fallback chain for WBETH/BNSOL via ETH/SOL ratio)
-    const pmap = Object.fromEntries(r.prices.map(p => [p.symbol, parseFloat(p.price)]));
+    const pmap = r.prices ? Object.fromEntries(r.prices.map(p => [p.symbol, parseFloat(p.price)])) : {};
     H.BTC.price = pmap.BTCUSDT || H.BTC.price;
     H.WBETH.price = pmap.WBETHUSDT || (pmap.ETHUSDT ? pmap.ETHUSDT * 1.095 : 0) || H.WBETH.price;
     H.LINK.price = pmap.LINKUSDT || H.LINK.price;
@@ -1443,7 +1451,7 @@ async function fetchFromBinance() {
     state.loan = totalLoan;
 
     // DCA Pool from Auto-Invest (try multiple field names)
-    if (r.autoPlan.list && r.autoPlan.list.length) {
+    if (r.autoPlan?.list && r.autoPlan.list.length) {
       const plan = r.autoPlan.list[0];
       const value = parseFloat(plan.planValueUsdt || plan.planValueInUSD || plan.totalValueInUSDT || plan.planValue || 0);
       const targets = plan.planTargetTokens || plan.targetTokens || plan.subscriptionDetails || plan.allocationDetails || [];
@@ -1461,7 +1469,7 @@ async function fetchFromBinance() {
     if (r.fg !== null) state.market.fg_cg = r.fg;
 
     // Funding rate (BTCUSDT-PERP)
-    if (r.funding && r.funding.lastFundingRate !== undefined) {
+    if (r.funding?.lastFundingRate !== undefined) {
       state.market.funding_btc_pct = parseFloat(r.funding.lastFundingRate) * 100;
       state.market.funding_binance = parseFloat(r.funding.lastFundingRate) * 100; // mirror
     }
@@ -1499,8 +1507,9 @@ async function fetchFromBinance() {
     const netNow = gross - state.loan;
     const deltaNet = savedSnap ? netNow - savedSnap.net : 0;
     const deltaSign = deltaNet >= 0 ? '+' : '';
-    setApiStatus(`✅ Fetched ${dt}ms · gross $${gross.toFixed(2)} · loan $${state.loan.toFixed(2)} · NET $${netNow.toFixed(2)}${savedSnap ? ` (Δ ${deltaSign}$${deltaNet.toFixed(2)})` : ''} · RSI6 ${state.market.rsi6_1d.toFixed(1)}`, 'ok');
-    setApiBadge('🟢 Live', 'ok');
+    const errMsg = errors.length ? ` | ⚠ partial fail: ${errors.join(', ')}` : '';
+    setApiStatus(`${errors.length ? '⚠️' : '✅'} Fetched ${dt}ms · gross $${gross.toFixed(2)} · loan $${state.loan.toFixed(2)} · NET $${netNow.toFixed(2)}${savedSnap ? ` (Δ ${deltaSign}$${deltaNet.toFixed(2)})` : ''} · RSI6 ${state.market.rsi6_1d.toFixed(1)}${errMsg}`, errors.length ? 'warn' : 'ok');
+    setApiBadge(errors.length ? '🟡 Partial' : '🟢 Live', errors.length ? 'warn' : 'ok');
 
     buildEditor();
     render();
