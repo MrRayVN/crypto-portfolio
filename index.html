@@ -144,6 +144,32 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </header>
 
 <!-- ============ INPUT EDITOR ============ -->
+<details class="editor-card" id="manual-avg" style="border-color:var(--green)" open>
+<summary style="color:var(--green)">📋 Manual avg cost (từ Binance UI · source of truth) <span id="manual-avg-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Not set</span></summary>
+<div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0;line-height:1.6">
+  <b>Binance API không expose avg cost trực tiếp</b>. Cách chính xác duy nhất: mở Binance app → <b>Tài sản → Tiền mã hóa → tap coin → đọc "Giá vốn"</b> → nhập số vào đây. Lưu localStorage trên device này, auto-preserve qua các fetch live data.
+</div>
+<div class="editor-grid">
+  <div class="editor-group">
+    <h4>Avg cost (USDT) — đọc từ Binance app</h4>
+    <div class="input-row"><label style="min-width:60px">BTC</label><input type="number" step="any" id="m-avg-BTC" placeholder="74877.13"></div>
+    <div class="input-row"><label style="min-width:60px">WBETH</label><input type="number" step="any" id="m-avg-WBETH" placeholder="2418.04"></div>
+    <div class="input-row"><label style="min-width:60px">LINK</label><input type="number" step="any" id="m-avg-LINK" placeholder="10.59"></div>
+    <div class="input-row"><label style="min-width:60px">BNB</label><input type="number" step="any" id="m-avg-BNB" placeholder="692.31"></div>
+    <div class="input-row"><label style="min-width:60px">BNSOL</label><input type="number" step="any" id="m-avg-BNSOL" placeholder="(staked, optional)"></div>
+  </div>
+  <div class="editor-group">
+    <h4>Actions</h4>
+    <div style="display:flex;flex-direction:column;gap:0.5rem">
+      <button class="btn" onclick="saveManualAvg()" style="background:var(--green)">💾 Save & apply (auto-localStorage)</button>
+      <button class="btn btn-secondary" onclick="loadCurrentAvgIntoForm()">⬇ Load current state vào form</button>
+      <button class="btn btn-secondary" onclick="clearManualAvg()">🗑️ Clear manual avg</button>
+    </div>
+    <div id="manual-avg-status" style="margin-top:0.75rem;font-size:0.75rem;font-family:var(--mono);color:var(--muted);min-height:1.2em;line-height:1.5"></div>
+  </div>
+</div>
+</details>
+
 <details class="editor-card" id="api-config" style="border-color:var(--cyan)">
 <summary style="color:var(--cyan)">🔌 Binance API · auto-fetch live data <span id="api-status-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Not connected</span></summary>
 <div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0">
@@ -1196,6 +1222,76 @@ function exportJSON() {
   URL.revokeObjectURL(url);
 }
 
+// =================== MANUAL AVG COST (Binance UI source-of-truth) ===================
+function saveManualAvg() {
+  const updates = {};
+  for (const coin of ['BTC','WBETH','LINK','BNB','BNSOL']) {
+    const el = document.getElementById(`m-avg-${coin}`);
+    if (!el) continue;
+    const v = parseFloat(el.value);
+    if (!isNaN(v) && v > 0) updates[coin] = v;
+  }
+  const ts = Date.now();
+  localStorage.setItem('manualAvg', JSON.stringify({ ts, updates }));
+  for (const [coin, avg] of Object.entries(updates)) {
+    if (state.holdings[coin]) state.holdings[coin].avg = avg;
+  }
+  const setStr = Object.entries(updates).map(([k,v]) => `${k}=$${v}`).join(' · ');
+  document.getElementById('manual-avg-status').textContent = `✓ Saved at ${new Date(ts).toLocaleString('vi-VN')} · ${setStr}`;
+  document.getElementById('manual-avg-status').style.color = 'var(--green)';
+  setManualAvgBadge();
+  buildEditor();
+  render();
+}
+
+function loadManualAvgFromStorage() {
+  try {
+    const raw = localStorage.getItem('manualAvg');
+    if (!raw) return false;
+    const { ts, updates } = JSON.parse(raw);
+    for (const [coin, avg] of Object.entries(updates || {})) {
+      if (state.holdings[coin]) state.holdings[coin].avg = avg;
+      const el = document.getElementById(`m-avg-${coin}`);
+      if (el) el.value = avg;
+    }
+    setManualAvgBadge(ts);
+    return true;
+  } catch { return false; }
+}
+
+function setManualAvgBadge(ts) {
+  const el = document.getElementById('manual-avg-badge');
+  if (!el) return;
+  if (!ts) {
+    try { ts = JSON.parse(localStorage.getItem('manualAvg') || '{}').ts; } catch {}
+  }
+  if (!ts) { el.className = 'badge b-grey'; el.textContent = '⚪ Not set'; return; }
+  const days = Math.floor((Date.now() - ts) / 86400000);
+  if (days < 3) { el.className = 'badge b-bull'; el.textContent = `🟢 ${days}d ago`; }
+  else if (days < 14) { el.className = 'badge b-yellow'; el.textContent = `🟡 ${days}d ago`; }
+  else { el.className = 'badge b-orange'; el.textContent = `🟠 ${days}d ago — re-check`; }
+}
+
+function loadCurrentAvgIntoForm() {
+  for (const coin of ['BTC','WBETH','LINK','BNB','BNSOL']) {
+    const el = document.getElementById(`m-avg-${coin}`);
+    if (el && state.holdings[coin]?.avg) el.value = state.holdings[coin].avg;
+  }
+  document.getElementById('manual-avg-status').textContent = 'Loaded current state values into form. Edit nếu cần rồi Save.';
+  document.getElementById('manual-avg-status').style.color = 'var(--muted)';
+}
+
+function clearManualAvg() {
+  localStorage.removeItem('manualAvg');
+  for (const coin of ['BTC','WBETH','LINK','BNB','BNSOL']) {
+    const el = document.getElementById(`m-avg-${coin}`);
+    if (el) el.value = '';
+  }
+  document.getElementById('manual-avg-status').textContent = 'Đã xóa manual avg. State giữ nguyên giá trị hiện tại.';
+  document.getElementById('manual-avg-status').style.color = 'var(--muted)';
+  setManualAvgBadge();
+}
+
 // =================== BINANCE API INTEGRATION ===================
 const BINANCE_PUBLIC_API = 'https://api.binance.com';
 const FG_API = 'https://api.alternative.me/fng/';
@@ -1755,6 +1851,17 @@ async function fetchFromBinance() {
       }
     }
 
+    // Re-apply manual avg cost (Binance UI source of truth) — overrides any computed avg
+    try {
+      const raw = localStorage.getItem('manualAvg');
+      if (raw) {
+        const { updates } = JSON.parse(raw);
+        for (const [coin, avg] of Object.entries(updates || {})) {
+          if (state.holdings[coin]) state.holdings[coin].avg = avg;
+        }
+      }
+    } catch {}
+
     // Save snapshot for next-fetch diff
     saveSnapshot();
 
@@ -1778,8 +1885,10 @@ async function fetchFromBinance() {
 
 // Init
 buildEditor();
+loadManualAvgFromStorage(); // Apply saved manual avg before first render
 render();
 loadBinanceCreds();
+setManualAvgBadge();
 // Restore auto-refresh state from previous session
 if (localStorage.getItem('autoRefresh') === '1') {
   document.getElementById('auto-refresh-toggle').checked = true;
