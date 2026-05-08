@@ -53,6 +53,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:
 .h-pnl{font-size:0.7rem;font-family:var(--mono);font-weight:600;margin-top:0.15rem}
 .dca-card{background:linear-gradient(135deg,rgba(34,197,94,0.10),rgba(167,139,250,0.05));border:2px solid var(--green);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
 .dip-card{background:linear-gradient(135deg,rgba(34,197,94,0.10),rgba(59,130,246,0.06));border:2px solid var(--green);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
+.squeeze-card{background:linear-gradient(135deg,rgba(245,158,11,0.10),rgba(167,139,250,0.06));border:2px solid var(--yellow);border-radius:14px;padding:1.5rem;margin-bottom:1.375rem}
+.dca-header{display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.875rem}
 table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:0.78rem}
 th,td{padding:0.55rem 0.6rem;text-align:left;border-bottom:1px solid var(--border)}
 th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(--bg2);letter-spacing:0.04em}
@@ -116,6 +118,8 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
   <a href="#action" class="nav-tab">⚡ Actions</a>
   <a href="#dca" class="nav-tab">💎 DCA Pool</a>
   <a href="#dip" class="nav-tab">📉 Dip Ladder</a>
+  <a href="#squeeze" class="nav-tab">⚡ Squeeze</a>
+  <a href="#stoploss" class="nav-tab">🛑 Stop-Loss</a>
   <a href="#loan" class="nav-tab">💰 Loan</a>
   <a href="#alerts" class="nav-tab">⚠️ Alerts</a>
   <a href="#portfolio" class="nav-tab">📊 Portfolio</a>
@@ -467,6 +471,8 @@ function render() {
   html += renderActions(M);
   html += renderDCA(M);
   html += renderDipLadder(M);
+  html += renderSqueeze(M);
+  html += renderStopLoss(M);
   html += renderLoan(M);
   html += renderAlerts(M);
   html += renderPortfolio(M);
@@ -713,6 +719,103 @@ function renderDipLadder(M) {
   <div class="dip-card">
   <table><thead><tr><th>Tier</th><th>Trigger</th><th>DCA</th><th>Loan target</th><th>Liq dist</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="warning-bar">⚠️ Loan capacity hiện ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor. Nếu BTC dump T2/T3 → cần repay trước để có ammo dip-buy.</div>
+  </div>`;
+}
+
+function renderSqueeze(M) {
+  const margin = M.m1.net * 0.05;
+  const leverage = 3;
+  const notional = margin * leverage;
+  const slPct = -7, tpPct = 15;
+  const slLoss = notional * slPct / 100;
+  const tpGain = notional * tpPct / 100;
+  const slNetPct = slLoss / M.m1.net * 100;
+  const tpNetPct = tpGain / M.m1.net * 100;
+  const winRate = 0.5;
+  const evPerPlay = tpGain * winRate + slLoss * (1 - winRate);
+  const playsPerYear = 15;
+  const annualEV = evPerPlay * playsPerYear;
+  const conds = [
+    {name:'Funding rate', threshold:'≤ -0.005%',
+     current:`${state.market.funding_btc_pct.toFixed(4)}% / Binance ${state.market.funding_binance.toFixed(4)}%`,
+     met: state.market.funding_btc_pct <= -0.005 || state.market.funding_binance <= -0.005},
+    {name:'RSI 6 (1d)', threshold:'> 70',
+     current: state.market.rsi6_1d.toFixed(2),
+     met: state.market.rsi6_1d > 70},
+    {name:'Price holding', threshold:'BTC > $79K',
+     current: fmt$(state.holdings.BTC.price),
+     met: state.holdings.BTC.price > 79000},
+    {name:'BTC volume surge', threshold:'+50%',
+     current: fmtPct(state.market.vol_change),
+     met: state.market.vol_change > 50},
+  ];
+  const metCount = conds.filter(c=>c.met).length;
+  const allMet = metCount === 4;
+  let statusBadge, statusColor, overallText;
+  if (allMet) { statusBadge = '🔥 FIRE (4/4)'; statusColor = 'var(--green)'; overallText = '🔥 EXECUTE NOW'; }
+  else if (metCount >= 2) { statusBadge = `🟣 ARMED (${metCount}/4)`; statusColor = 'var(--purple)'; overallText = `⏳ wait remaining ${4-metCount} cond`; }
+  else { statusBadge = `⚪ STANDBY (${metCount}/4)`; statusColor = 'var(--muted)'; overallText = '⏳ setup not ready'; }
+  let condRows = '';
+  for (const c of conds) {
+    condRows += `<tr><td>${c.name}</td><td>${c.threshold}</td><td><b>${c.current}</b></td><td>${c.met ? '<span style="color:var(--green)">✅ MET</span>' : '<span style="color:var(--red)">✗ MISS</span>'}</td></tr>`;
+  }
+  return `<div id="squeeze" class="section-title">⚡ Funding Squeeze ARM Zone (Lever #2 · ${statusBadge})</div>
+  <div class="squeeze-card">
+  <div class="dca-header">
+    <div>
+      <div style="font-family:var(--display);font-size:1.3rem;font-weight:700">${fmt$(margin)} margin · ${leverage}x leverage · ${fmt$(notional)} notional</div>
+      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.3rem">BTC perpetual long · capture short-squeeze setup · max 5% NET allocation</div>
+    </div>
+    <span class="badge b-purp" style="font-size:0.85rem;padding:0.4rem 0.8rem;color:${statusColor};border-color:${statusColor}">${statusBadge}</span>
+  </div>
+  <div class="metrics">
+  <div class="metric"><div class="metric-label">Margin</div><div class="metric-value">${fmt$(margin)}</div><div class="metric-sub">5% of NET ${fmt$(M.m1.net,0)}</div></div>
+  <div class="metric"><div class="metric-label">Notional (${leverage}x)</div><div class="metric-value">${fmt$(notional)}</div><div class="metric-sub">BTCUSDT-PERP long</div></div>
+  <div class="metric"><div class="metric-label">SL (${slPct}%)</div><div class="metric-value" style="color:var(--red)">${fmt$signed(slLoss)}</div><div class="metric-sub">${fmtPct(slNetPct)} NET max loss</div></div>
+  <div class="metric"><div class="metric-label">TP (+${tpPct}%)</div><div class="metric-value" style="color:var(--green)">${fmt$signed(tpGain)}</div><div class="metric-sub">${fmtPct(tpNetPct)} NET gain</div></div>
+  <div class="metric"><div class="metric-label">EV per play</div><div class="metric-value" style="color:${evPerPlay>=0?'var(--green)':'var(--red)'}">${fmt$signed(evPerPlay)}</div><div class="metric-sub">at ${winRate*100}% win rate</div></div>
+  <div class="metric"><div class="metric-label">Annual EV</div><div class="metric-value" style="color:${annualEV>=0?'var(--green)':'var(--red)'}">~${fmt$signed(annualEV).replace(/\.\d+$/, '')}</div><div class="metric-sub">${playsPerYear} plays/yr</div></div>
+  </div>
+  <div style="font-family:var(--display);font-weight:700;margin:0.875rem 0 0.5rem">🎯 ARM Conditions Check (4-condition gate per SOP)</div>
+  <table>
+  <thead><tr><th>Condition</th><th>Threshold</th><th>Current</th><th>Status</th></tr></thead>
+  <tbody>${condRows}<tr style="background:rgba(245,158,11,0.05)"><td><b>Overall</b></td><td>4/4 to fire</td><td><b>${statusBadge}</b></td><td style="color:${statusColor}"><b>${overallText}</b></td></tr></tbody>
+  </table>
+  <div class="warning-bar">⚠️ <b>Squeeze rules</b>: KHÔNG > ${leverage}x leverage · KHÔNG > 5% NET margin · BẮT BUỘC SL/TP setup trước khi rời màn hình · Frequency 1-2 plays/tháng · Pause sau 3 lệnh thua liên tiếp · KHÔNG fire trong NFP/CPI window.</div>
+  </div>`;
+}
+
+function renderStopLoss(M) {
+  const btcNow = state.holdings.BTC.price;
+  const slBtc = state.bep_threshold;
+  const buf = (btcNow - slBtc) / slBtc * 100;
+  const fgNow = state.market.fg_cg;
+  const tiers = [
+    {trigger:'BTC < $77K hold > 24h', fg:'40-50', action:'Chuẩn bị Tier 1 dip-buy', purpose:'Prep accumulation', critical:false},
+    {trigger:'BTC < $75K', fg:'≤ 35', action:'Trigger T2 + loan +$400 (CHỈ KHI đã repay #1)', purpose:'Bullish dip-buy', critical:false},
+    {trigger:'BTC < $72K', fg:'≤ 30', action:'Trigger T3 — KHÔNG ADD LOAN (đã ở cap)', purpose:'Spot DCA only', critical:false},
+    {trigger:'BTC < $70K', fg:'≤ 25', action:'FREEZE add, DCA cap $35/d', purpose:'Risk management', critical:false},
+    {trigger:`BTC < ${fmt$(slBtc,0)}`, fg:'≤ 15', action:'STOP-LOSS: reset DCA $15 · sell BNSOL+USDC · pause loan', purpose:'Capital preservation', critical:true, level:1},
+    {trigger:'BTC < $60K', fg:'≤ 10', action:'EXTREME: forced loan reduction <20% net · trim profitable assets', purpose:'Survival', critical:true, level:2},
+    {trigger:'BTC < $55K', fg:'≤ 5', action:'FULL STOP: clear all loan · pause DCA · hold spot · wait stable bottom 30+ days', purpose:'End-cycle wait', critical:true, level:3},
+  ];
+  let rows = '';
+  for (const t of tiers) {
+    let bg = '';
+    if (t.critical && t.level === 1) bg = 'background:rgba(239,68,68,0.05)';
+    else if (t.critical && t.level === 2) bg = 'background:rgba(239,68,68,0.10)';
+    else if (t.critical && t.level === 3) bg = 'background:rgba(239,68,68,0.15);font-weight:700';
+    rows += `<tr style="${bg}"><td><b>${t.trigger}</b></td><td><b>${t.fg}</b></td><td>${t.critical ? '<b>'+t.action+'</b>' : t.action}</td><td>${t.critical ? '<b>'+t.purpose+'</b>' : t.purpose}</td></tr>`;
+  }
+  const status = btcNow < slBtc && fgNow <= 15 ? '🚨 STOP-LOSS FIRED' : (btcNow < slBtc ? '⚠️ BELOW SL price (F&G not breached)' : `✅ STANDBY · ${buf.toFixed(1)}% buffer`);
+  const statusColor = btcNow < slBtc ? 'var(--red)' : 'var(--green)';
+  return `<div id="stoploss" class="section-title">🛑 Stop-Loss Framework (Lever #3 · <span style="color:${statusColor}">${status}</span>)</div>
+  <div class="card">
+  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
+  Hard rules cap downside trong capitulation scenario. Goal: preserve >65% NET cho cycle sau. Currently <b style="color:${statusColor}">${btcNow >= slBtc ? 'INACTIVE' : 'ACTIVE'}</b> — BTC ${fmt$(btcNow)} ${btcNow >= slBtc ? `cao hơn ${fmt$(slBtc,0)} trigger ${buf.toFixed(1)}%` : `dưới ${fmt$(slBtc,0)} trigger`}.
+  </div>
+  <table><thead><tr><th>Trigger</th><th>F&G</th><th>Action</th><th>Mục đích</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="${M.m7.over_accept > 0 ? 'danger-bar' : 'safety-bar'}">${M.m7.over_accept > 0 ? '🚨' : '🛡️'} <b>Constraint</b>: Loan capacity ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor → ${M.m7.over_accept > 0 ? 'giảm dip-buy capacity. Phải dùng cash từ sell BNSOL+USDC trước khi add loan.' : 'còn buffer cho dip-buy. Nếu BTC dump → có thể add loan T2.'}</div>
   </div>`;
 }
 
