@@ -1,0 +1,5 @@
+﻿# Ignore everything by default in this repo
+*
+# Allow only the deployable files
+!index.html
+!.gitignore
