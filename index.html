@@ -144,6 +144,36 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </header>
 
 <!-- ============ INPUT EDITOR ============ -->
+<details class="editor-card" id="api-config" style="border-color:var(--cyan)">
+<summary style="color:var(--cyan)">🔌 Binance API · auto-fetch live data <span id="api-status-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Not connected</span></summary>
+<div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0">
+  Auto-fetch holdings, loan, Pool từ Binance qua Cloudflare Worker proxy. Credentials chỉ lưu localStorage trên device này (không upload). Read-only — không thực hiện được lệnh giao dịch.
+</div>
+<div class="editor-grid">
+  <div class="editor-group">
+    <h4>Worker config</h4>
+    <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem">
+      <label style="min-width:auto">Worker URL</label>
+      <input type="text" id="api-worker-url" placeholder="https://...workers.dev" style="width:100%">
+    </div>
+    <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem;margin-top:0.5rem">
+      <label style="min-width:auto">Proxy Token (X-Auth-Token)</label>
+      <input type="password" id="api-proxy-token" placeholder="••••••••" style="width:100%">
+    </div>
+  </div>
+  <div class="editor-group">
+    <h4>Actions</h4>
+    <div style="display:flex;flex-direction:column;gap:0.5rem">
+      <button class="btn" onclick="fetchFromBinance()" style="background:var(--cyan)">🔄 Fetch live data</button>
+      <button class="btn btn-secondary" onclick="saveBinanceCreds()">💾 Save creds (this device)</button>
+      <button class="btn btn-secondary" onclick="testWorkerConnection()">🩺 Test connection</button>
+      <button class="btn btn-secondary" onclick="clearBinanceCreds()">🗑️ Clear creds</button>
+    </div>
+    <div id="api-status" style="margin-top:0.75rem;font-size:0.75rem;font-family:var(--mono);color:var(--muted);min-height:1.2em;line-height:1.5;word-break:break-word"></div>
+  </div>
+</div>
+</details>
+
 <details class="editor-card" id="editor" open>
 <summary>✏️ Edit dữ liệu (form bên dưới · auto-recalc khi đổi)</summary>
 <div class="editor-grid" id="editor-grid"></div>
@@ -1161,8 +1191,196 @@ function exportJSON() {
   URL.revokeObjectURL(url);
 }
 
+// =================== BINANCE API INTEGRATION ===================
+const BINANCE_PUBLIC_API = 'https://api.binance.com';
+const FG_API = 'https://api.alternative.me/fng/';
+
+function getCreds() {
+  const url = (document.getElementById('api-worker-url')?.value || localStorage.getItem('workerUrl') || '').trim().replace(/\/$/, '');
+  const token = (document.getElementById('api-proxy-token')?.value || localStorage.getItem('proxyToken') || '').trim();
+  return { url, token };
+}
+
+async function callWorker(path, params = {}) {
+  const { url, token } = getCreds();
+  if (!url || !token) throw new Error('Thiếu Worker URL hoặc Proxy Token');
+  const qs = new URLSearchParams(params).toString();
+  const fullUrl = `${url}/binance${path}${qs ? '?' + qs : ''}`;
+  const resp = await fetch(fullUrl, { headers: { 'X-Auth-Token': token } });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`${resp.status}: ${text.slice(0,200)}`);
+  return JSON.parse(text);
+}
+
+async function fetchPublic(path) {
+  const resp = await fetch(`${BINANCE_PUBLIC_API}${path}`);
+  if (!resp.ok) throw new Error(`Public ${resp.status}`);
+  return resp.json();
+}
+
+function setApiStatus(msg, type = 'info') {
+  const el = document.getElementById('api-status'); if (!el) return;
+  const colors = { info: 'var(--muted)', ok: 'var(--green)', err: 'var(--red)', warn: 'var(--yellow)' };
+  el.style.color = colors[type] || colors.info; el.textContent = msg;
+}
+function setApiBadge(text, type) {
+  const el = document.getElementById('api-status-badge'); if (!el) return;
+  const cls = { ok: 'b-bull', err: 'b-grey', warn: 'b-yellow' };
+  el.className = `badge ${cls[type] || 'b-grey'}`; el.textContent = text;
+}
+
+async function testWorkerConnection() {
+  const { url } = getCreds();
+  if (!url) { setApiStatus('Worker URL trống', 'err'); return; }
+  try {
+    setApiStatus('Đang ping worker...', 'info');
+    const data = await fetch(url).then(r => r.json());
+    if (data.status === 'ok') {
+      const s = data.secretsConfigured || {};
+      const allOk = s.BINANCE_KEY && s.BINANCE_SECRET && s.PROXY_TOKEN;
+      setApiStatus(`Worker alive · secrets: KEY:${s.BINANCE_KEY?'✓':'✗'} SECRET:${s.BINANCE_SECRET?'✓':'✗'} TOKEN:${s.PROXY_TOKEN?'✓':'✗'}`, allOk ? 'ok' : 'warn');
+      setApiBadge(allOk ? '🟢 Connected' : '⚠ Misconfigured', allOk ? 'ok' : 'warn');
+    } else setApiStatus(`Unexpected: ${JSON.stringify(data).slice(0,200)}`, 'err');
+  } catch (e) { setApiStatus(`Connection failed: ${e.message}`, 'err'); setApiBadge('🔴 Error', 'err'); }
+}
+
+function saveBinanceCreds() {
+  const url = document.getElementById('api-worker-url').value.trim();
+  const token = document.getElementById('api-proxy-token').value.trim();
+  if (!url || !token) { setApiStatus('Cần điền cả URL và token', 'err'); return; }
+  localStorage.setItem('workerUrl', url);
+  localStorage.setItem('proxyToken', token);
+  setApiStatus('✓ Đã lưu localStorage trên device này', 'ok');
+}
+function clearBinanceCreds() {
+  localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken');
+  document.getElementById('api-worker-url').value = '';
+  document.getElementById('api-proxy-token').value = '';
+  setApiStatus('Đã xóa creds khỏi localStorage', 'info');
+  setApiBadge('⚪ Not connected', 'err');
+}
+function loadBinanceCreds() {
+  const url = localStorage.getItem('workerUrl');
+  const token = localStorage.getItem('proxyToken');
+  if (url) document.getElementById('api-worker-url').value = url;
+  if (token) document.getElementById('api-proxy-token').value = token;
+  if (url && token) { setApiStatus('Creds đã load (chưa test)', 'info'); setApiBadge('🟡 Saved', 'warn'); }
+}
+
+async function fetchFromBinance() {
+  setApiStatus('Đang fetch live data...', 'info');
+  const t0 = Date.now();
+  try {
+    const tasks = {
+      spot: callWorker('/api/v3/account'),
+      loans: callWorker('/sapi/v2/loan/flexible/ongoing/orders'),
+      autoPlan: callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' }).catch(e => ({ list: [], _err: e.message })),
+      prices: fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`),
+      klines: fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400').catch(() => null),
+      fg: fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value)).catch(() => null),
+    };
+    const keys = Object.keys(tasks);
+    const results = await Promise.all(Object.values(tasks));
+    const r = Object.fromEntries(keys.map((k, i) => [k, results[i]]));
+
+    // Build new holdings
+    const H = {
+      BTC:   { qty: 0, price: 0, avg: state.holdings.BTC.avg },
+      WBETH: { qty: 0, price: 0, avg: state.holdings.WBETH.avg },
+      LINK:  { qty: 0, price: 0, avg: state.holdings.LINK.avg },
+      BNB:   { qty: 0, price: 0, avg: state.holdings.BNB.avg },
+      BNSOL: { qty: 0, price: 0, avg: state.holdings.BNSOL.avg },
+      USDC:  { qty: 0, price: 1, avg: 1 },
+    };
+
+    // Spot + Earn Flexible (LD prefix)
+    if (r.spot.balances) {
+      for (const b of r.spot.balances) {
+        const total = parseFloat(b.free) + parseFloat(b.locked);
+        if (total === 0) continue;
+        let asset = b.asset.startsWith('LD') ? b.asset.substring(2) : b.asset;
+        if (H[asset]) H[asset].qty += total;
+      }
+    }
+    // Flexible Loan collateral
+    let totalLoan = 0;
+    if (r.loans.rows) {
+      for (const ln of r.loans.rows) {
+        totalLoan += parseFloat(ln.totalDebt);
+        if (H[ln.collateralCoin]) H[ln.collateralCoin].qty += parseFloat(ln.collateralAmount);
+      }
+    }
+
+    // Live prices (fallback chain for WBETH/BNSOL via ETH/SOL ratio)
+    const pmap = Object.fromEntries(r.prices.map(p => [p.symbol, parseFloat(p.price)]));
+    H.BTC.price = pmap.BTCUSDT || H.BTC.price;
+    H.WBETH.price = pmap.WBETHUSDT || (pmap.ETHUSDT ? pmap.ETHUSDT * 1.095 : 0) || H.WBETH.price;
+    H.LINK.price = pmap.LINKUSDT || H.LINK.price;
+    H.BNB.price = pmap.BNBUSDT || H.BNB.price;
+    H.BNSOL.price = pmap.BNSOLUSDT || (pmap.SOLUSDT ? pmap.SOLUSDT * 1.108 : 0) || H.BNSOL.price;
+    if (pmap.ETHUSDT) state.market.eth_price = pmap.ETHUSDT;
+    if (pmap.SOLUSDT) state.market.sol_price = pmap.SOLUSDT;
+
+    state.holdings = H;
+    state.loan = totalLoan;
+
+    // DCA Pool from Auto-Invest (try multiple field names)
+    if (r.autoPlan.list && r.autoPlan.list.length) {
+      const plan = r.autoPlan.list[0];
+      const value = parseFloat(plan.planValueUsdt || plan.planValueInUSD || plan.totalValueInUSDT || plan.planValue || 0);
+      const targets = plan.planTargetTokens || plan.targetTokens || plan.subscriptionDetails || plan.allocationDetails || [];
+      const allocs = {};
+      for (const t of targets) {
+        const sym = t.targetToken || t.targetAsset || t.asset;
+        const pct = parseFloat(t.percentage || t.allocPercentage || t.percentageList || 0);
+        if (sym && pct > 0) allocs[sym] = pct;
+      }
+      if (value > 0) state.pool.value = value;
+      if (Object.keys(allocs).length > 0) state.pool.plan_alloc = allocs;
+    }
+
+    // F&G
+    if (r.fg !== null) state.market.fg_cg = r.fg;
+
+    // Returns from BTC daily klines
+    if (r.klines && r.klines.length > 0) {
+      const closes = r.klines.map(k => parseFloat(k[4]));
+      const opens = r.klines.map(k => parseFloat(k[1]));
+      const closeNow = closes[closes.length - 1];
+      const ret = n => closes.length > n ? (closeNow / closes[closes.length - 1 - n] - 1) * 100 : 0;
+      state.market.ret_7d = ret(7);
+      state.market.ret_30d = ret(30);
+      state.market.ret_90d = ret(90);
+      state.market.ret_180d = ret(180);
+      state.market.ret_1y = ret(364);
+      // YTD
+      const yearStart = new Date(); yearStart.setMonth(0, 1); yearStart.setHours(0,0,0,0);
+      const ytdMs = yearStart.getTime();
+      const ytdIdx = r.klines.findIndex(k => k[0] >= ytdMs);
+      if (ytdIdx > -1) state.market.ret_ytd = (closeNow / parseFloat(r.klines[ytdIdx][4]) - 1) * 100;
+      // 24h change
+      if (closes.length > 1) {
+        state.market.btc_24h = (closeNow / closes[closes.length - 2] - 1) * 100;
+      }
+    }
+
+    const dt = Date.now() - t0;
+    const gross = Object.values(state.holdings).reduce((s, h) => s + h.qty * h.price, 0);
+    setApiStatus(`✅ Fetched ${dt}ms · gross $${gross.toFixed(2)} · loan $${state.loan.toFixed(2)} · NET $${(gross - state.loan).toFixed(2)}`, 'ok');
+    setApiBadge('🟢 Live', 'ok');
+
+    buildEditor();
+    render();
+  } catch (e) {
+    console.error(e);
+    setApiStatus(`❌ ${e.message}`, 'err');
+    setApiBadge('🔴 Error', 'err');
+  }
+}
+
 // Init
 buildEditor();
 render();
+loadBinanceCreds();
 </script>
 </body></html>
