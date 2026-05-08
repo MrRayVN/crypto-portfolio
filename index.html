@@ -1309,33 +1309,100 @@ function computeRSI(closes, period = 6) {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-// Compute avg cost from trade history
+// Compute avg cost from trade history (weighted-avg with sells, paginated, multi-pair)
 async function fetchAvgCosts() {
-  setApiStatus('Đang tính avg cost từ /api/v3/myTrades...', 'info');
-  const pairs = { BTC: 'BTCUSDT', WBETH: 'WBETHUSDT', LINK: 'LINKUSDT', BNB: 'BNBUSDT', BNSOL: 'BNSOLUSDT' };
-  const updates = {}, errors = [];
-  for (const [asset, symbol] of Object.entries(pairs)) {
-    try {
-      const trades = await callWorker('/api/v3/myTrades', { symbol, limit: 1000 });
-      if (!Array.isArray(trades) || trades.length === 0) { errors.push(`${asset}:no-trades`); continue; }
-      let totalQty = 0, totalCost = 0;
-      for (const t of trades) {
-        if (t.isBuyer) {
-          totalQty += parseFloat(t.qty);
-          totalCost += parseFloat(t.quoteQty);
+  setApiStatus('Đang tính avg cost (paginated, multi-pair, weighted-avg)...', 'info');
+  // Each asset can have multiple trading pairs — combine all
+  const pairsByAsset = {
+    BTC:   ['BTCUSDT', 'BTCFDUSD', 'BTCUSDC'],
+    WBETH: ['WBETHUSDT', 'WBETHETH'],
+    LINK:  ['LINKUSDT', 'LINKBTC', 'LINKETH', 'LINKFDUSD'],
+    BNB:   ['BNBUSDT', 'BNBFDUSD', 'BNBUSDC', 'BNBBTC'],
+    BNSOL: ['BNSOLUSDT', 'BNSOLSOL'],
+  };
+
+  const updates = {}, errors = [], stats = {};
+
+  for (const [asset, pairs] of Object.entries(pairsByAsset)) {
+    const allTrades = [];
+    const pairResults = {};
+
+    for (const symbol of pairs) {
+      try {
+        // Paginate via fromId (oldest → newest), up to 5 batches = 5000 trades per pair
+        let fromId = 0;
+        let pages = 0;
+        while (pages < 5) {
+          const params = { symbol, limit: 1000 };
+          if (fromId > 0) params.fromId = fromId;
+          let batch;
+          try {
+            batch = await callWorker('/api/v3/myTrades', params);
+          } catch (e) {
+            // Pair doesn't exist or no permission — skip silently
+            if (e.message.includes('400') || e.message.includes('-1121')) break;
+            throw e;
+          }
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          // Tag pair so we can convert non-USDT pairs later
+          for (const t of batch) t._pair = symbol;
+          allTrades.push(...batch);
+          pairResults[symbol] = (pairResults[symbol] || 0) + batch.length;
+          if (batch.length < 1000) break;
+          fromId = batch[batch.length - 1].id + 1;
+          pages++;
         }
+      } catch (e) {
+        // Skip pair on error, continue with others
       }
-      if (totalQty === 0) { errors.push(`${asset}:no-buys`); continue; }
-      updates[asset] = totalCost / totalQty;
-    } catch (e) {
-      errors.push(`${asset}:err`);
     }
+
+    if (allTrades.length === 0) { errors.push(`${asset}:no-trades`); continue; }
+
+    // Sort by time ASC
+    allTrades.sort((a, b) => a.time - b.time);
+
+    // Weighted-avg with sells, all in USDT terms
+    // For non-USDT pairs (XYZBTC, XYZETH, XYZSOL): need to convert quoteQty to USDT
+    // For now we only count USDT/FDUSD/USDC pairs (1:1 with USDT). Skip BTC/ETH/SOL pairs for cost calc.
+    let qty = 0, cost = 0, buys = 0, sells = 0, skipped = 0;
+    for (const t of allTrades) {
+      const q = parseFloat(t.qty);
+      const c = parseFloat(t.quoteQty);
+      // Only count stable-quote pairs (price comparable to USDT)
+      const isStableQuote = /USDT$|FDUSD$|USDC$|TUSD$|BUSD$|DAI$/.test(t._pair);
+      if (!isStableQuote) { skipped++; continue; }
+      if (t.isBuyer) {
+        qty += q;
+        cost += c;
+        buys++;
+      } else {
+        // Sell: reduce remaining cost by proportional avg
+        if (qty > 0) {
+          const avg = cost / qty;
+          const sellQty = Math.min(q, qty);
+          cost -= avg * sellQty;
+          qty -= sellQty;
+        }
+        sells++;
+      }
+    }
+
+    if (qty <= 0.00000001) { errors.push(`${asset}:fully-sold`); continue; }
+    updates[asset] = cost / qty;
+    stats[asset] = { totalTrades: allTrades.length, buys, sells, skipped_non_stable: skipped, remainingQty: qty.toFixed(8), pairs: pairResults };
   }
+
+  // Apply
   for (const [asset, avg] of Object.entries(updates)) {
     if (state.holdings[asset]) state.holdings[asset].avg = avg;
   }
-  const okMsg = Object.entries(updates).map(([a,v]) => `${a}=$${v.toFixed(a==='LINK'||a==='BNSOL'?2:2)}`).join(' · ');
-  setApiStatus(`✅ avg: ${okMsg}${errors.length ? ' | ⚠ '+errors.join(',') : ''}`, errors.length === 5 ? 'err' : 'ok');
+
+  const okMsg = Object.entries(updates).map(([a,v]) => `${a}=$${v.toFixed(2)}(B${stats[a].buys}/S${stats[a].sells})`).join(' · ');
+  const errMsg = errors.length ? ` | ⚠ ${errors.join(',')}` : '';
+  setApiStatus(`✅ ${okMsg}${errMsg}`, errors.length === 5 ? 'err' : 'ok');
+  console.log('AVG COST DETAIL:', stats);
+
   buildEditor();
   render();
 }
