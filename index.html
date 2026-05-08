@@ -1309,8 +1309,186 @@ function computeRSI(closes, period = 6) {
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
-// Compute avg cost from trade history (weighted-avg with sells, paginated, multi-pair)
+// Compute avg cost from 4 sources: spot + Convert + Auto-Invest + ETH/SOL staking wraps
 async function fetchAvgCosts() {
+  setApiStatus('1/5 Loading historical ETH/SOL prices...', 'info');
+  const t0 = Date.now();
+
+  // Reference data — historical prices for staking events
+  let ethKlines = [], solKlines = [];
+  try {
+    [ethKlines, solKlines] = await Promise.all([
+      fetchPublic('/api/v3/klines?symbol=ETHUSDT&interval=1d&limit=1000'),
+      fetchPublic('/api/v3/klines?symbol=SOLUSDT&interval=1d&limit=1000'),
+    ]);
+  } catch (e) {}
+
+  function priceAt(klines, ts) {
+    if (!klines || klines.length === 0) return 0;
+    if (ts < klines[0][0]) return parseFloat(klines[0][4]);
+    if (ts > klines[klines.length-1][0]) return parseFloat(klines[klines.length-1][4]);
+    // binary search
+    let lo = 0, hi = klines.length - 1;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (klines[mid][0] <= ts) lo = mid; else hi = mid;
+    }
+    return parseFloat(klines[lo][4]);
+  }
+
+  const events = { BTC: [], WBETH: [], LINK: [], BNB: [], BNSOL: [] };
+  const trackedAssets = new Set(['BTC', 'WBETH', 'LINK', 'BNB', 'BNSOL']);
+  const stableAssets = new Set(['USDT', 'USDC', 'FDUSD', 'TUSD', 'BUSD']);
+  function addEvent(asset, ev) { if (events[asset]) events[asset].push(ev); }
+
+  // === 1. SPOT TRADES (multi-pair, paginated, stable-quote only) ===
+  setApiStatus('2/5 Fetching spot trades...', 'info');
+  const pairsByAsset = {
+    BTC:   ['BTCUSDT', 'BTCFDUSD', 'BTCUSDC'],
+    WBETH: ['WBETHUSDT'],
+    LINK:  ['LINKUSDT', 'LINKFDUSD'],
+    BNB:   ['BNBUSDT', 'BNBFDUSD', 'BNBUSDC'],
+    BNSOL: ['BNSOLUSDT'],
+  };
+  for (const [asset, pairs] of Object.entries(pairsByAsset)) {
+    for (const symbol of pairs) {
+      let fromId = 0, pages = 0;
+      while (pages < 5) {
+        const params = { symbol, limit: 1000 };
+        if (fromId > 0) params.fromId = fromId;
+        try {
+          const batch = await callWorker('/api/v3/myTrades', params);
+          if (!Array.isArray(batch) || batch.length === 0) break;
+          for (const t of batch) {
+            addEvent(asset, { time: t.time, qty: parseFloat(t.qty), cost: parseFloat(t.quoteQty), isBuy: t.isBuyer, source: `spot:${symbol}` });
+          }
+          if (batch.length < 1000) break;
+          fromId = batch[batch.length - 1].id + 1;
+          pages++;
+        } catch (e) { break; }
+      }
+    }
+  }
+
+  // === 2. CONVERT TRADEFLOW (24-month rolling, 30-day windows) ===
+  setApiStatus('3/5 Fetching Convert history...', 'info');
+  const now = Date.now(), day = 86400000;
+  for (let i = 0; i < 24; i++) {
+    const endTime = now - i * 30 * day;
+    const startTime = endTime - 30 * day;
+    try {
+      const r = await callWorker('/sapi/v1/convert/tradeFlow', { startTime, endTime, limit: 1000 });
+      const list = r.list || r.rows || [];
+      let foundAny = false;
+      for (const c of list) {
+        foundAny = true;
+        const fromA = c.fromAsset, toA = c.toAsset;
+        const fromQ = parseFloat(c.fromAmount), toQ = parseFloat(c.toAmount);
+        const time = c.createTime;
+        if (stableAssets.has(fromA) && trackedAssets.has(toA)) {
+          addEvent(toA, { time, qty: toQ, cost: fromQ, isBuy: true, source: 'convert' });
+        } else if (trackedAssets.has(fromA) && stableAssets.has(toA)) {
+          addEvent(fromA, { time, qty: fromQ, cost: toQ, isBuy: false, source: 'convert' });
+        }
+      }
+      if (!foundAny && i > 2) break;
+    } catch (e) { break; }
+  }
+
+  // === 3. AUTO-INVEST HISTORY ===
+  setApiStatus('4/5 Fetching Auto-Invest history...', 'info');
+  for (let page = 1; page < 50; page++) {
+    try {
+      const r = await callWorker('/sapi/v1/lending/auto-invest/history/list', { current: page, size: 100 });
+      const list = r.list || r.rows || [];
+      if (list.length === 0) break;
+      for (const a of list) {
+        const target = a.targetAsset;
+        if (!trackedAssets.has(target)) continue;
+        const qty = parseFloat(a.targetAssetAmount || a.targetAmount || 0);
+        const cost = parseFloat(a.subscriptionAmount || a.fiatAmount || 0);
+        const time = a.transactionDateTime || a.executionTime || a.time;
+        if (qty > 0 && cost > 0 && time) addEvent(target, { time, qty, cost, isBuy: true, source: 'auto-invest' });
+      }
+      if (list.length < 100) break;
+    } catch (e) { break; }
+  }
+
+  // === 4. STAKING WRAPS (ETH → WBETH, SOL → BNSOL) ===
+  setApiStatus('5/5 Fetching staking wraps...', 'info');
+  for (let page = 1; page < 10; page++) {
+    try {
+      const r = await callWorker('/sapi/v1/eth-staking/eth/history/stakingHistory', { current: page, size: 100 });
+      const list = r.rows || r.list || [];
+      if (list.length === 0) break;
+      for (const s of list) {
+        const ethAmount = parseFloat(s.amount || s.ethAmount || 0);
+        const wbethAmount = parseFloat(s.wbethAmount || (ethAmount * 0.913));
+        const time = s.time || s.transactionDateTime || s.timestamp;
+        if (wbethAmount > 0 && time) {
+          const ethPrice = priceAt(ethKlines, time);
+          if (ethPrice > 0) addEvent('WBETH', { time, qty: wbethAmount, cost: ethAmount * ethPrice, isBuy: true, source: 'eth-stake' });
+        }
+      }
+      if (list.length < 100) break;
+    } catch (e) { break; }
+  }
+  for (let page = 1; page < 10; page++) {
+    try {
+      const r = await callWorker('/sapi/v1/sol-staking/sol/history/stakingHistory', { current: page, size: 100 });
+      const list = r.rows || r.list || [];
+      if (list.length === 0) break;
+      for (const s of list) {
+        const solAmount = parseFloat(s.amount || s.solAmount || 0);
+        const bnsolAmount = parseFloat(s.bnsolAmount || (solAmount * 0.902));
+        const time = s.time || s.transactionDateTime || s.timestamp;
+        if (bnsolAmount > 0 && time) {
+          const solPrice = priceAt(solKlines, time);
+          if (solPrice > 0) addEvent('BNSOL', { time, qty: bnsolAmount, cost: solAmount * solPrice, isBuy: true, source: 'sol-stake' });
+        }
+      }
+      if (list.length < 100) break;
+    } catch (e) { break; }
+  }
+
+  // === COMPUTE WEIGHTED AVG WITH SELLS ===
+  const updates = {}, stats = {};
+  for (const [asset, evs] of Object.entries(events)) {
+    if (evs.length === 0) continue;
+    evs.sort((a, b) => a.time - b.time);
+    let qty = 0, cost = 0;
+    const bySource = {};
+    for (const e of evs) {
+      bySource[e.source] = (bySource[e.source] || 0) + 1;
+      if (e.isBuy) { qty += e.qty; cost += e.cost; }
+      else if (qty > 0) {
+        const avg = cost / qty;
+        const sellQty = Math.min(e.qty, qty);
+        cost -= avg * sellQty;
+        qty -= sellQty;
+      }
+    }
+    if (qty > 0.00000001) {
+      updates[asset] = cost / qty;
+      stats[asset] = { events: evs.length, remaining: qty.toFixed(8), bySource };
+    }
+  }
+
+  for (const [asset, avg] of Object.entries(updates)) {
+    if (state.holdings[asset]) state.holdings[asset].avg = avg;
+  }
+
+  const dt = ((Date.now() - t0) / 1000).toFixed(1);
+  const okMsg = Object.entries(updates).map(([a,v]) => `${a}=$${v.toFixed(2)}`).join(' · ');
+  const errMsg = Object.keys(events).filter(k => events[k].length === 0).map(k => `${k}:no-events`).join(',');
+  setApiStatus(`✅ ${dt}s · ${okMsg}${errMsg ? ' | ⚠ '+errMsg : ''}`, 'ok');
+  console.log('AVG COST V2 (4 sources):', stats);
+
+  buildEditor();
+  render();
+}
+
+async function fetchAvgCostsV1_DEPRECATED() {
   setApiStatus('Đang tính avg cost (paginated, multi-pair, weighted-avg)...', 'info');
   // Each asset can have multiple trading pairs — combine all
   const pairsByAsset = {
