@@ -1396,6 +1396,10 @@ async function fetchAvgCosts() {
   }
 
   // === 3. AUTO-INVEST HISTORY ===
+  // CORRECT field mapping based on real response:
+  //   sourceAssetAmount = per-target USDT cost (NOT subscriptionAmount)
+  //   transactionStatus must be SUCCESS (filter out failed executions)
+  //   sourceAsset must be stable (USDT/USDC/FDUSD); skip non-stable
   setApiStatus('4/5 Fetching Auto-Invest history...', 'info');
   for (let page = 1; page < 50; page++) {
     try {
@@ -1403,12 +1407,19 @@ async function fetchAvgCosts() {
       const list = r.list || r.rows || [];
       if (list.length === 0) break;
       for (const a of list) {
+        // Filter: only successful executions
+        if (a.transactionStatus !== 'SUCCESS') continue;
         const target = a.targetAsset;
         if (!trackedAssets.has(target)) continue;
-        const qty = parseFloat(a.targetAssetAmount || a.targetAmount || 0);
-        const cost = parseFloat(a.subscriptionAmount || a.fiatAmount || 0);
-        const time = a.transactionDateTime || a.executionTime || a.time;
-        if (qty > 0 && cost > 0 && time) addEvent(target, { time, qty, cost, isBuy: true, source: 'auto-invest' });
+        const qty = parseFloat(a.targetAssetAmount || 0);
+        const sourceAsset = a.sourceAsset;
+        const sourceAmount = parseFloat(a.sourceAssetAmount || 0);
+        const time = a.transactionDateTime || 0;
+        // Only count when source is stable (USDT/USDC/FDUSD)
+        if (!stableAssets.has(sourceAsset)) continue;
+        if (qty > 0 && sourceAmount > 0 && time) {
+          addEvent(target, { time, qty, cost: sourceAmount, isBuy: true, source: 'auto-invest' });
+        }
       }
       if (list.length < 100) break;
     } catch (e) { break; }
