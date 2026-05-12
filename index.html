@@ -371,7 +371,7 @@ function g9(holdings, poolValue, poolAlloc, net) {
   return {total_wealth, exposure: out, cap: G9_CAP, grace: G9_GRACE};
 }
 
-function m9_signals(market, m1obj, planChanges) {
+function m9_signals(market, m1obj, planChanges, coinalyze) {
   const bull = [], bear = [];
   const fg = market.fg_cg;
   if (fg < 40) bull.push([`F&G CG ${fg} (Fear) — contrarian buy zone`, 2]);
@@ -393,6 +393,23 @@ function m9_signals(market, m1obj, planChanges) {
   if (market.ath_dd < -30) bear.push([`ATH drawdown ${market.ath_dd.toFixed(2)}%`, -2]);
   if (planChanges?.some(c => c.includes('REBALANCED') || c.includes('EXECUTED'))) {
     bull.push(['Pool plan rebalance executed', 2]);
+  }
+  // === COINALYZE-DRIVEN SIGNALS (cross-exchange aggregated) ===
+  if (coinalyze) {
+    if (coinalyze.funding_current !== undefined) {
+      if (coinalyze.funding_current < -0.005) bull.push([`Agg funding ${coinalyze.funding_current.toFixed(4)}% — shorts paying (squeeze setup)`, 2]);
+      else if (coinalyze.funding_current > 0.015) bear.push([`Agg funding ${coinalyze.funding_current.toFixed(4)}% — longs over-leveraged`, -2]);
+    }
+    if (coinalyze.ls_current !== undefined) {
+      if (coinalyze.ls_current < 0.7) bull.push([`Agg L/S ${coinalyze.ls_current.toFixed(2)} — shorts crowded (contrarian long)`, 2]);
+      else if (coinalyze.ls_current > 1.8) bear.push([`Agg L/S ${coinalyze.ls_current.toFixed(2)} — longs crowded (contrarian short risk)`, -2]);
+      else if (coinalyze.ls_current < 0.9) bull.push([`Agg L/S ${coinalyze.ls_current.toFixed(2)} — slight short bias`, 1]);
+    }
+    // Funding divergence Binance vs Aggregated → arbitrage signal
+    if (coinalyze.funding_current !== undefined && market.funding_btc_pct !== undefined) {
+      const divergence = Math.abs(coinalyze.funding_current - market.funding_btc_pct);
+      if (divergence > 0.003) bull.push([`Funding divergence ${divergence.toFixed(4)}pp Binance vs agg — arb signal`, 1]);
+    }
   }
   const bull_total = bull.reduce((s,[,p])=>s+p, 0);
   const bear_total = bear.reduce((s,[,p])=>s+p, 0);
@@ -501,7 +518,7 @@ function buildMaster(s) {
   M.g9 = g9(h, s.pool.value, s.pool.plan_alloc, M.m1.net);
   M.stress = m8_stress(M.m1.gross, s.loan, h);
   M.plan_changes = m12b_diff(s.prev, s.pool.plan_alloc, s.loan, s.market.fg_cg);
-  M.m9 = m9_signals(s.market, M.m1, M.plan_changes);
+  M.m9 = m9_signals(s.market, M.m1, M.plan_changes, state.coinalyze);
   M.m3 = m3_tp(h, s.market.fg_cg, M.m9.bull_total);
   M.funding = m16_funding(h, s.funding_yearly, s.target_pct);
   M.target = {
@@ -661,11 +678,12 @@ function renderExpertPlaybook(M) {
   const gap = targetEoy - currentNet;
   const fg = state.market.fg_cg;
   const btcPrice = state.holdings.BTC.price;
+  const ca = state.coinalyze;
   const actions = [];
 
-  // Action ranking framework: each action has trigger + estimated $ impact + probability + risk
-  const addAction = (priority, status, title, trigger, action, est_impact, probability, risk, why) => {
-    actions.push({ priority, status, title, trigger, action, est_impact, probability, risk, expected_value: est_impact * probability, why });
+  // Action with Decision DNA — list of signals that contributed
+  const addAction = (priority, status, title, trigger, action, est_impact, probability, risk, why, dna = []) => {
+    actions.push({ priority, status, title, trigger, action, est_impact, probability, risk, expected_value: est_impact * probability, why, dna });
   };
 
   // === Action 1: Pool rebalance toward underwater coins ===
@@ -695,20 +713,59 @@ function renderExpertPlaybook(M) {
     }
   }
 
-  // === Action 4: Funding squeeze if conditions met ===
+  // === Action 4: Funding squeeze — use Coinalyze AGG funding if available (more accurate than Binance only) ===
   const fundingThr = state.market.funding_threshold_adaptive ?? -0.005;
+  const fundingUsed = ca?.funding_current ?? state.market.funding_btc_pct;
+  const fundingSrc = ca?.funding_current !== undefined ? 'Coinalyze agg' : 'Binance only';
   const rsi = state.market.rsi6_1d;
   const volRatio = state.market.btc_vol_ratio ?? 1;
   const priceAboveSMA = btcPrice > (state.market.btc_sma20 || 79000);
-  const condFunding = state.market.funding_btc_pct <= fundingThr;
+  const condFunding = fundingUsed <= fundingThr;
   const condRSI = rsi > 70;
   const condVol = volRatio > 1.5;
-  const conditionsMet = [condFunding, condRSI, priceAboveSMA, condVol].filter(Boolean).length;
-  if (conditionsMet >= 3) {
+  const condLS = ca?.ls_current !== undefined ? ca.ls_current < 1.0 : null;
+  const totalConds = condLS === null ? 4 : 5;
+  const conditionsMet = [condFunding, condRSI, priceAboveSMA, condVol, condLS].filter(c => c === true).length;
+  const squeezeDNA = [
+    `Funding ${fundingUsed.toFixed(4)}% [${fundingSrc}] ${condFunding ? '✓' : '✗'} ≤ ${fundingThr.toFixed(4)}%`,
+    `RSI ${rsi.toFixed(1)} ${condRSI ? '✓' : '✗'} > 70`,
+    `Price ${priceAboveSMA ? '✓' : '✗'} ${fmt$(btcPrice)} vs SMA20 ${fmt$(state.market.btc_sma20 || 0, 0)}`,
+    `Vol ${volRatio.toFixed(2)}x ${condVol ? '✓' : '✗'} > 1.5x`,
+    ...(condLS !== null ? [`Agg L/S ${ca.ls_current.toFixed(2)} ${condLS ? '✓' : '✗'} < 1.0`] : []),
+  ];
+  if (conditionsMet >= Math.ceil(totalConds * 0.75)) {
     const margin = currentNet * 0.05;
-    addAction(2, '🟢 FIRE', `Funding Squeeze (${conditionsMet}/4 met)`, `Funding ${state.market.funding_btc_pct.toFixed(4)}% · RSI ${rsi.toFixed(1)} · Vol ${volRatio.toFixed(2)}x · BTC ${priceAboveSMA ? 'above' : 'below'} SMA20`, `Margin ${fmt$(margin)} × 3x = ${fmt$(margin*3)} notional BTCUSDT-PERP long. SL -7% · TP +15% · max 48h hold`, margin * 3 * 0.15 * 0.5, 0.5, 'capped at -7% SL', 'Adaptive conditions confirm short-squeeze setup. EV +$15/play, annual +$232.');
+    addAction(2, '🟢 FIRE', `Funding Squeeze (${conditionsMet}/${totalConds} met)`, `${conditionsMet}/${totalConds} conditions including ${fundingSrc} agg funding`, `Margin ${fmt$(margin)} × 3x = ${fmt$(margin*3)} notional BTCUSDT-PERP long. SL -7% · TP +15% · max 48h hold`, margin * 3 * 0.15 * 0.5, 0.55, 'capped at -7% SL', `Cross-exchange aggregated funding gives signal HIGHER quality than Binance-only.`, squeezeDNA);
   } else if (conditionsMet >= 2) {
-    addAction(4, '🟣 ARMED', `Squeeze armed (${conditionsMet}/4) — wait`, `Need ${4-conditionsMet} more conditions`, `Monitor every 4h. Fire khi ARM = 4/4.`, 0, 0, 'none (no action)', 'Setup chưa chín — chờ confirmation.');
+    addAction(4, '🟣 ARMED', `Squeeze armed (${conditionsMet}/${totalConds}) — wait`, `Need ${totalConds-conditionsMet} more`, `Monitor every 4h. Fire khi ${Math.ceil(totalConds * 0.75)}+/${totalConds}.`, 0, 0, 'none (no action)', 'Setup chưa chín.', squeezeDNA);
+  }
+
+  // === Action L/S contrarian: NEW — when L/S extreme, opportunity for contrarian position ===
+  if (ca?.ls_current !== undefined) {
+    const dnaLS = [`Agg L/S ${ca.ls_current.toFixed(3)}`, `7d avg ${(ca.ls_avg_7d ?? 0).toFixed(3)}`, `F&G ${fg}`];
+    if (ca.ls_current < 0.65 && fg < 50) {
+      addAction(2, '🟢 CONTRARIAN LONG', `L/S ${ca.ls_current.toFixed(2)} extreme short-heavy`, `Agg L/S < 0.65 + F&G ${fg} ≤ 50`, `Tăng DCA $25-30/day × 3-5 ngày tập trung underwater coin. Cân nhắc spot buy thêm $50-100.`, currentNet * 0.08, 0.55, 'medium — contrarian timing', 'Khi shorts crowded toàn thị trường, short-squeeze probability tăng cao. Cross-exchange L/S < 0.65 là extreme.', dnaLS);
+    } else if (ca.ls_current > 2.0 && fg > 60) {
+      addAction(2, '🟠 CAUTION LONGS', `L/S ${ca.ls_current.toFixed(2)} extreme long-heavy`, `Agg L/S > 2.0 + F&G ${fg} ≥ 60`, `Cân nhắc partial TP underwater coin nếu chạm BEP. Tighten stops. KHÔNG add leverage.`, currentNet * 0.05, 0.5, 'opportunity cost if bull continues', 'Longs over-crowded → flush risk. Cross-exchange L/S > 2.0 historically precedes corrections.', dnaLS);
+    }
+  }
+
+  // === Action: Funding divergence arbitrage signal ===
+  if (ca?.funding_current !== undefined && state.market.funding_btc_pct !== undefined) {
+    const div = ca.funding_current - state.market.funding_btc_pct;
+    if (Math.abs(div) > 0.004) {
+      const dnaDiv = [`Binance ${state.market.funding_btc_pct.toFixed(4)}%`, `Agg ${ca.funding_current.toFixed(4)}%`, `Diff ${(div >= 0 ? '+' : '') + div.toFixed(4)}pp`];
+      addAction(4, '💡 ARBITRAGE HINT', `Funding divergence ${Math.abs(div).toFixed(4)}pp`, `|Binance − agg| > 0.004pp`, `Binance funding ${div < 0 ? 'CHEAPER' : 'PRICIER'} hơn aggregate. Advanced: ${div < 0 ? 'short on Binance, long on other exchange' : 'long Binance, short other'}. Skip nếu không có account multi-exchange.`, currentNet * 0.02, 0.3, 'low (cap by smallest exchange)', 'Funding rates rarely converge → arb traders close gap.', dnaDiv);
+    }
+  }
+
+  // === Action: OI buildup warning ===
+  if (ca?.oi_current !== undefined) {
+    const oiBn = ca.oi_current / 1e9;
+    const dnaOI = [`Agg OI ${oiBn.toFixed(2)}B USD`];
+    if (oiBn > 35) {
+      addAction(3, '⚠ VOLATILITY WARN', `OI ${oiBn.toFixed(1)}B — leverage at extreme`, `Total OI > $35B`, `Trim leverage 1 notch (giảm Squeeze size, không tăng loan). Sự kiện vol cao sắp đến.`, currentNet * 0.03, 0.4, 'opportunity cost', 'OI extreme historically precedes flush events. Reduce exposure to volatility.', dnaOI);
+    }
   }
 
   // === Action 5: Dip-buy ladder if BTC drops + F&G low ===
@@ -744,6 +801,8 @@ function renderExpertPlaybook(M) {
   for (const a of actions) {
     const ev = a.expected_value;
     const evC = ev > 50 ? 'var(--green)' : ev > 10 ? 'var(--yellow)' : 'var(--muted)';
+    const dnaHtml = (a.dna && a.dna.length > 0) ?
+      `<div style="background:rgba(0,0,0,0.25);border:1px dashed var(--border2);border-radius:6px;padding:0.5rem 0.7rem;margin:0.5rem 0;font-size:0.72rem;font-family:var(--mono);color:var(--cyan);line-height:1.7">🧬 <b>Decision DNA</b> (signals đã fire): ${a.dna.map(d => `<span style="color:var(--text2)">${d}</span>`).join(' · ')}</div>` : '';
     rows += `<div style="background:var(--bg2);border-left:4px solid ${evC};border-radius:8px;padding:0.875rem 1rem;margin-bottom:0.625rem">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem">
         <div style="font-family:var(--display);font-weight:700;font-size:0.95rem">${a.status} #${a.priority} · ${a.title}</div>
@@ -751,6 +810,7 @@ function renderExpertPlaybook(M) {
       </div>
       <div style="font-size:0.78rem;color:var(--muted);font-family:var(--mono);margin-bottom:0.4rem">🎯 Trigger: ${a.trigger}</div>
       <div style="font-size:0.83rem;color:var(--text);line-height:1.55;margin-bottom:0.4rem"><b>Action</b>: ${a.action}</div>
+      ${dnaHtml}
       <div style="font-size:0.75rem;color:var(--muted);font-family:var(--mono)"><b>Risk</b>: ${a.risk} · <b>Why</b>: ${a.why}</div>
     </div>`;
   }
@@ -1209,29 +1269,44 @@ function renderSqueeze(M) {
   // ADAPTIVE thresholds — fall back to fixed if data unavailable
   const fundingThreshold = state.market.funding_threshold_adaptive ?? -0.005;
   const priceThreshold = state.market.btc_sma20 ?? 79000;
-  const volRatioThreshold = 1.5; // current vol must be > 1.5× 14d avg
+  const volRatioThreshold = 1.5;
   const volRatio = state.market.btc_vol_ratio ?? (1 + state.market.vol_change / 100);
   const isAdaptive = state.market.funding_threshold_adaptive !== undefined;
+  const ca = state.coinalyze;
+  // Prefer Coinalyze aggregated funding when available (cross-exchange signal, more accurate)
+  const fundingSource = (ca?.funding_current !== undefined) ? ca.funding_current : state.market.funding_btc_pct;
+  const fundingSourceLabel = (ca?.funding_current !== undefined) ? 'Coinalyze agg' : 'Binance only';
   const conds = [
-    {name:'Funding rate', threshold: isAdaptive ? `≤ ${fundingThreshold.toFixed(4)}% (20th pctile 7d)` : '≤ -0.005% (fixed)',
-     current:`${state.market.funding_btc_pct.toFixed(4)}% (median 7d ${(state.market.funding_history_median ?? 0).toFixed(4)}%)`,
-     met: state.market.funding_btc_pct <= fundingThreshold},
+    {name:'Funding rate (agg)', threshold: isAdaptive ? `≤ ${fundingThreshold.toFixed(4)}% (20th pctile 7d)` : '≤ -0.005%',
+     current:`${fundingSource.toFixed(4)}% [${fundingSourceLabel}]${ca?.funding_avg_7d !== undefined ? ` · 7d avg ${ca.funding_avg_7d.toFixed(4)}%` : ''}`,
+     met: fundingSource <= fundingThreshold},
     {name:'RSI 6 (1d)', threshold:'> 70 (overbought)',
      current: `${state.market.rsi6_1d.toFixed(2)} (range 0-100)`,
      met: state.market.rsi6_1d > 70},
-    {name:'Price holding', threshold: isAdaptive ? `BTC > SMA20 (${fmt$(priceThreshold,0)})` : 'BTC > $79K (fixed)',
+    {name:'Price holding', threshold: isAdaptive ? `BTC > SMA20 (${fmt$(priceThreshold,0)})` : 'BTC > $79K',
      current: `${fmt$(state.holdings.BTC.price)} vs SMA20 ${fmt$(state.market.btc_sma20 ?? 0,0)}`,
      met: state.holdings.BTC.price > priceThreshold},
-    {name:'BTC volume surge', threshold: isAdaptive ? `> 1.5× 14d avg (${volRatioThreshold}x)` : '+50% (fixed)',
+    {name:'BTC volume surge', threshold: isAdaptive ? `> 1.5× 14d avg` : '+50%',
      current: `${volRatio.toFixed(2)}x of 14d avg`,
      met: volRatio > volRatioThreshold},
   ];
+  // 5th condition only if Coinalyze L/S available
+  if (ca?.ls_current !== undefined) {
+    conds.push({
+      name: 'L/S ratio (agg)', threshold: '< 1.0 (not over-long)',
+      current: `${ca.ls_current.toFixed(3)} (7d avg ${(ca.ls_avg_7d ?? 0).toFixed(3)})`,
+      met: ca.ls_current < 1.0,
+    });
+  }
   const metCount = conds.filter(c=>c.met).length;
-  const allMet = metCount === 4;
+  const total = conds.length;
+  const allMet = metCount === total;
   let statusBadge, statusColor, overallText;
-  if (allMet) { statusBadge = '🔥 FIRE (4/4)'; statusColor = 'var(--green)'; overallText = '🔥 EXECUTE NOW'; }
-  else if (metCount >= 2) { statusBadge = `🟣 ARMED (${metCount}/4)`; statusColor = 'var(--purple)'; overallText = `⏳ wait remaining ${4-metCount} cond`; }
-  else { statusBadge = `⚪ STANDBY (${metCount}/4)`; statusColor = 'var(--muted)'; overallText = '⏳ setup not ready'; }
+  const fireThreshold = Math.ceil(total * 0.75); // ≥75% conditions to fire
+  if (allMet) { statusBadge = `🔥 FIRE (${metCount}/${total})`; statusColor = 'var(--green)'; overallText = '🔥 EXECUTE NOW'; }
+  else if (metCount >= fireThreshold) { statusBadge = `🟣 ARMED (${metCount}/${total})`; statusColor = 'var(--purple)'; overallText = `⏳ near fire — ${total-metCount} cond miss`; }
+  else if (metCount >= 2) { statusBadge = `🟡 BUILDING (${metCount}/${total})`; statusColor = 'var(--yellow)'; overallText = `setup developing`; }
+  else { statusBadge = `⚪ STANDBY (${metCount}/${total})`; statusColor = 'var(--muted)'; overallText = 'setup not ready'; }
   let condRows = '';
   for (const c of conds) {
     condRows += `<tr><td>${c.name}</td><td>${c.threshold}</td><td><b>${c.current}</b></td><td>${c.met ? '<span style="color:var(--green)">✅ MET</span>' : '<span style="color:var(--red)">✗ MISS</span>'}</td></tr>`;
@@ -1256,7 +1331,7 @@ function renderSqueeze(M) {
   <div style="font-family:var(--display);font-weight:700;margin:0.875rem 0 0.5rem">🎯 ARM Conditions Check (4-condition gate per SOP)</div>
   <table>
   <thead><tr><th>Condition</th><th>Threshold</th><th>Current</th><th>Status</th></tr></thead>
-  <tbody>${condRows}<tr style="background:rgba(245,158,11,0.05)"><td><b>Overall</b></td><td>4/4 to fire</td><td><b>${statusBadge}</b></td><td style="color:${statusColor}"><b>${overallText}</b></td></tr></tbody>
+  <tbody>${condRows}<tr style="background:rgba(245,158,11,0.05)"><td><b>Overall</b></td><td>${total}/${total} to fire</td><td><b>${statusBadge}</b></td><td style="color:${statusColor}"><b>${overallText}</b></td></tr></tbody>
   </table>
   <div class="warning-bar">⚠️ <b>Squeeze rules</b>: KHÔNG > ${leverage}x leverage · KHÔNG > 5% NET margin · BẮT BUỘC SL/TP setup trước khi rời màn hình · Frequency 1-2 plays/tháng · Pause sau 3 lệnh thua liên tiếp · KHÔNG fire trong NFP/CPI window.</div>
   </div>`;
