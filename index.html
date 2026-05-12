@@ -619,8 +619,11 @@ function renderKPITracker(M) {
   const requiredCompoundRate = currentNet > 0 ? (Math.pow(eoyGoal / currentNet, 1/daysRemaining) - 1) * 100 : 0;
   const requiredMonthlyRate = currentNet > 0 ? (Math.pow(eoyGoal / currentNet, 30/daysRemaining) - 1) * 100 : 0;
 
-  // Current rate
-  const currentRatePctPerDay = daysElapsed > 0 ? (Math.pow(currentNet / anchor, 1/daysElapsed) - 1) * 100 : 0;
+  // Current rate — prefer TRUE rate from accountSnapshot (last 30d real history)
+  const trueDailyRate = state.snapshot?.true_daily_compound_pct;
+  const trueAnnualRate = state.snapshot?.true_annual_compound_pct;
+  const trueRateSrc = trueDailyRate !== undefined ? 'accountSnapshot 30d' : 'placeholder (no snapshot)';
+  const currentRatePctPerDay = trueDailyRate ?? (daysElapsed > 0 ? (Math.pow(currentNet / anchor, 1/daysElapsed) - 1) * 100 : 0);
   const onTrack = currentRatePctPerDay >= requiredCompoundRate;
   const gapRate = currentRatePctPerDay - requiredCompoundRate;
 
@@ -643,7 +646,7 @@ function renderKPITracker(M) {
       <div class="metric"><div class="metric-label">Days remaining</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">elapsed ${elapsedPct.toFixed(1)}%</div></div>
       <div class="metric"><div class="metric-label">Required daily rate</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/d</div><div class="metric-sub">compound to EOY</div></div>
       <div class="metric"><div class="metric-label">Required monthly</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/mo</div><div class="metric-sub">compound</div></div>
-      <div class="metric"><div class="metric-label">Current rate</div><div class="metric-value" style="color:${currentRatePctPerDay >= 0 ? 'var(--green)' : 'var(--red)'}">${currentRatePctPerDay.toFixed(3)}%/d</div><div class="metric-sub">vs required ${gapRate >= 0 ? '+' : ''}${gapRate.toFixed(3)}pp</div></div>
+      <div class="metric"><div class="metric-label">Current rate (TRUE)</div><div class="metric-value" style="color:${currentRatePctPerDay >= 0 ? 'var(--green)' : 'var(--red)'}">${currentRatePctPerDay.toFixed(3)}%/d</div><div class="metric-sub">${trueRateSrc} · annual ${trueAnnualRate !== undefined ? trueAnnualRate.toFixed(1) + '%/y' : '—'}</div></div>
     </div>
 
     <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Return breakdown (KHÔNG double-count — Pool đã trong Spot unrealized)</div>
@@ -798,6 +801,35 @@ function renderExpertPlaybook(M) {
     // Loan must generate > APR of cost in expected returns OR repay
     if (apr > 10 && aggLTV < 0.5) {
       addAction(3, '💰 COST CHECK', `Loan interest ${apr.toFixed(1)}% APR — high cost vs return`, `Annual interest $${annualInt.toFixed(0)} vs expected market return`, `Nếu market expectation < ${apr.toFixed(0)}% recovery → consider partial repay $${(totalLoan*0.2).toFixed(0)}. Else hold + bias dip-buy.`, monthlyInt * 6, 0.4, 'opportunity cost of leverage', 'Leverage chỉ profitable nếu return > cost. Track APR vs scenario EV.', dnaInt);
+    }
+  }
+
+  // === Action: Leverage pattern analysis (loan history) ===
+  if (state.loan_history && state.loan_history.borrow_count + state.loan_history.repay_count > 0) {
+    const lh = state.loan_history;
+    const ratio = lh.repay_count > 0 ? lh.borrow_count / lh.repay_count : Infinity;
+    const dnaLev = [`Borrows ${lh.borrow_count} · Repays ${lh.repay_count}`, `Borrowed $${lh.total_borrowed.toFixed(0)}`, `Repaid $${lh.total_repaid.toFixed(0)}`, `LTV adjustments: ${lh.ltv_adjustments.length}`];
+    if (ratio > 1.5 && lh.total_borrowed > lh.total_repaid * 1.3) {
+      addAction(3, '🟠 LEVERAGE DRIFT', `Borrow-heavy ${lh.borrow_count} vs Repay ${lh.repay_count}`, `Borrow/Repay ratio > 1.5`, `Pattern cho thấy leverage tăng monotonic. Cân nhắc set rule: mỗi lần borrow → tự động đặt limit repay 50% sau 7d.`, currentNet * 0.04, 0.45, 'medium — discipline', 'Borrow pattern không kèm repay → leverage drift = risk creep. Track behavior.', dnaLev);
+    } else if (lh.ltv_adjustments.length > 5) {
+      addAction(4, '💡 LTV REACTIVE', `${lh.ltv_adjustments.length} LTV adjustments — reactive style`, `LTV adjustments > 5 lifetime`, `Pattern cho thấy user thường react LTV (add collateral khi gần liq). Pre-emptive: monitor LTV daily, alert ở 75% thay vì 85%.`, currentNet * 0.02, 0.3, 'none — advisory', 'Reactive LTV management = stress + suboptimal timing. Pre-emptive cheaper.', dnaLev);
+    }
+  }
+
+  // === Action: Price divergence alarm (Coinalyze cross-validation) ===
+  if (ca?.btc_price_divergence_pct !== undefined && Math.abs(ca.btc_price_divergence_pct) > 0.5) {
+    const dnaDiv = [`Binance BTC ${fmt$(state.holdings.BTC.price)}`, `Coinalyze BTC ${fmt$(ca.btc_ohlcv_close)}`, `Divergence ${ca.btc_price_divergence_pct.toFixed(2)}%`];
+    addAction(4, '⚠ PRICE DIVERGENCE', `Cross-exchange BTC ${ca.btc_price_divergence_pct.toFixed(2)}% diff`, `|Binance − Coinalyze agg| > 0.5%`, `Stale data hoặc geographic price gap. Verify price ở 2 sources trước khi đặt large order.`, 0, 0.2, 'low (info only)', 'Price source validation prevents stale-data trades.', dnaDiv);
+  }
+
+  // === Action: Realized vol vs implied (sizing) ===
+  if (ca?.btc_realized_vol_annual_pct !== undefined) {
+    const rv = ca.btc_realized_vol_annual_pct;
+    const dnaVol = [`Realized vol 30d annualized ${rv.toFixed(1)}%`];
+    if (rv > 80) {
+      addAction(3, '🌪 HIGH VOL REGIME', `Realized vol ${rv.toFixed(1)}% annualized`, `Realized vol > 80%/yr`, `Reduce Squeeze size 50% (margin 2.5% NET thay vì 5%). Wider stops. Expect large swings.`, currentNet * 0.02, 0.5, 'opportunity cost', 'High vol regime needs adjusted sizing. Fixed sizing in volatile market = blow-up risk.', dnaVol);
+    } else if (rv < 30) {
+      addAction(4, '😴 LOW VOL REGIME', `Realized vol ${rv.toFixed(1)}% — calm market`, `Realized vol < 30%/yr`, `Tăng Squeeze size lên 7% NET (more leverage worthwhile khi vol thấp). Tight stops effective.`, currentNet * 0.03, 0.4, 'low — vol regime change', 'Low vol = leverage cheap. Compress timeframes.', dnaVol);
     }
   }
 
@@ -2075,6 +2107,47 @@ async function fetchCoinalyzePredictedFunding() {
   } catch (e) { return null; }
 }
 
+async function fetchCoinalyzeOHLCV() {
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
+  try {
+    const symbol = 'BTCUSD_PERP.A';
+    const now = Math.floor(Date.now() / 1000);
+    const from30d = now - 30 * 86400;
+    return await fetchCoinalyze('/ohlcv-history', { symbols: symbol, interval: '1day', from: from30d, to: now });
+  } catch (e) { return null; }
+}
+
+async function fetchCoinalyzePredFundingHistory() {
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
+  try {
+    const symbol = 'BTCUSD_PERP.A';
+    const now = Math.floor(Date.now() / 1000);
+    const from7d = now - 7 * 86400;
+    return await fetchCoinalyze('/predicted-funding-rate-history', { symbols: symbol, interval: '1hour', from: from7d, to: now });
+  } catch (e) { return null; }
+}
+
+// Account snapshot: heavy weight (2400), cache 24h in localStorage
+async function fetchAccountSnapshotCached() {
+  const cached = localStorage.getItem('accountSnapshotCache');
+  if (cached) {
+    try {
+      const { ts, data } = JSON.parse(cached);
+      if (Date.now() - ts < 86400000) return data; // 24h
+    } catch {}
+  }
+  try {
+    const data = await callWorker('/sapi/v1/accountSnapshot', { type: 'SPOT', limit: 30 });
+    localStorage.setItem('accountSnapshotCache', JSON.stringify({ ts: Date.now(), data }));
+    return data;
+  } catch (e) {
+    if (cached) try { return JSON.parse(cached).data; } catch {}
+    return null;
+  }
+}
+
 async function fetchCoinalyzeOIHistory() {
   const { url, token } = getCreds();
   if (!url || !token) return null;
@@ -2594,6 +2667,18 @@ async function fetchFromBinance() {
       caLiquidations: safe('caLiquidations', fetchCoinalyzeLiquidations()),
       caPredFunding: safe('caPredFunding', fetchCoinalyzePredictedFunding()),
       caOIHistory: safe('caOIHistory', fetchCoinalyzeOIHistory()),
+      caOHLCV: safe('caOHLCV', fetchCoinalyzeOHLCV()),
+      caPredFundingHistory: safe('caPredFundingHistory', fetchCoinalyzePredFundingHistory()),
+      // Binance — historical NET via daily snapshot (24h cache, heavy weight 2400)
+      accountSnapshot: safe('accountSnapshot', fetchAccountSnapshotCached()),
+      // Binance — loan management history
+      loanBorrowHistory: safe('loanBorrowHistory', callWorker('/sapi/v2/loan/flexible/borrow/history', { size: 100 })),
+      loanRepayHistory: safe('loanRepayHistory', callWorker('/sapi/v2/loan/flexible/repay/history', { size: 100 })),
+      loanLtvHistory: safe('loanLtvHistory', callWorker('/sapi/v2/loan/flexible/ltv/adjustment/history', { size: 100 })),
+      // Binance — total Earn balance
+      earnAccount: safe('earnAccount', callWorker('/sapi/v1/simple-earn/account')),
+      // Binance — futures pending orders
+      futuresOpenOrders: safe('futuresOpenOrders', callWorker('/fapi/v1/openOrders')),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
@@ -2927,6 +3012,97 @@ async function fetchFromBinance() {
           state.coinalyze.ls_current = parseFloat(history[history.length - 1].r || history[history.length - 1].ratio || history[history.length - 1].c || 1);
           state.coinalyze.ls_avg_7d = history.reduce((s,h) => s + parseFloat(h.r || h.ratio || h.c || 1), 0) / history.length;
         }
+      }
+    }
+
+    // === ACCOUNT SNAPSHOT — historical NET for TRUE current rate ===
+    state.snapshot = { net_30d_ago: null, net_history: [] };
+    if (r.accountSnapshot?.snapshotVos && Array.isArray(r.accountSnapshot.snapshotVos)) {
+      const sortedSnaps = r.accountSnapshot.snapshotVos.sort((a, b) => a.updateTime - b.updateTime);
+      // For each snapshot, sum balances × current price (approximate — Binance returns balances)
+      state.snapshot.net_history = sortedSnaps.map(s => {
+        const totalBtc = parseFloat(s.data?.totalAssetOfBtc || 0);
+        const btcPrice = state.holdings.BTC.price;
+        return { time: s.updateTime, value_usd: totalBtc * btcPrice };
+      });
+      if (state.snapshot.net_history.length > 0) {
+        state.snapshot.net_30d_ago = state.snapshot.net_history[0].value_usd;
+        state.snapshot.net_today_snapshot = state.snapshot.net_history[state.snapshot.net_history.length - 1].value_usd;
+        const days = (state.snapshot.net_history[state.snapshot.net_history.length-1].time - state.snapshot.net_history[0].time) / 86400000;
+        // True 30-day return
+        if (state.snapshot.net_30d_ago > 0 && days > 0) {
+          const totalRet = (state.snapshot.net_today_snapshot / state.snapshot.net_30d_ago) - 1;
+          state.snapshot.true_30d_return_pct = totalRet * 100;
+          state.snapshot.true_daily_compound_pct = (Math.pow(1 + totalRet, 1 / days) - 1) * 100;
+          state.snapshot.true_annual_compound_pct = (Math.pow(1 + totalRet, 365 / days) - 1) * 100;
+        }
+      }
+    }
+
+    // === LOAN MANAGEMENT HISTORY ===
+    state.loan_history = { borrows: [], repays: [], ltv_adjustments: [], total_borrowed: 0, total_repaid: 0, borrow_count: 0, repay_count: 0 };
+    if (r.loanBorrowHistory?.rows) {
+      for (const b of r.loanBorrowHistory.rows) {
+        state.loan_history.borrows.push(b);
+        state.loan_history.total_borrowed += parseFloat(b.initialLoanAmount || b.loanAmount || 0);
+        state.loan_history.borrow_count++;
+      }
+    }
+    if (r.loanRepayHistory?.rows) {
+      for (const r2 of r.loanRepayHistory.rows) {
+        state.loan_history.repays.push(r2);
+        state.loan_history.total_repaid += parseFloat(r2.repayAmount || 0);
+        state.loan_history.repay_count++;
+      }
+    }
+    if (r.loanLtvHistory?.rows) {
+      state.loan_history.ltv_adjustments = r.loanLtvHistory.rows;
+    }
+
+    // === EARN ACCOUNT TOTAL ===
+    if (r.earnAccount) {
+      state.earn_account = {
+        total_amount_usdt: parseFloat(r.earnAccount.totalAmountInBTC || 0) * state.holdings.BTC.price,
+        flexible_amount: parseFloat(r.earnAccount.totalFlexibleAmountInBTC || 0) * state.holdings.BTC.price,
+        locked_amount: parseFloat(r.earnAccount.totalLockedInBTC || 0) * state.holdings.BTC.price,
+      };
+    }
+
+    // === FUTURES OPEN ORDERS (pending limit) ===
+    state.futures_pending_orders = Array.isArray(r.futuresOpenOrders) ? r.futuresOpenOrders : [];
+
+    // === COINALYZE OHLCV — cross-validate BTC price ===
+    if (Array.isArray(r.caOHLCV) && r.caOHLCV.length > 0) {
+      const ohlcvData = r.caOHLCV[0];
+      const history = ohlcvData.history || ohlcvData;
+      if (Array.isArray(history) && history.length > 0) {
+        const recent = history[history.length - 1];
+        const recentClose = parseFloat(recent.c || recent.close || 0);
+        const binancePrice = state.holdings.BTC.price;
+        state.coinalyze = state.coinalyze || {};
+        state.coinalyze.btc_ohlcv_close = recentClose;
+        state.coinalyze.btc_price_divergence_pct = binancePrice > 0 ? ((recentClose - binancePrice) / binancePrice) * 100 : 0;
+        // Compute 30d realized vol (annualized) from OHLCV
+        const closes = history.map(h => parseFloat(h.c || h.close || 0)).filter(v => v > 0);
+        if (closes.length > 1) {
+          const returns = [];
+          for (let i = 1; i < closes.length; i++) returns.push(Math.log(closes[i] / closes[i-1]));
+          const meanRet = returns.reduce((s,v)=>s+v,0) / returns.length;
+          const variance = returns.reduce((s,v)=>s+(v-meanRet)**2,0) / returns.length;
+          state.coinalyze.btc_realized_vol_annual_pct = Math.sqrt(variance) * Math.sqrt(365) * 100;
+        }
+      }
+    }
+
+    // === PREDICTED FUNDING ACCURACY ===
+    if (Array.isArray(r.caPredFundingHistory) && r.caPredFundingHistory.length > 0) {
+      // Compare predicted vs actual (when both available)
+      const data = r.caPredFundingHistory[0];
+      const history = data.history || data;
+      if (Array.isArray(history) && history.length > 0) {
+        state.coinalyze.pred_funding_samples = history.length;
+        const sumPred = history.reduce((s,h) => s + parseFloat(h.c || h.close || h.v || 0), 0);
+        state.coinalyze.pred_funding_avg_7d = (sumPred / history.length) * 100;
       }
     }
 
