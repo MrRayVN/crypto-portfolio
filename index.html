@@ -380,10 +380,23 @@ function m9_signals(market, m1obj, planChanges, coinalyze) {
   if (market.ret_90d > 10) bull.push([`BTC 90d ${market.ret_90d.toFixed(2)}%`, 1]);
   if (market.ret_30d > 5) bull.push([`BTC 30d ${market.ret_30d.toFixed(2)}%`, 1]);
   if (market.ret_7d > 0) bull.push([`BTC 7d ${market.ret_7d.toFixed(2)}%`, 1]);
-  bull.push(['BTC trên 200WMA (no death zone)', 1]);
-  bull.push(['Pi Cycle no top', 1]);
-  bull.push(['Puell ~1.0 (neutral)', 1]);
-  bull.push(['BTC ở 2Y MA accumulation green band', 2]);
+  // === REAL on-chain / cycle indicators (computed, không hardcode) ===
+  // 200WMA: BTC trên 200WMA = bull cycle, dưới = bear cycle
+  if (market.btc_200wma !== undefined) {
+    if (market.btc_above_200wma) bull.push([`BTC trên 200WMA (${fmt$(market.btc_200wma,0)}) +${market.btc_200wma_distance_pct.toFixed(1)}%`, 1]);
+    else bear.push([`BTC DƯỚI 200WMA (${fmt$(market.btc_200wma,0)}) ${market.btc_200wma_distance_pct.toFixed(1)}%`, -2]);
+  }
+  // Pi Cycle Top: 111d MA vs 350d MA × 2 — historically marks BTC tops
+  if (market.btc_pi_cycle_no_top !== undefined) {
+    if (market.btc_pi_cycle_no_top) bull.push([`Pi Cycle no top (111dMA ${market.btc_pi_cycle_distance_pct.toFixed(1)}% below 350dMA×2)`, 1]);
+    else bear.push([`Pi Cycle TOP TRIGGERED (111dMA ${market.btc_pi_cycle_distance_pct.toFixed(1)}% above 350dMA×2)`, -3]);
+  }
+  // 2YMA accumulation zone: between 1× and 5× of 2YMA
+  if (market.btc_2yma !== undefined) {
+    if (market.btc_in_2yma_accumulation) bull.push([`BTC trong 2YMA accumulation band (${market.btc_2yma_distance_pct.toFixed(1)}% above 2YMA ${fmt$(market.btc_2yma,0)})`, 2]);
+    else if (!market.btc_above_2yma) bear.push([`BTC DƯỚI 2YMA (${fmt$(market.btc_2yma,0)}) ${market.btc_2yma_distance_pct.toFixed(1)}% — bear cycle`, -2]);
+    else bear.push([`BTC > 2YMA × 5 (${market.btc_2yma_distance_pct.toFixed(1)}%) — top zone risk`, -2]);
+  }
   if (market.ret_1y < -15) bear.push([`BTC 1Y ${market.ret_1y.toFixed(2)}% DD`, -1]);
   if (market.ret_180d < -15) bear.push([`BTC 180d ${market.ret_180d.toFixed(2)}%`, -1]);
   if (market.ret_ytd < -5) bear.push([`BTC YTD ${market.ret_ytd.toFixed(2)}%`, -1]);
@@ -756,13 +769,14 @@ function renderExpertPlaybook(M) {
     addAction(4, '🟣 ARMED', `Squeeze armed (${conditionsMet}/${totalConds}) — wait`, `Need ${totalConds-conditionsMet} more`, `Monitor every 4h. Fire khi ${Math.ceil(totalConds * 0.75)}+/${totalConds}.`, 0, 0, 'none (no action)', 'Setup chưa chín.', squeezeDNA);
   }
 
-  // === Action L/S contrarian: NEW — when L/S extreme, opportunity for contrarian position ===
-  if (ca?.ls_current !== undefined) {
-    const dnaLS = [`Agg L/S ${ca.ls_current.toFixed(3)}`, `7d avg ${(ca.ls_avg_7d ?? 0).toFixed(3)}`, `F&G ${fg}`];
-    if (ca.ls_current < 0.65 && fg < 50) {
-      addAction(2, '🟢 CONTRARIAN LONG', `L/S ${ca.ls_current.toFixed(2)} extreme short-heavy`, `Agg L/S < 0.65 + F&G ${fg} ≤ 50`, `Tăng DCA $25-30/day × 3-5 ngày tập trung underwater coin. Cân nhắc spot buy thêm $50-100.`, currentNet * 0.08, 0.55, 'medium — contrarian timing', 'Khi shorts crowded toàn thị trường, short-squeeze probability tăng cao. Cross-exchange L/S < 0.65 là extreme.', dnaLS);
-    } else if (ca.ls_current > 2.0 && fg > 60) {
-      addAction(2, '🟠 CAUTION LONGS', `L/S ${ca.ls_current.toFixed(2)} extreme long-heavy`, `Agg L/S > 2.0 + F&G ${fg} ≥ 60`, `Cân nhắc partial TP underwater coin nếu chạm BEP. Tighten stops. KHÔNG add leverage.`, currentNet * 0.05, 0.5, 'opportunity cost if bull continues', 'Longs over-crowded → flush risk. Cross-exchange L/S > 2.0 historically precedes corrections.', dnaLS);
+  // === Action L/S contrarian — STATISTICAL (vs 7d L/S avg, ratio-based) ===
+  if (ca?.ls_current !== undefined && ca?.ls_avg_7d !== undefined && ca.ls_avg_7d > 0) {
+    const lsRatio = ca.ls_current / ca.ls_avg_7d;
+    const dnaLS = [`Agg L/S ${ca.ls_current.toFixed(3)}`, `7d avg ${ca.ls_avg_7d.toFixed(3)}`, `Ratio current/avg ${lsRatio.toFixed(2)}`, `F&G ${fg}`];
+    if (lsRatio < 0.75 && fg < 50) {
+      addAction(2, '🟢 CONTRARIAN LONG', `L/S ${ca.ls_current.toFixed(2)} = ${(lsRatio*100).toFixed(0)}% of 7d avg`, `L/S < 75% of 7d avg + F&G ${fg} ≤ 50`, `Tăng DCA $25-30/day × 3-5 ngày tập trung underwater coin. Cân nhắc spot buy thêm $50-100.`, currentNet * 0.08, 0.55, 'medium — contrarian timing', `Formula: current_LS / avg_LS_7d < 0.75 = shorts crowded vs recent regime.`, dnaLS);
+    } else if (lsRatio > 1.30 && fg > 60) {
+      addAction(2, '🟠 CAUTION LONGS', `L/S ${ca.ls_current.toFixed(2)} = ${(lsRatio*100).toFixed(0)}% of 7d avg`, `L/S > 130% of 7d avg + F&G ${fg} ≥ 60`, `Cân nhắc partial TP underwater coin nếu chạm BEP. Tighten stops. KHÔNG add leverage.`, currentNet * 0.05, 0.5, 'opportunity cost', `Formula: current_LS / avg_LS_7d > 1.30 = longs over-crowded vs recent regime.`, dnaLS);
     }
   }
 
@@ -878,14 +892,20 @@ function renderExpertPlaybook(M) {
     }
   }
 
-  // === Action 5: Dip-buy ladder if BTC drops + F&G low ===
-  if (btcPrice < 78000 && fg <= 40) {
-    addAction(2, '🟢 OPPORTUNITY', `T1 Dip-buy active`, `BTC ${fmt$(btcPrice)} < $78K + F&G ${fg} ≤ 40`, `Tăng DCA $25/day × 3 ngày. Focus underwater coins (LINK/BNB).`, currentNet * 0.03, 0.7, 'medium if BTC continues dump', 'Fear zone = contrarian buy. v73 dip ladder T1.');
+  // === Action 5: Dip-buy ladder — ADAPTIVE relative drop từ current BTC ===
+  // Reference: current BTC vs SMA20 — nếu BTC dưới SMA20 = đang trong dip context
+  const sma20 = state.market.btc_sma20 ?? btcPrice;
+  const dropFromSMA20 = ((btcPrice / sma20) - 1) * 100;
+  const dnaDip = [`BTC ${fmt$(btcPrice)}`, `SMA20 ${fmt$(sma20, 0)}`, `Distance ${dropFromSMA20.toFixed(2)}%`, `F&G ${fg}`];
+  // T1 trigger: BTC < SMA20 × 0.97 (3% below) + F&G ≤ 40
+  if (btcPrice < sma20 * 0.97 && fg <= 40) {
+    addAction(2, '🟢 T1 DIP-BUY', `Dip-buy T1 active`, `BTC < SMA20 × 0.97 (${fmt$(sma20*0.97, 0)}) + F&G ${fg} ≤ 40`, `Tăng DCA $25/day × 3 ngày. Focus underwater coins (LINK/BNB).`, currentNet * 0.03, 0.7, 'medium if BTC continues dump', `Formula: BTC < SMA20 × 0.97 = price below 20d trend. Contrarian Fear buy.`, dnaDip);
   }
-  if (btcPrice < 75000 && fg <= 35 && state.loan_orders) {
+  // T2 trigger: BTC < SMA20 × 0.92 + F&G ≤ 35 + LTV < 65%
+  if (btcPrice < sma20 * 0.92 && fg <= 35 && state.loan_orders) {
     const aggLTV = state.loan_orders.reduce((s,o) => s + o.debt, 0) / state.loan_orders.reduce((s,o) => s + o.collValue, 0);
     if (aggLTV < 0.65) {
-      addAction(1, '🟢 OPPORTUNITY', `T2 Dip-buy + loan add`, `BTC ${fmt$(btcPrice)} < $75K + F&G ${fg} ≤ 35 + LTV ${(aggLTV*100).toFixed(1)}% < 65%`, `Tăng DCA $30/day × 5d + borrow thêm $400 USDT để dip-buy BTC/WBETH`, currentNet * 0.06, 0.65, 'high (leveraged dip-buy)', 'Deep value zone — leverage để nhân lợi nhuận. CHỈ KHI LTV thấp.');
+      addAction(1, '🟢 T2 DIP-BUY LEV', `T2 Dip-buy + loan add`, `BTC < SMA20×0.92 + F&G ${fg} ≤ 35 + LTV ${(aggLTV*100).toFixed(1)}% < 65%`, `Tăng DCA $30/day × 5d + borrow thêm $400 USDT để dip-buy BTC/WBETH`, currentNet * 0.06, 0.65, 'high (leveraged dip-buy)', `Formula: BTC < SMA20 × 0.92 = significant dip (-8% from trend). Leverage for amplified return when LTV ≤ 65%.`, [...dnaDip, `LTV ${(aggLTV*100).toFixed(1)}%`]);
     }
   }
 
@@ -1463,14 +1483,29 @@ function renderDCA(M) {
 
 function renderDipLadder(M) {
   const btcNow = state.holdings.BTC.price;
-  const tiers = [
-    {name:'T0 BASE', cond:'BTC ≥ $77K · F&G ≥ 40', dca:'$20/d', loan:`Current ${fmt$(M.loan,0)}`, eq:`${M.m1.equity_ratio.toFixed(0)}% ${M.m1.equity_ratio<55?'over-cap':'OK'}`, color:'var(--green)', active: btcNow >= 77000},
-    {name:'T1 SOFT', cond:'BTC < $78K · F&G ≤ 38', dca:'$25/d × 3d', loan:'no add', eq:'~70%', color:'var(--cyan)'},
-    {name:'T2 MEDIUM', cond:'BTC < $75K · F&G ≤ 35', dca:'$30/d × 5d', loan:'+$400', eq:'~63%', color:'var(--blue)'},
-    {name:'T3 DEEP', cond:'BTC < $72K · F&G ≤ 30', dca:'$35/d × 7d', loan:`${fmt$(M.m7.hard,0)} HARD CAP`, eq:'50% MAX', color:'var(--purple)'},
-    {name:'T4 EXTREME', cond:'BTC < $70K · F&G ≤ 25', dca:'$35/d × 10d', loan:'FROZEN', eq:'~45%', color:'var(--orange)'},
-    {name:'T5 STOP-LOSS', cond:`BTC < ${fmt$(state.bep_threshold,0)} · F&G ≤ 15`, dca:'Reset $15/d', loan:'PARTIAL REPAY', eq:'PROTECT', color:'var(--red)'},
+  // Relative tiers — % drop từ current BTC (không hardcode $77K/$75K/$72K)
+  const ref = btcNow; // reference = current
+  const tierConfigs = [
+    {name:'T0 BASE',     dropPct: 0,    fgGate: 40, dca: 20, loanTarget: M.loan, eqTarget: M.m1.equity_ratio, color:'var(--green)'},
+    {name:'T1 SOFT',     dropPct: -3,   fgGate: 38, dca: 25, loanTarget: M.loan, eqTarget: 70, color:'var(--cyan)'},
+    {name:'T2 MEDIUM',   dropPct: -8,   fgGate: 35, dca: 30, loanTarget: M.loan + 400, eqTarget: 63, color:'var(--blue)'},
+    {name:'T3 DEEP',     dropPct: -12,  fgGate: 30, dca: 35, loanTarget: M.m7.hard, eqTarget: 50, color:'var(--purple)'},
+    {name:'T4 EXTREME',  dropPct: -16,  fgGate: 25, dca: 35, loanTarget: M.m7.hard, eqTarget: 45, color:'var(--orange)'},
+    {name:'T5 STOP-LOSS',dropPct: -22,  fgGate: 15, dca: 15, loanTarget: M.loan * 0.5, eqTarget: 60, color:'var(--red)'},
   ];
+  const tiers = tierConfigs.map(t => {
+    const triggerPrice = ref * (1 + t.dropPct / 100);
+    const isActive = t.dropPct === 0 ? btcNow >= triggerPrice : btcNow < triggerPrice;
+    return {
+      name: t.name,
+      cond: `BTC ${t.dropPct === 0 ? '≥' : '<'} ${fmt$(triggerPrice, 0)} (${t.dropPct >= 0 ? '+' : ''}${t.dropPct}% từ current) · F&G ${t.dropPct === 0 ? '≥' : '≤'} ${t.fgGate}`,
+      dca: `$${t.dca}/d`,
+      loan: t.dropPct < -10 ? `${fmt$(t.loanTarget, 0)} HARD CAP` : t.dropPct === 0 ? `Current ${fmt$(t.loanTarget,0)}` : (t.loanTarget > M.loan ? `+$${(t.loanTarget - M.loan).toFixed(0)}` : 'no add'),
+      eq: `${t.eqTarget.toFixed(0)}%${t.eqTarget < 55 ? ' over-cap' : ' target'}`,
+      color: t.color,
+      active: isActive && t.dropPct < 0 ? state.market.fg_cg <= t.fgGate : t.dropPct === 0 ? btcNow >= triggerPrice : false,
+    };
+  });
   let rows = '';
   for (const t of tiers) {
     rows += `<tr style="${t.active ? 'background:rgba(34,197,94,0.05)':''}"><td><b style="color:${t.color}">${t.name}${t.active?' ← ACTIVE':''}</b></td><td>${t.cond}</td><td>${t.dca}</td><td>${t.loan}</td><td><b style="color:${t.color}">${t.eq}</b></td></tr>`;
@@ -1571,15 +1606,20 @@ function renderStopLoss(M) {
   const slBtc = state.bep_threshold;
   const buf = (btcNow - slBtc) / slBtc * 100;
   const fgNow = state.market.fg_cg;
-  const tiers = [
-    {trigger:'BTC < $77K hold > 24h', fg:'40-50', action:'Chuẩn bị Tier 1 dip-buy', purpose:'Prep accumulation', critical:false},
-    {trigger:'BTC < $75K', fg:'≤ 35', action:'Trigger T2 + loan +$400 (CHỈ KHI đã repay #1)', purpose:'Bullish dip-buy', critical:false},
-    {trigger:'BTC < $72K', fg:'≤ 30', action:'Trigger T3 — KHÔNG ADD LOAN (đã ở cap)', purpose:'Spot DCA only', critical:false},
-    {trigger:'BTC < $70K', fg:'≤ 25', action:'FREEZE add, DCA cap $35/d', purpose:'Risk management', critical:false},
-    {trigger:`BTC < ${fmt$(slBtc,0)}`, fg:'≤ 15', action:'STOP-LOSS: reset DCA $15 · sell BNSOL+USDC · pause loan', purpose:'Capital preservation', critical:true, level:1},
-    {trigger:'BTC < $60K', fg:'≤ 10', action:'EXTREME: forced loan reduction <20% net · trim profitable assets', purpose:'Survival', critical:true, level:2},
-    {trigger:'BTC < $55K', fg:'≤ 5', action:'FULL STOP: clear all loan · pause DCA · hold spot · wait stable bottom 30+ days', purpose:'End-cycle wait', critical:true, level:3},
+  // Relative tiers — % drop từ current BTC
+  const tierConfigs = [
+    {dropPct: -3,   fgGate: '40-50', action:'Chuẩn bị Tier 1 dip-buy', purpose:'Prep accumulation', critical:false},
+    {dropPct: -8,   fgGate: '≤ 35',  action:'Trigger T2 + loan +$400 (CHỈ KHI đã repay #1)', purpose:'Bullish dip-buy', critical:false},
+    {dropPct: -12,  fgGate: '≤ 30',  action:'Trigger T3 — KHÔNG ADD LOAN (đã ở cap)', purpose:'Spot DCA only', critical:false},
+    {dropPct: -16,  fgGate: '≤ 25',  action:'FREEZE add, DCA cap $35/d', purpose:'Risk management', critical:false},
+    {dropPct: -22,  fgGate: '≤ 15',  action:'STOP-LOSS: reset DCA $15 · sell BNSOL+USDC · pause loan', purpose:'Capital preservation', critical:true, level:1},
+    {dropPct: -28,  fgGate: '≤ 10',  action:'EXTREME: forced loan reduction <20% net · trim profitable assets', purpose:'Survival', critical:true, level:2},
+    {dropPct: -34,  fgGate: '≤ 5',   action:'FULL STOP: clear all loan · pause DCA · hold spot · wait stable bottom 30+ days', purpose:'End-cycle wait', critical:true, level:3},
   ];
+  const tiers = tierConfigs.map(t => {
+    const triggerPrice = btcNow * (1 + t.dropPct / 100);
+    return { ...t, trigger: `BTC < ${fmt$(triggerPrice, 0)} (${t.dropPct}% từ current)`, fg: t.fgGate };
+  });
   let rows = '';
   for (const t of tiers) {
     let bg = '';
@@ -2730,6 +2770,7 @@ async function fetchFromBinance() {
       futuresOpenOrders: safe('futuresOpenOrders', callWorker('/fapi/v1/openOrders')),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
+      weeklyKlines: safe('weeklyKlines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=210')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
     };
     const keys = Object.keys(tasks);
@@ -2921,6 +2962,35 @@ async function fetchFromBinance() {
         const stddev = Math.sqrt(variance);
         state.market.btc_bb_upper = mean + 2 * stddev;
         state.market.btc_bb_lower = mean - 2 * stddev;
+      }
+      // === REAL Pi Cycle Top Indicator (111d MA vs 350d MA × 2) ===
+      // Pi Cycle top = 111d MA crosses ABOVE 350d MA × 2 (historically marks BTC cycle tops)
+      if (closes.length >= 350) {
+        const ma111 = closes.slice(-111).reduce((s,v)=>s+v,0) / 111;
+        const ma350 = closes.slice(-350).reduce((s,v)=>s+v,0) / 350;
+        state.market.btc_111dma = ma111;
+        state.market.btc_350dma_x2 = ma350 * 2;
+        state.market.btc_pi_cycle_distance_pct = ((ma111 / (ma350 * 2)) - 1) * 100; // negative = below = no top
+        state.market.btc_pi_cycle_no_top = ma111 < ma350 * 2;
+      }
+    }
+    // === REAL 200WMA + 2YMA from weekly klines ===
+    if (r.weeklyKlines && r.weeklyKlines.length >= 104) {
+      const weeklyCloses = r.weeklyKlines.map(k => parseFloat(k[4]));
+      const currentBtc = state.holdings.BTC.price;
+      // 2-Year MA (104 weeks)
+      const ma104 = weeklyCloses.slice(-104).reduce((s,v)=>s+v,0) / 104;
+      state.market.btc_2yma = ma104;
+      state.market.btc_above_2yma = currentBtc > ma104;
+      state.market.btc_2yma_distance_pct = ((currentBtc / ma104) - 1) * 100;
+      // 2YMA "green band" historically = 2YMA × 1 to 2YMA × 5 = accumulation zone
+      state.market.btc_in_2yma_accumulation = currentBtc >= ma104 && currentBtc <= ma104 * 5;
+      // 200-Week MA
+      if (weeklyCloses.length >= 200) {
+        const ma200w = weeklyCloses.slice(-200).reduce((s,v)=>s+v,0) / 200;
+        state.market.btc_200wma = ma200w;
+        state.market.btc_above_200wma = currentBtc > ma200w;
+        state.market.btc_200wma_distance_pct = ((currentBtc / ma200w) - 1) * 100;
       }
     }
 
