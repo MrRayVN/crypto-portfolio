@@ -114,6 +114,7 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
   <a href="#kpi" class="nav-tab">🎯 KPI Tracker</a>
   <a href="#playbook" class="nav-tab">🤖 Playbook</a>
   <a href="#journal" class="nav-tab">📊 Trades Journal</a>
+  <a href="#aggregate" class="nav-tab">🌍 Market Aggregate</a>
   <a href="#funding" class="nav-tab">💵 $3,650 Funding</a>
   <a href="#tp-explain" class="nav-tab">📐 TP Math</a>
   <a href="#target" class="nav-tab">🎯 35% Target</a>
@@ -188,6 +189,10 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
     <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem;margin-top:0.5rem">
       <label style="min-width:auto">Proxy Token (X-Auth-Token)</label>
       <input type="password" id="api-proxy-token" placeholder="••••••••" style="width:100%">
+    </div>
+    <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem;margin-top:0.875rem;padding-top:0.875rem;border-top:1px dashed var(--border2)">
+      <label style="min-width:auto;color:var(--purple)">🌍 Coinalyze API key (optional — aggregated data)</label>
+      <input type="password" id="coinalyze-key" placeholder="Coinalyze key (active sau 2 phút)" style="width:100%">
     </div>
   </div>
   <div class="editor-group">
@@ -531,6 +536,7 @@ function render() {
   html += renderKPITracker(M);
   html += renderExpertPlaybook(M);
   html += renderTradesJournal(M);
+  html += renderMarketAggregate(M);
   html += renderFunding(M);
   html += renderTPExplain(M);
   html += renderTarget(M);
@@ -756,6 +762,38 @@ function renderExpertPlaybook(M) {
     </div>
     ${rows || '<div style="color:var(--muted);font-size:0.85rem">Không có action nào trigger với conditions hiện tại — market regime quiet.</div>'}
     <div class="warning-bar" style="margin-top:0.875rem">⚠️ <b>Disclaimer</b>: Recommendations dựa trên signals algorithmic, KHÔNG phải lời khuyên đầu tư. User tự thực thi và chịu trách nhiệm. Probability + impact là ước tính, market có thể behave khác.</div>
+  </div>`;
+}
+
+// === 🌍 MARKET AGGREGATE (Coinalyze) — cross-exchange data ===
+function renderMarketAggregate(M) {
+  const ca = state.coinalyze;
+  if (!ca) return '';
+  const hasFunding = ca.funding_current !== undefined;
+  const hasOI = ca.oi_current !== undefined;
+  const hasLS = ca.ls_current !== undefined;
+  if (!hasFunding && !hasOI && !hasLS) return '';
+
+  const fundingBinance = state.market.funding_btc_pct || 0;
+  const fundingDiff = hasFunding ? ca.funding_current - fundingBinance : 0;
+  const lsInterp = hasLS ? (ca.ls_current > 1.5 ? '🐂 Long-heavy (contrarian short bias)' : ca.ls_current < 0.7 ? '🐻 Short-heavy (contrarian long bias)' : '⚖ Balanced') : '';
+  const fundingInterp = hasFunding ? (ca.funding_current < -0.005 ? '🐻 Shorts paying — squeeze setup possible' : ca.funding_current > 0.01 ? '🐂 Longs paying — leveraged longs at risk' : '⚖ Neutral') : '';
+  const fundingC = hasFunding ? (ca.funding_current < 0 ? 'var(--red)' : 'var(--green)') : 'var(--muted)';
+  const lsC = hasLS ? (ca.ls_current > 1.5 ? 'var(--orange)' : ca.ls_current < 0.7 ? 'var(--green)' : 'var(--text)') : 'var(--muted)';
+
+  return `<div id="aggregate" class="section-title">🌍 Market Aggregate · cross-exchange via Coinalyze</div>
+  <div class="card" style="border:1px solid var(--purple)">
+    <div style="font-size:0.82rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.55">
+      Data aggregated từ TẤT CẢ exchanges (Binance, Bybit, OKX, Bitget, dYdX, ...) — phản ánh thị trường derivatives toàn cầu, không chỉ Binance. Symbol: <code style="background:var(--bg2);padding:0.1rem 0.4rem;border-radius:4px">${ca.symbol}</code>
+    </div>
+    <div class="metrics">
+      ${hasFunding ? `<div class="metric"><div class="metric-label">Funding agg (now)</div><div class="metric-value" style="color:${fundingC}">${ca.funding_current.toFixed(4)}%</div><div class="metric-sub">vs Binance ${fundingBinance.toFixed(4)}% (${fundingDiff >= 0 ? '+' : ''}${fundingDiff.toFixed(4)}pp)</div></div>` : ''}
+      ${hasFunding ? `<div class="metric"><div class="metric-label">Funding 7d avg</div><div class="metric-value">${ca.funding_avg_7d.toFixed(4)}%</div><div class="metric-sub">min ${ca.funding_min_7d.toFixed(4)}% · max ${ca.funding_max_7d.toFixed(4)}%</div></div>` : ''}
+      ${hasOI ? `<div class="metric"><div class="metric-label">Total OI BTC</div><div class="metric-value">${(ca.oi_current / 1e9).toFixed(2)}B</div><div class="metric-sub">aggregated USD</div></div>` : ''}
+      ${hasLS ? `<div class="metric"><div class="metric-label">L/S ratio (now)</div><div class="metric-value" style="color:${lsC}">${ca.ls_current.toFixed(3)}</div><div class="metric-sub">${lsInterp}</div></div>` : ''}
+      ${hasLS ? `<div class="metric"><div class="metric-label">L/S 7d avg</div><div class="metric-value">${ca.ls_avg_7d.toFixed(3)}</div><div class="metric-sub">trend baseline</div></div>` : ''}
+    </div>
+    ${fundingInterp ? `<div class="warning-bar">📡 <b>Funding signal</b>: ${fundingInterp} · ${lsInterp}</div>` : ''}
   </div>`;
 }
 
@@ -1761,24 +1799,59 @@ async function testWorkerConnection() {
 function saveBinanceCreds() {
   const url = document.getElementById('api-worker-url').value.trim();
   const token = document.getElementById('api-proxy-token').value.trim();
-  if (!url || !token) { setApiStatus('Cần điền cả URL và token', 'err'); return; }
+  const coinalyze = document.getElementById('coinalyze-key')?.value.trim();
+  if (!url || !token) { setApiStatus('Cần điền cả Worker URL và Proxy Token', 'err'); return; }
   localStorage.setItem('workerUrl', url);
   localStorage.setItem('proxyToken', token);
-  setApiStatus('✓ Đã lưu localStorage trên device này', 'ok');
+  if (coinalyze) localStorage.setItem('coinalyzeKey', coinalyze);
+  setApiStatus(`✓ Saved · Binance ${url ? '✓' : '✗'} · Coinalyze ${coinalyze ? '✓' : '—'}`, 'ok');
 }
 function clearBinanceCreds() {
-  localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken');
+  localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken'); localStorage.removeItem('coinalyzeKey');
   document.getElementById('api-worker-url').value = '';
   document.getElementById('api-proxy-token').value = '';
+  if (document.getElementById('coinalyze-key')) document.getElementById('coinalyze-key').value = '';
   setApiStatus('Đã xóa creds khỏi localStorage', 'info');
   setApiBadge('⚪ Not connected', 'err');
 }
 function loadBinanceCreds() {
   const url = localStorage.getItem('workerUrl');
   const token = localStorage.getItem('proxyToken');
+  const coinalyze = localStorage.getItem('coinalyzeKey');
   if (url) document.getElementById('api-worker-url').value = url;
   if (token) document.getElementById('api-proxy-token').value = token;
+  if (coinalyze && document.getElementById('coinalyze-key')) document.getElementById('coinalyze-key').value = coinalyze;
   if (url && token) { setApiStatus('Creds đã load (chưa test)', 'info'); setApiBadge('🟡 Saved', 'warn'); }
+}
+
+// === COINALYZE INTEGRATION — aggregated futures data across exchanges ===
+async function fetchCoinalyze(endpoint, params = {}) {
+  const key = (localStorage.getItem('coinalyzeKey') || document.getElementById('coinalyze-key')?.value || '').trim();
+  if (!key) throw new Error('No Coinalyze key');
+  const qs = new URLSearchParams({ ...params, api_key: key }).toString();
+  const url = `https://api.coinalyze.net/v1${endpoint}?${qs}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Coinalyze ${resp.status}`);
+  return resp.json();
+}
+
+async function fetchCoinalyzeAggregates() {
+  if (!localStorage.getItem('coinalyzeKey') && !document.getElementById('coinalyze-key')?.value) return null;
+  try {
+    // Coinalyze uses symbols like BTCUSD_PERP.A (aggregated). Try multiple known patterns.
+    const symbol = 'BTCUSD_PERP.A';
+    const now = Math.floor(Date.now() / 1000);
+    const from7d = now - 7 * 86400;
+    const [funding, oi, lsRatio] = await Promise.all([
+      fetchCoinalyze('/funding-rate-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(() => null),
+      fetchCoinalyze('/open-interest', { symbols: symbol, convert_to_usd: 'true' }).catch(() => null),
+      fetchCoinalyze('/long-short-ratio-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(() => null),
+    ]);
+    return { funding, oi, lsRatio, symbol };
+  } catch (e) {
+    console.warn('Coinalyze fetch error:', e.message);
+    return null;
+  }
 }
 
 // Snapshot save/load for plan-change detection
@@ -2255,6 +2328,7 @@ async function fetchFromBinance() {
       futuresPositions: safe('futuresPositions', callWorker('/fapi/v3/positionRisk')),
       futuresIncome: safe('futuresIncome', callWorker('/fapi/v1/income', { limit: 1000 })),
       futuresTrades: safe('futuresTrades', callWorker('/fapi/v1/userTrades', { symbol: 'BTCUSDT', limit: 1000 })),
+      coinalyze: safe('coinalyze', fetchCoinalyzeAggregates()),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
@@ -2461,6 +2535,37 @@ async function fetchFromBinance() {
         }
       }
     } catch {}
+
+    // === COINALYZE aggregated data ===
+    if (r.coinalyze) {
+      const ca = r.coinalyze;
+      state.coinalyze = { symbol: ca.symbol };
+      // Funding history → compute current + avg
+      if (Array.isArray(ca.funding) && ca.funding.length > 0) {
+        const fundingData = ca.funding[0];
+        const history = fundingData.history || fundingData;
+        if (Array.isArray(history) && history.length > 0) {
+          const rates = history.map(h => parseFloat(h.c || h.close || h.v || 0));
+          state.coinalyze.funding_current = rates[rates.length - 1] * 100;
+          state.coinalyze.funding_avg_7d = (rates.reduce((s,v)=>s+v,0) / rates.length) * 100;
+          state.coinalyze.funding_min_7d = Math.min(...rates) * 100;
+          state.coinalyze.funding_max_7d = Math.max(...rates) * 100;
+        }
+      }
+      // OI current
+      if (Array.isArray(ca.oi) && ca.oi.length > 0) {
+        state.coinalyze.oi_current = parseFloat(ca.oi[0].value || ca.oi[0].oi || ca.oi[0].open_interest_usd || 0);
+      }
+      // L/S ratio
+      if (Array.isArray(ca.lsRatio) && ca.lsRatio.length > 0) {
+        const lsData = ca.lsRatio[0];
+        const history = lsData.history || lsData;
+        if (Array.isArray(history) && history.length > 0) {
+          state.coinalyze.ls_current = parseFloat(history[history.length - 1].r || history[history.length - 1].ratio || history[history.length - 1].c || 1);
+          state.coinalyze.ls_avg_7d = history.reduce((s,h) => s + parseFloat(h.r || h.ratio || h.c || 1), 0) / history.length;
+        }
+      }
+    }
 
     // === FUTURES DATA aggregation (KPI Trades Journal) ===
     state.futures = {
