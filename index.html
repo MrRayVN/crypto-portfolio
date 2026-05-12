@@ -111,6 +111,9 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 
 <nav class="nav-tabs">
   <a href="#editor" class="nav-tab">✏️ Edit Data</a>
+  <a href="#kpi" class="nav-tab">🎯 KPI Tracker</a>
+  <a href="#playbook" class="nav-tab">🤖 Playbook</a>
+  <a href="#journal" class="nav-tab">📊 Trades Journal</a>
   <a href="#funding" class="nav-tab">💵 $3,650 Funding</a>
   <a href="#tp-explain" class="nav-tab">📐 TP Math</a>
   <a href="#target" class="nav-tab">🎯 35% Target</a>
@@ -525,6 +528,9 @@ function render() {
     `Mr Ray · Stance ${M.m9.stance} · NET ${fmt$(M.m1.net)} · Gross ${fmt$(M.m1.gross)} · Loan ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Validation ${M.m14.pass}/${M.m14.total} ${M.m14.result}`;
 
   let html = '';
+  html += renderKPITracker(M);
+  html += renderExpertPlaybook(M);
+  html += renderTradesJournal(M);
   html += renderFunding(M);
   html += renderTPExplain(M);
   html += renderTarget(M);
@@ -549,6 +555,247 @@ function render() {
   html += renderValidation(M);
 
   document.getElementById('render').innerHTML = html;
+}
+
+// === 🎯 KPI TRACKER — 35% target progress ===
+function renderKPITracker(M) {
+  const anchor = state.target_anchor;
+  const targetPct = state.target_pct;
+  const eoyGoal = anchor * (1 + targetPct/100);
+  const currentNet = M.m1.net;
+  const poolPnl = state.pool.api_pnl ?? 0;
+  const futuresRealized = state.futures?.total_realized ?? 0;
+  const futuresFunding = state.futures?.total_funding_fee ?? 0;
+  const futuresUnrealized = state.futures?.total_unrealized ?? 0;
+
+  // Total return components
+  const unrealized_spot = M.m1.pnl_unreal;
+  const total_unrealized = unrealized_spot + poolPnl + futuresUnrealized;
+  const total_realized = futuresRealized + futuresFunding;
+  const total_return = total_unrealized + total_realized;
+  const total_return_pct = anchor > 0 ? (total_return / anchor) * 100 : 0;
+
+  // Time tracking — assume year start = anchor date
+  // For v73 anchor is "v70 start" — let's compute days assuming year starts on first fetch (saved in localStorage)
+  let yearStartTs = parseInt(localStorage.getItem('kpiYearStart') || 0);
+  if (!yearStartTs) {
+    yearStartTs = Date.now();
+    localStorage.setItem('kpiYearStart', String(yearStartTs));
+  }
+  const daysElapsed = Math.max(1, Math.floor((Date.now() - yearStartTs) / 86400000));
+  const daysRemaining = Math.max(1, 365 - daysElapsed);
+  const elapsedPct = (daysElapsed / 365) * 100;
+
+  // Gap to target
+  const gapToTarget = eoyGoal - currentNet;
+  const gapPctNeeded = currentNet > 0 ? (gapToTarget / currentNet) * 100 : 0;
+  // Required compound daily rate
+  const requiredCompoundRate = currentNet > 0 ? (Math.pow(eoyGoal / currentNet, 1/daysRemaining) - 1) * 100 : 0;
+  const requiredMonthlyRate = currentNet > 0 ? (Math.pow(eoyGoal / currentNet, 30/daysRemaining) - 1) * 100 : 0;
+
+  // Current rate
+  const currentRatePctPerDay = daysElapsed > 0 ? (Math.pow(currentNet / anchor, 1/daysElapsed) - 1) * 100 : 0;
+  const onTrack = currentRatePctPerDay >= requiredCompoundRate;
+  const gapRate = currentRatePctPerDay - requiredCompoundRate;
+
+  const statusC = onTrack ? 'var(--green)' : currentNet < anchor ? 'var(--red)' : 'var(--orange)';
+  const statusText = onTrack ? '✅ ON TRACK' : currentNet < anchor ? '🚨 BEHIND (below anchor)' : '⚠️ BEHIND (above anchor but slow)';
+
+  return `<div id="kpi" class="section-title section-title-target">🎯 KPI Tracker · ${targetPct}% target by EOY</div>
+  <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Target: NET ≥ ${fmt$(eoyGoal)} bằng EOY</div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Anchor ${fmt$(anchor)} · Required gain ${fmt$(eoyGoal - anchor)} (${targetPct}%) · ${daysElapsed}/365 days elapsed</div>
+      </div>
+      <span class="badge" style="background:${statusC}33;color:${statusC};border:1px solid ${statusC};font-size:0.9rem;padding:0.4rem 0.8rem">${statusText}</span>
+    </div>
+
+    <div class="metrics" style="margin-bottom:1rem">
+      <div class="metric"><div class="metric-label">Current NET</div><div class="metric-value" style="color:${currentNet >= anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(currentNet)}</div><div class="metric-sub">${fmtPct((currentNet/anchor - 1) * 100)} vs anchor</div></div>
+      <div class="metric"><div class="metric-label">Gap to target</div><div class="metric-value" style="color:var(--orange)">${fmt$(gapToTarget)}</div><div class="metric-sub">${fmtPct(gapPctNeeded)} cần</div></div>
+      <div class="metric"><div class="metric-label">Days remaining</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">elapsed ${elapsedPct.toFixed(1)}%</div></div>
+      <div class="metric"><div class="metric-label">Required daily rate</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/d</div><div class="metric-sub">compound to EOY</div></div>
+      <div class="metric"><div class="metric-label">Required monthly</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/mo</div><div class="metric-sub">compound</div></div>
+      <div class="metric"><div class="metric-label">Current rate</div><div class="metric-value" style="color:${currentRatePctPerDay >= 0 ? 'var(--green)' : 'var(--red)'}">${currentRatePctPerDay.toFixed(3)}%/d</div><div class="metric-sub">vs required ${gapRate >= 0 ? '+' : ''}${gapRate.toFixed(3)}pp</div></div>
+    </div>
+
+    <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Return breakdown (cộng dồn)</div>
+    <table>
+      <thead><tr><th>Component</th><th>Value</th><th>vs Anchor %</th><th>Source</th></tr></thead>
+      <tbody>
+        <tr><td>Spot unrealized PnL</td><td style="color:${unrealized_spot >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(unrealized_spot)}</td><td>${fmtPct((unrealized_spot/anchor)*100)}</td><td>vs avg cost</td></tr>
+        <tr><td>Pool DCA PnL</td><td style="color:${poolPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(poolPnl)}</td><td>${fmtPct((poolPnl/anchor)*100)}</td><td>Auto-Invest API</td></tr>
+        <tr><td>Futures unrealized</td><td style="color:${futuresUnrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresUnrealized)}</td><td>${fmtPct((futuresUnrealized/anchor)*100)}</td><td>open positions</td></tr>
+        <tr><td>Futures realized</td><td style="color:${futuresRealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresRealized)}</td><td>${fmtPct((futuresRealized/anchor)*100)}</td><td>closed trades</td></tr>
+        <tr><td>Funding fee net</td><td style="color:${futuresFunding >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresFunding)}</td><td>${fmtPct((futuresFunding/anchor)*100)}</td><td>perp funding</td></tr>
+        <tr style="background:rgba(167,139,250,0.1);font-weight:700">
+          <td><b>TOTAL RETURN</b></td>
+          <td style="color:${total_return >= 0 ? 'var(--green)' : 'var(--red)'}"><b>${fmt$signed(total_return)}</b></td>
+          <td style="color:${total_return >= 0 ? 'var(--green)' : 'var(--red)'}"><b>${fmtPct(total_return_pct)}</b> of ${targetPct}%</td>
+          <td>${fmtPct((total_return_pct/targetPct)*100)} of target hit</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="${onTrack ? 'safety-bar' : 'danger-bar'}" style="margin-top:0.875rem">
+      ${onTrack ? '✅' : '🚨'} <b>Verdict</b>: ${onTrack ? `Current rate ${currentRatePctPerDay.toFixed(3)}%/d ≥ required ${requiredCompoundRate.toFixed(3)}%/d → on track hit ${fmt$(eoyGoal)} EOY.` : `Current rate ${currentRatePctPerDay.toFixed(3)}%/d < required ${requiredCompoundRate.toFixed(3)}%/d. Cần tăng tốc ${Math.abs(gapRate).toFixed(3)}pp/day (≈${(Math.abs(gapRate)*30).toFixed(2)}%/month). Xem 🤖 Expert Playbook bên dưới để biết action cần làm.`}
+    </div>
+  </div>`;
+}
+
+// === 🤖 EXPERT PLAYBOOK — auto-generate ranked actions to close gap ===
+function renderExpertPlaybook(M) {
+  const currentNet = M.m1.net;
+  const targetEoy = state.target_anchor * (1 + state.target_pct/100);
+  const gap = targetEoy - currentNet;
+  const fg = state.market.fg_cg;
+  const btcPrice = state.holdings.BTC.price;
+  const actions = [];
+
+  // Action ranking framework: each action has trigger + estimated $ impact + probability + risk
+  const addAction = (priority, status, title, trigger, action, est_impact, probability, risk, why) => {
+    actions.push({ priority, status, title, trigger, action, est_impact, probability, risk, expected_value: est_impact * probability, why });
+  };
+
+  // === Action 1: Pool rebalance toward underwater coins ===
+  const poolEv = state.pool.plan_alloc ? evaluatePoolPlan(M.m2, state.pool.plan_alloc) : null;
+  if (poolEv && poolEv.maxDiff > 8) {
+    const worstDriftAsset = Object.entries(poolEv.diff).reduce((a,b) => Math.abs(b[1]) > Math.abs(a[1]) ? b : a)[0];
+    addAction(1, '⚠ ACTION', `Rebalance Pool DCA toward BEP-weighted ideal`, `Plan Health drift ${poolEv.maxDiff.toFixed(1)}pp`, `Edit Binance Auto-Invest plan → adjust ${worstDriftAsset} alloc ${poolEv.diff[worstDriftAsset] > 0 ? 'DOWN' : 'UP'} to ${poolEv.ideal[worstDriftAsset].toFixed(0)}%`, currentNet * 0.05, 0.6, 'low (DCA is dollar-cost averaged)', 'Underwater coins compound faster when bought low. SOP M5 Priority-Score.');
+  }
+
+  // === Action 2: Loan repay if LTV > acceptable ===
+  if (state.loan_orders) {
+    const aggLTV = state.loan_orders.reduce((s,o) => s + o.debt, 0) / state.loan_orders.reduce((s,o) => s + o.collValue, 0);
+    if (aggLTV > 0.70) {
+      const repayAmount = state.loan_orders.reduce((s,o) => s + o.debt, 0) * 0.15; // repay 15%
+      addAction(2, '🚨 PRIORITY', `Partial loan repay ${fmt$(repayAmount,0)}`, `Aggregate LTV ${(aggLTV*100).toFixed(1)}% > 70% (target ≤ 65%)`, `Repay ${fmt$(repayAmount,0)} USDT từ spot USDC/USDT để restore safety buffer + capacity dip-buy`, currentNet * 0.10, 0.9, 'high if BTC dumps without buffer', 'LTV cao = nguy cơ margin call sớm + không còn capacity để dip-buy khi BTC dump T2/T3.');
+    }
+  }
+
+  // === Action 3: TP partial if BTC near TP1 + F&G ≥ 65 ===
+  for (const sym of ['BTC', 'WBETH']) {
+    const h = state.holdings[sym];
+    if (!h?.avg) continue;
+    const tp1 = h.avg * 1.40;
+    const distToTP1 = (tp1 / h.price - 1) * 100;
+    if (distToTP1 < 15 && fg >= 50) {
+      addAction(3, '🟡 WATCH', `${sym} approaching TP1 (${fmt$(tp1)})`, `Price within ${distToTP1.toFixed(1)}% of TP1 + F&G ${fg}`, `Đặt limit sell 15% qty tại ${fmt$(tp1)}. Khi fire → rotate $X vào underwater coin (LINK/BNB).`, h.qty * (tp1 - h.price) * 0.15, 0.4, 'opportunity cost if BTC continues up', 'TP discipline: bán đỉnh khi market euphoric, rotate vào dip.');
+    }
+  }
+
+  // === Action 4: Funding squeeze if conditions met ===
+  const fundingThr = state.market.funding_threshold_adaptive ?? -0.005;
+  const rsi = state.market.rsi6_1d;
+  const volRatio = state.market.btc_vol_ratio ?? 1;
+  const priceAboveSMA = btcPrice > (state.market.btc_sma20 || 79000);
+  const condFunding = state.market.funding_btc_pct <= fundingThr;
+  const condRSI = rsi > 70;
+  const condVol = volRatio > 1.5;
+  const conditionsMet = [condFunding, condRSI, priceAboveSMA, condVol].filter(Boolean).length;
+  if (conditionsMet >= 3) {
+    const margin = currentNet * 0.05;
+    addAction(2, '🟢 FIRE', `Funding Squeeze (${conditionsMet}/4 met)`, `Funding ${state.market.funding_btc_pct.toFixed(4)}% · RSI ${rsi.toFixed(1)} · Vol ${volRatio.toFixed(2)}x · BTC ${priceAboveSMA ? 'above' : 'below'} SMA20`, `Margin ${fmt$(margin)} × 3x = ${fmt$(margin*3)} notional BTCUSDT-PERP long. SL -7% · TP +15% · max 48h hold`, margin * 3 * 0.15 * 0.5, 0.5, 'capped at -7% SL', 'Adaptive conditions confirm short-squeeze setup. EV +$15/play, annual +$232.');
+  } else if (conditionsMet >= 2) {
+    addAction(4, '🟣 ARMED', `Squeeze armed (${conditionsMet}/4) — wait`, `Need ${4-conditionsMet} more conditions`, `Monitor every 4h. Fire khi ARM = 4/4.`, 0, 0, 'none (no action)', 'Setup chưa chín — chờ confirmation.');
+  }
+
+  // === Action 5: Dip-buy ladder if BTC drops + F&G low ===
+  if (btcPrice < 78000 && fg <= 40) {
+    addAction(2, '🟢 OPPORTUNITY', `T1 Dip-buy active`, `BTC ${fmt$(btcPrice)} < $78K + F&G ${fg} ≤ 40`, `Tăng DCA $25/day × 3 ngày. Focus underwater coins (LINK/BNB).`, currentNet * 0.03, 0.7, 'medium if BTC continues dump', 'Fear zone = contrarian buy. v73 dip ladder T1.');
+  }
+  if (btcPrice < 75000 && fg <= 35 && state.loan_orders) {
+    const aggLTV = state.loan_orders.reduce((s,o) => s + o.debt, 0) / state.loan_orders.reduce((s,o) => s + o.collValue, 0);
+    if (aggLTV < 0.65) {
+      addAction(1, '🟢 OPPORTUNITY', `T2 Dip-buy + loan add`, `BTC ${fmt$(btcPrice)} < $75K + F&G ${fg} ≤ 35 + LTV ${(aggLTV*100).toFixed(1)}% < 65%`, `Tăng DCA $30/day × 5d + borrow thêm $400 USDT để dip-buy BTC/WBETH`, currentNet * 0.06, 0.65, 'high (leveraged dip-buy)', 'Deep value zone — leverage để nhân lợi nhuận. CHỈ KHI LTV thấp.');
+    }
+  }
+
+  // === Action 6: Cash reserve management ===
+  const cashPct = (state.holdings.USDC.value || 0) / M.m1.gross * 100;
+  if (cashPct < 2 && fg < 40) {
+    addAction(3, '⚠ ADVISORY', `Build cash reserve khi F&G Fear`, `Cash ${cashPct.toFixed(1)}% < 2% target`, `Convert ~$100 từ underwater alt (LINK/BNB) sang USDC để có ammo dip-buy T3 nếu BTC < $72K`, 0, 0.3, 'low (just liquidity prep)', 'Dry powder for deeper dips. Insurance cost.');
+  }
+
+  // === Action 7: Yield activation ===
+  if (state.holdings.WBETH.qty > 0.1 && !state.futures?.account_balance) {
+    addAction(4, '💡 PASSIVE', `Activate ETH staking yield`, `WBETH qty ${state.holdings.WBETH.qty.toFixed(4)} (~$${(state.holdings.WBETH.qty * state.holdings.WBETH.price).toFixed(0)})`, `Đảm bảo WBETH staking active — earn ~3-4% APY tự động`, state.holdings.WBETH.qty * state.holdings.WBETH.price * 0.035, 0.95, 'none (passive)', 'Free yield. Annual +~$32 if held.');
+  }
+
+  // Sort by expected value descending
+  actions.sort((a, b) => b.expected_value - a.expected_value);
+
+  // Sum estimated total impact
+  const totalImpact = actions.reduce((s, a) => s + a.expected_value, 0);
+  const closeGapPct = gap > 0 ? (totalImpact / gap) * 100 : 0;
+
+  let rows = '';
+  for (const a of actions) {
+    const ev = a.expected_value;
+    const evC = ev > 50 ? 'var(--green)' : ev > 10 ? 'var(--yellow)' : 'var(--muted)';
+    rows += `<div style="background:var(--bg2);border-left:4px solid ${evC};border-radius:8px;padding:0.875rem 1rem;margin-bottom:0.625rem">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem">
+        <div style="font-family:var(--display);font-weight:700;font-size:0.95rem">${a.status} #${a.priority} · ${a.title}</div>
+        <div style="font-family:var(--mono);font-size:0.78rem">EV <b style="color:${evC}">${fmt$signed(a.expected_value)}</b> = ${fmt$signed(a.est_impact)} × ${(a.probability*100).toFixed(0)}%</div>
+      </div>
+      <div style="font-size:0.78rem;color:var(--muted);font-family:var(--mono);margin-bottom:0.4rem">🎯 Trigger: ${a.trigger}</div>
+      <div style="font-size:0.83rem;color:var(--text);line-height:1.55;margin-bottom:0.4rem"><b>Action</b>: ${a.action}</div>
+      <div style="font-size:0.75rem;color:var(--muted);font-family:var(--mono)"><b>Risk</b>: ${a.risk} · <b>Why</b>: ${a.why}</div>
+    </div>`;
+  }
+
+  return `<div id="playbook" class="section-title">🤖 Expert Playbook · ranked actions để hit ${state.target_pct}% target</div>
+  <div class="card" style="border:2px solid var(--purple)">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.6">
+      Auto-generated actions từ signals hiện tại (BEP gap, LTV, F&G, funding, RSI, volume). Ranked by <b>Expected Value = impact × probability</b>. <b>Tổng EV ước tính ${fmt$(totalImpact)}</b> ≈ <b>${closeGapPct.toFixed(1)}%</b> gap toward ${fmt$(targetEoy)} target.
+    </div>
+    ${rows || '<div style="color:var(--muted);font-size:0.85rem">Không có action nào trigger với conditions hiện tại — market regime quiet.</div>'}
+    <div class="warning-bar" style="margin-top:0.875rem">⚠️ <b>Disclaimer</b>: Recommendations dựa trên signals algorithmic, KHÔNG phải lời khuyên đầu tư. User tự thực thi và chịu trách nhiệm. Probability + impact là ước tính, market có thể behave khác.</div>
+  </div>`;
+}
+
+// === 📊 TRADES JOURNAL — futures + spot realized PnL ===
+function renderTradesJournal(M) {
+  const f = state.futures;
+  if (!f) return '';
+
+  let posRows = '';
+  if (f.positions.length > 0) {
+    for (const p of f.positions) {
+      const c = p.unrealized >= 0 ? 'var(--green)' : 'var(--red)';
+      posRows += `<tr>
+        <td><b style="color:${p.side === 'LONG' ? 'var(--green)' : 'var(--red)'}">${p.side}</b> ${p.symbol}</td>
+        <td>${fmtQty(p.qty)}</td>
+        <td>${fmt$(p.entry)}</td>
+        <td>${fmt$(p.mark)}</td>
+        <td>${p.leverage}x</td>
+        <td>${fmt$(p.liquidation)}</td>
+        <td style="color:${c}">${fmt$signed(p.unrealized)}</td>
+      </tr>`;
+    }
+  }
+
+  const totalFuturesPnl = f.total_realized + f.total_funding_fee + f.total_commission;
+  const winRate = (f.winning_trades + f.losing_trades) > 0 ? (f.winning_trades / (f.winning_trades + f.losing_trades)) * 100 : 0;
+
+  return `<div id="journal" class="section-title">📊 Trades Journal · Futures + Spot realized</div>
+  <div class="card">
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Futures wallet</div><div class="metric-value">${fmt$(f.account_balance)}</div><div class="metric-sub">USDT-M balance</div></div>
+      <div class="metric"><div class="metric-label">Open positions</div><div class="metric-value">${f.open_positions_count}</div><div class="metric-sub">unrealized ${fmt$signed(f.total_unrealized)}</div></div>
+      <div class="metric"><div class="metric-label">Total realized PnL</div><div class="metric-value" style="color:${f.total_realized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(f.total_realized)}</div><div class="metric-sub">closed positions</div></div>
+      <div class="metric"><div class="metric-label">Funding fee net</div><div class="metric-value" style="color:${f.total_funding_fee >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(f.total_funding_fee)}</div><div class="metric-sub">perp funding</div></div>
+      <div class="metric"><div class="metric-label">Commission</div><div class="metric-value" style="color:var(--red)">${fmt$signed(f.total_commission)}</div><div class="metric-sub">trading fees</div></div>
+      <div class="metric"><div class="metric-label">Win rate</div><div class="metric-value">${winRate.toFixed(0)}%</div><div class="metric-sub">${f.winning_trades}W / ${f.losing_trades}L</div></div>
+    </div>
+    ${posRows ? `<div style="font-family:var(--display);font-weight:700;margin:0.875rem 0 0.5rem">📍 Open positions</div>
+    <table>
+      <thead><tr><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>Leverage</th><th>Liq price</th><th>Unrealized</th></tr></thead>
+      <tbody>${posRows}</tbody>
+    </table>` : `<div class="safety-bar">${f.trade_count > 0 ? `📋 ${f.trade_count} historical futures trades on BTCUSDT, không có open positions.` : '📋 Chưa có futures trade history (hoặc chưa enable futures permission). Section này sẽ populate sau khi user mở futures.'}</div>`}
+    <div class="warning-bar">📐 <b>Track KPI</b>: Total futures PnL = realized + funding + commission = <b style="color:${totalFuturesPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(totalFuturesPnl)}</b>. Đóng góp ${fmtPct(totalFuturesPnl / state.target_anchor * 100)} vs anchor.</div>
+  </div>`;
 }
 
 function renderFunding(M) {
@@ -2000,6 +2247,10 @@ async function fetchFromBinance() {
       poolHistory: safe('poolHistory', fetchAllPoolHistory()),
       funding: safe('funding', callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' })),
       fundingHistory: safe('fundingHistory', callWorker('/fapi/v1/fundingRate', { symbol: 'BTCUSDT', limit: 21 })),
+      futuresAccount: safe('futuresAccount', callWorker('/fapi/v2/account')),
+      futuresPositions: safe('futuresPositions', callWorker('/fapi/v3/positionRisk')),
+      futuresIncome: safe('futuresIncome', callWorker('/fapi/v1/income', { limit: 1000 })),
+      futuresTrades: safe('futuresTrades', callWorker('/fapi/v1/userTrades', { symbol: 'BTCUSDT', limit: 1000 })),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
@@ -2206,6 +2457,54 @@ async function fetchFromBinance() {
         }
       }
     } catch {}
+
+    // === FUTURES DATA aggregation (KPI Trades Journal) ===
+    state.futures = {
+      account_balance: 0,
+      total_unrealized: 0,
+      total_realized: 0,
+      total_funding_fee: 0,
+      total_commission: 0,
+      positions: [],
+      open_positions_count: 0,
+      trade_count: 0,
+      winning_trades: 0,
+      losing_trades: 0,
+    };
+    if (r.futuresAccount?.totalWalletBalance !== undefined) {
+      state.futures.account_balance = parseFloat(r.futuresAccount.totalWalletBalance);
+      state.futures.total_unrealized = parseFloat(r.futuresAccount.totalUnrealizedProfit || 0);
+    }
+    if (Array.isArray(r.futuresPositions)) {
+      const openPos = r.futuresPositions.filter(p => parseFloat(p.positionAmt) !== 0);
+      state.futures.open_positions_count = openPos.length;
+      state.futures.positions = openPos.map(p => ({
+        symbol: p.symbol,
+        side: parseFloat(p.positionAmt) > 0 ? 'LONG' : 'SHORT',
+        qty: Math.abs(parseFloat(p.positionAmt)),
+        entry: parseFloat(p.entryPrice),
+        mark: parseFloat(p.markPrice),
+        unrealized: parseFloat(p.unRealizedProfit || p.unrealizedProfit || 0),
+        leverage: parseFloat(p.leverage),
+        liquidation: parseFloat(p.liquidationPrice),
+      }));
+    }
+    if (Array.isArray(r.futuresIncome)) {
+      for (const inc of r.futuresIncome) {
+        const amt = parseFloat(inc.income);
+        if (inc.incomeType === 'REALIZED_PNL') state.futures.total_realized += amt;
+        else if (inc.incomeType === 'FUNDING_FEE') state.futures.total_funding_fee += amt;
+        else if (inc.incomeType === 'COMMISSION') state.futures.total_commission += amt;
+      }
+    }
+    if (Array.isArray(r.futuresTrades)) {
+      state.futures.trade_count = r.futuresTrades.length;
+      // Group trades by orderId to compute round-trip PnL
+      // For simplicity count buys/sells separately; deep round-trip logic is heavy
+      const realizedPnls = r.futuresTrades.map(t => parseFloat(t.realizedPnl || 0));
+      state.futures.winning_trades = realizedPnls.filter(p => p > 0).length;
+      state.futures.losing_trades = realizedPnls.filter(p => p < 0).length;
+    }
 
     // Save snapshot for next-fetch diff
     saveSnapshot();
