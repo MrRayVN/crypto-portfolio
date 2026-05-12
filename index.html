@@ -737,9 +737,21 @@ function renderExpertPlaybook(M) {
     `Vol ${volRatio.toFixed(2)}x ${condVol ? '✓' : '✗'} > 1.5x`,
     ...(condLS !== null ? [`Agg L/S ${ca.ls_current.toFixed(2)} ${condLS ? '✓' : '✗'} < 1.0`] : []),
   ];
-  if (conditionsMet >= Math.ceil(totalConds * 0.75)) {
-    const margin = currentNet * 0.05;
-    addAction(2, '🟢 FIRE', `Funding Squeeze (${conditionsMet}/${totalConds} met)`, `${conditionsMet}/${totalConds} conditions including ${fundingSrc} agg funding`, `Margin ${fmt$(margin)} × 3x = ${fmt$(margin*3)} notional BTCUSDT-PERP long. SL -7% · TP +15% · max 48h hold`, margin * 3 * 0.15 * 0.5, 0.55, 'capped at -7% SL', `Cross-exchange aggregated funding gives signal HIGHER quality than Binance-only.`, squeezeDNA);
+  // Squeeze sizing: min(5% NET, 50% futures balance) — không vượt futures wallet
+  const maxByNet = currentNet * 0.05;
+  const fbal = state.futures?.account_balance ?? Infinity;
+  const maxByFutures = fbal === Infinity ? Infinity : fbal * 0.5;
+  const margin = Math.min(maxByNet, maxByFutures);
+  // Check open BTC long position — KHÔNG đề xuất add nếu đã exposed
+  const hasOpenBTCLong = state.futures?.positions?.some(p =>
+    p.symbol?.startsWith('BTC') && p.side === 'LONG' && p.qty > 0
+  );
+  squeezeDNA.push(`Sizing: NET ${fmt$(currentNet)} × 5% = ${fmt$(maxByNet)} | Futures bal ${fbal === Infinity ? 'N/A' : fmt$(fbal)} × 50% = ${maxByFutures === Infinity ? '∞' : fmt$(maxByFutures)} | Use ${fmt$(margin)}`);
+  if (hasOpenBTCLong) squeezeDNA.push('⚠ Already long BTC futures — skip add');
+  if (conditionsMet >= Math.ceil(totalConds * 0.75) && !hasOpenBTCLong) {
+    addAction(2, '🟢 FIRE', `Funding Squeeze (${conditionsMet}/${totalConds} met)`, `${conditionsMet}/${totalConds} conditions including ${fundingSrc} agg funding`, `Margin ${fmt$(margin)} × 3x = ${fmt$(margin*3)} notional BTCUSDT-PERP long. SL -7% · TP +15% · max 48h hold`, margin * 3 * 0.15 * 0.5, 0.55, 'capped at -7% SL', `Sizing: min(5% NET, 50% futures bal). Cross-exchange agg funding higher signal quality.`, squeezeDNA);
+  } else if (hasOpenBTCLong) {
+    addAction(4, 'ℹ ALREADY LONG', `Squeeze conditions met (${conditionsMet}/${totalConds}) NHƯNG đã có BTC long`, `Open long position exists`, `Không add thêm long — manage existing position. Theo dõi SL/TP đã set.`, 0, 0, 'duplicate exposure', 'Tránh over-leveraging cùng direction.', squeezeDNA);
   } else if (conditionsMet >= 2) {
     addAction(4, '🟣 ARMED', `Squeeze armed (${conditionsMet}/${totalConds}) — wait`, `Need ${totalConds-conditionsMet} more`, `Monitor every 4h. Fire khi ${Math.ceil(totalConds * 0.75)}+/${totalConds}.`, 0, 0, 'none (no action)', 'Setup chưa chín.', squeezeDNA);
   }
@@ -763,31 +775,53 @@ function renderExpertPlaybook(M) {
     }
   }
 
-  // === Action: OI buildup warning + OI TREND ===
-  if (ca?.oi_current !== undefined) {
+  // === Action: OI extreme (statistical — P90 of 7d history) ===
+  if (ca?.oi_current !== undefined && ca?.oi_p90) {
     const oiBn = ca.oi_current / 1e9;
+    const p90Bn = ca.oi_p90 / 1e9;
     const trend = ca?.oi_trend;
     const oi7dChg = ca?.oi_change_7d_pct;
-    const dnaOI = [`Agg OI ${oiBn.toFixed(2)}B USD`, trend ? `Trend ${trend} (${oi7dChg >= 0 ? '+' : ''}${oi7dChg?.toFixed(1)}% 7d)` : ''].filter(Boolean);
-    if (oiBn > 35) addAction(3, '⚠ VOLATILITY WARN', `OI ${oiBn.toFixed(1)}B — leverage at extreme`, `Total OI > $35B`, `Trim leverage 1 notch (giảm Squeeze size, không tăng loan).`, currentNet * 0.03, 0.4, 'opportunity cost', 'OI extreme historically precedes flush.', dnaOI);
-    else if (trend === 'rising' && state.market.btc_24h < 0) addAction(3, '🟠 BEAR SETUP', `OI rising ${oi7dChg.toFixed(1)}% + BTC -${Math.abs(state.market.btc_24h).toFixed(1)}%`, `OI rising với price falling`, `Late-leverage longs — flush risk. Đợi capitulation, KHÔNG dip-buy vội.`, currentNet * 0.02, 0.45, 'wait', 'Rising OI + falling price = longs building into bearish move.', dnaOI);
-  }
-
-  // === Action: Liquidation cascade (Coinalyze) ===
-  if (ca?.liq_24h_total !== undefined && ca.liq_24h_total > 100e6) {
-    const dnaLiq = [`Liq 24h $${(ca.liq_24h_total/1e6).toFixed(1)}M`, `${ca.liq_24h_dominance}`, `Long $${(ca.liq_24h_long/1e6).toFixed(0)}M vs Short $${(ca.liq_24h_short/1e6).toFixed(0)}M`];
-    if (ca.liq_24h_dominance === 'longs-rekt' && ca.liq_24h_long > 200e6) {
-      addAction(2, '🟢 CAPITULATION BUY', `Long liquidation cascade $${(ca.liq_24h_long/1e6).toFixed(0)}M 24h`, `Long liq > $200M = washout`, `Aggressive dip-buy: $50-100 spot LINK/BNB. Capitulation = local low signal.`, currentNet * 0.07, 0.55, 'high — knife catch risk', 'Mass long liq = forced sells exhausted. Historically precedes bounce 24-72h.', dnaLiq);
-    } else if (ca.liq_24h_dominance === 'shorts-rekt' && ca.liq_24h_short > 150e6) {
-      addAction(4, '🟡 SHORT SQUEEZE', `Short liquidation $${(ca.liq_24h_short/1e6).toFixed(0)}M 24h`, `Short liq > $150M`, `Squeeze already happening — KHÔNG chase highs. Đợi pullback để TP nếu profitable.`, currentNet * 0.02, 0.4, 'late entry risk', 'Short squeeze in progress — chasing = bad entry.', dnaLiq);
+    const dnaOI = [`OI now ${oiBn.toFixed(2)}B`, `P90 7d ${p90Bn.toFixed(2)}B`, `Mean 7d ${(ca.oi_mean_7d/1e9).toFixed(2)}B`, trend ? `Trend ${trend} (${oi7dChg >= 0 ? '+' : ''}${oi7dChg?.toFixed(1)}%)` : ''];
+    if (ca.oi_current > ca.oi_p90 * 1.05) {
+      addAction(3, '⚠ OI EXTREME', `OI ${oiBn.toFixed(2)}B > P90 7d (${p90Bn.toFixed(2)}B)`, `OI > 105% P90 of 7d (statistical extreme)`, `Trim Squeeze size 50%. Standby loan add. Flush probability tăng.`, currentNet * 0.03, 0.45, 'opportunity cost', `Formula: current_OI > percentile90(OI_7d_hourly) × 1.05. Statistical extreme = top 10% of recent regime.`, dnaOI);
+    } else if (trend === 'rising' && state.market.btc_24h < 0) {
+      addAction(3, '🟠 BEAR SETUP', `OI rising ${oi7dChg.toFixed(1)}% + BTC -${Math.abs(state.market.btc_24h).toFixed(1)}%`, `OI ↑ + price ↓ → late longs building`, `Đợi capitulation. KHÔNG dip-buy vội.`, currentNet * 0.02, 0.45, 'wait', 'Rising OI + falling price = leveraged longs buying tops.', dnaOI);
     }
   }
 
-  // === Action: Predicted funding pre-position ===
-  if (ca?.predicted_funding !== undefined) {
+  // === Action: Liquidation cascade (statistical — vs 2σ of 24h hourly liq) ===
+  if (ca?.liq_24h_total !== undefined && ca?.liq_hourly_max && ca?.liq_hourly_mean) {
+    const recentLong = ca.liq_last_hour_long ?? 0;
+    const recentShort = ca.liq_last_hour_short ?? 0;
+    const recentTotal = recentLong + recentShort;
+    const sigma = ca.liq_hourly_stddev ?? 0;
+    const mean = ca.liq_hourly_mean;
+    const cascadeThreshold = mean + 2 * sigma; // 2σ above mean = cascade
+    const dnaLiq = [`Recent hour total $${(recentTotal/1e6).toFixed(1)}M`, `Mean 24h hourly $${(mean/1e6).toFixed(1)}M`, `2σ threshold $${(cascadeThreshold/1e6).toFixed(1)}M`, `Dominance ${ca.liq_24h_dominance}`];
+    if (recentTotal > cascadeThreshold && ca.liq_24h_dominance === 'longs-rekt') {
+      addAction(2, '🟢 CAPITULATION BUY', `Long liq cascade $${(recentLong/1e6).toFixed(1)}M > 2σ`, `Recent hour > mean+2σ + longs-rekt`, `Aggressive dip-buy: $50-100 spot LINK/BNB. Statistical capitulation signal.`, currentNet * 0.07, 0.55, 'high — knife catch', `Formula: recent_hour_total > mean_hourly_24h + 2 × stddev_hourly. Statistical cascade (z>2).`, dnaLiq);
+    } else if (recentTotal > cascadeThreshold && ca.liq_24h_dominance === 'shorts-rekt') {
+      addAction(4, '🟡 SHORT SQUEEZE', `Short liq cascade $${(recentShort/1e6).toFixed(1)}M > 2σ`, `Recent hour > 2σ + shorts-rekt`, `Squeeze in progress — KHÔNG chase highs. Đợi pullback.`, currentNet * 0.02, 0.4, 'late entry', 'Statistical short squeeze. Chasing = bad entry.', dnaLiq);
+    }
+  }
+
+  // === Action: Predicted funding pre-position (statistical — vs P5 of 7d funding history) ===
+  if (ca?.predicted_funding !== undefined && state.market.funding_history_min !== undefined) {
     const pf = ca.predicted_funding;
-    const dnaPF = [`Predicted next funding ${pf.toFixed(4)}%`, `Current ${(ca.funding_current ?? 0).toFixed(4)}%`];
-    if (pf < -0.01) addAction(3, '🟣 PRE-SQUEEZE ARM', `Predicted funding ${pf.toFixed(4)}% (very bearish)`, `Next funding < -0.01% predicted`, `Pre-arm Squeeze monitor. Nếu price hold + RSI build → fire khi funding actual hits prediction.`, currentNet * 0.04, 0.35, 'prediction may not realize', 'Coinalyze predicted funding leading signal — pre-position before market.', dnaPF);
+    // Statistical threshold: pred funding < (5th percentile of 7d funding) = predicted bearish vs historical regime
+    const fundingP5 = state.market.funding_history_min; // already min from 7d
+    const fundingMedian = state.market.funding_history_median ?? 0;
+    const accuracyNote = ca.pred_funding_accuracy_mae !== null && ca.pred_funding_accuracy_mae !== undefined
+      ? ` · accuracy MAE ${ca.pred_funding_accuracy_mae.toFixed(4)}pp (${ca.pred_funding_matched} samples)`
+      : '';
+    const dnaPF = [`Pred next funding ${pf.toFixed(4)}%`, `Current ${(ca.funding_current ?? 0).toFixed(4)}%`, `7d median ${fundingMedian.toFixed(4)}%`, `7d min ${fundingP5.toFixed(4)}%${accuracyNote}`];
+    // Confidence weighting: lower MAE = higher confidence
+    const confidence = ca.pred_funding_accuracy_mae !== null && ca.pred_funding_accuracy_mae !== undefined
+      ? Math.max(0.2, Math.min(0.6, 0.5 - ca.pred_funding_accuracy_mae * 10))
+      : 0.35;
+    if (pf < fundingP5) {
+      addAction(3, '🟣 PRE-SQUEEZE ARM', `Pred funding ${pf.toFixed(4)}% < 7d min`, `Predicted < statistical floor of recent regime`, `Pre-arm Squeeze monitor. Confidence ${(confidence*100).toFixed(0)}% (weighted by historical accuracy).`, currentNet * 0.04, confidence, 'prediction may miss', `Formula: pred_funding < min(funding_7d_history) = breaks into new bearish regime. Confidence = f(accuracy MAE).`, dnaPF);
+    }
   }
 
   // === Action: Cost-of-leverage check (loan interest paid) ===
@@ -1264,6 +1298,21 @@ function renderActions(M) {
   }
   html += `</div>`;
   return html;
+}
+
+// Statistical helpers — percentile, stddev, mean
+function percentile(arr, p) {
+  if (!arr || arr.length === 0) return null;
+  const sorted = [...arr].filter(v => !isNaN(v)).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  const idx = Math.floor(sorted.length * p);
+  return sorted[Math.min(idx, sorted.length - 1)];
+}
+function stddev(arr) {
+  if (!arr || arr.length < 2) return null;
+  const m = arr.reduce((s,v)=>s+v,0) / arr.length;
+  const v = arr.reduce((s,x)=>s+(x-m)**2,0) / arr.length;
+  return Math.sqrt(v);
 }
 
 // SOP M5 Priority-Score: alloc ideal ∝ max(1, BEP_gap_pp + 8) (tilt to underwater)
@@ -2957,20 +3006,30 @@ async function fetchFromBinance() {
     if (r.coinalyze) {
       const ca = r.coinalyze;
       state.coinalyze = { symbol: ca.symbol };
-      // Liquidations 24h
+      // Liquidations 24h (hourly history) → statistical thresholds
       if (Array.isArray(r.caLiquidations) && r.caLiquidations.length > 0) {
         const liqData = r.caLiquidations[0];
         const history = liqData.history || liqData;
         if (Array.isArray(history) && history.length > 0) {
           let totalLong = 0, totalShort = 0;
+          const hourlyLongs = [], hourlyShorts = [], hourlyTotals = [];
           for (const h of history) {
-            totalLong += parseFloat(h.l || h.longs || h.long_liquidations_usd || 0);
-            totalShort += parseFloat(h.s || h.shorts || h.short_liquidations_usd || 0);
+            const l = parseFloat(h.l || h.longs || h.long_liquidations_usd || 0);
+            const s = parseFloat(h.s || h.shorts || h.short_liquidations_usd || 0);
+            totalLong += l; totalShort += s;
+            hourlyLongs.push(l); hourlyShorts.push(s); hourlyTotals.push(l + s);
           }
           state.coinalyze.liq_24h_long = totalLong;
           state.coinalyze.liq_24h_short = totalShort;
           state.coinalyze.liq_24h_total = totalLong + totalShort;
           state.coinalyze.liq_24h_dominance = totalLong > totalShort ? 'longs-rekt' : 'shorts-rekt';
+          // Statistical: cascade = current hour > 2× max of other hours
+          state.coinalyze.liq_hourly_max = Math.max(...hourlyTotals);
+          state.coinalyze.liq_hourly_p90 = percentile(hourlyTotals, 0.90);
+          state.coinalyze.liq_hourly_mean = hourlyTotals.reduce((s,v)=>s+v,0)/hourlyTotals.length;
+          state.coinalyze.liq_hourly_stddev = stddev(hourlyTotals);
+          state.coinalyze.liq_last_hour_long = hourlyLongs[hourlyLongs.length-1];
+          state.coinalyze.liq_last_hour_short = hourlyShorts[hourlyShorts.length-1];
         }
       }
       // Predicted funding
@@ -2978,14 +3037,41 @@ async function fetchFromBinance() {
         const pf = r.caPredFunding[0];
         state.coinalyze.predicted_funding = parseFloat(pf.value || pf.predicted_funding_rate || 0) * 100;
       }
-      // OI history → trend
+      // OI history → trend + statistical percentiles
       if (Array.isArray(r.caOIHistory) && r.caOIHistory.length > 0) {
         const oiData = r.caOIHistory[0];
         const history = oiData.history || oiData;
         if (Array.isArray(history) && history.length >= 2) {
-          const oiSorted = history.map(h => parseFloat(h.c || h.close || h.v || 0));
-          state.coinalyze.oi_change_7d_pct = oiSorted[0] > 0 ? ((oiSorted[oiSorted.length-1] / oiSorted[0]) - 1) * 100 : 0;
+          const oiVals = history.map(h => parseFloat(h.c || h.close || h.v || 0));
+          state.coinalyze.oi_change_7d_pct = oiVals[0] > 0 ? ((oiVals[oiVals.length-1] / oiVals[0]) - 1) * 100 : 0;
           state.coinalyze.oi_trend = state.coinalyze.oi_change_7d_pct > 5 ? 'rising' : state.coinalyze.oi_change_7d_pct < -5 ? 'falling' : 'stable';
+          // Statistical thresholds — replace hardcoded $35B
+          state.coinalyze.oi_p90 = percentile(oiVals, 0.90);
+          state.coinalyze.oi_max_7d = Math.max(...oiVals);
+          state.coinalyze.oi_mean_7d = oiVals.reduce((s,v)=>s+v,0) / oiVals.length;
+        }
+      }
+      // Predicted funding history → accuracy backtest
+      if (Array.isArray(r.caPredFundingHistory) && r.caPredFundingHistory.length > 0 &&
+          Array.isArray(r.coinalyze?.funding) && r.coinalyze.funding.length > 0) {
+        const predData = r.caPredFundingHistory[0];
+        const actData = r.coinalyze.funding[0];
+        const predHist = predData.history || predData;
+        const actHist = actData.history || actData;
+        if (Array.isArray(predHist) && Array.isArray(actHist) && predHist.length > 0 && actHist.length > 0) {
+          // Match by timestamp (predicted at T should match actual at T+8h roughly)
+          const actMap = new Map(actHist.map(h => [h.t || h.time || h.timestamp, parseFloat(h.c || h.close || 0)]));
+          let matched = 0, errSum = 0;
+          for (const p of predHist) {
+            const t = p.t || p.time || p.timestamp;
+            const pv = parseFloat(p.c || p.close || p.v || 0);
+            if (actMap.has(t)) {
+              matched++;
+              errSum += Math.abs(pv - actMap.get(t));
+            }
+          }
+          state.coinalyze.pred_funding_accuracy_mae = matched > 0 ? (errSum / matched) * 100 : null;
+          state.coinalyze.pred_funding_matched = matched;
         }
       }
       // Funding history → compute current + avg
