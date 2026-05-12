@@ -4,19 +4,114 @@
 <title>Crypto Portfolio Calculator · Mr Ray · v73 engine</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#060910;--bg2:#0d1120;--card:#111827;
---border:rgba(255,255,255,0.07);--border2:rgba(255,255,255,0.13);
---text:#e2e8f0;--text2:#94a3b8;--muted:#64748b;
---blue:#3b82f6;--purple:#8b5cf6;--cyan:#06b6d4;
---green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--orange:#f97316;
---gradient-success:linear-gradient(135deg,#22c55e 0%,#16a34a 100%);
---gradient-target:linear-gradient(135deg,#22c55e 0%,#a78bfa 50%,#06b6d4 100%);
---mono:'JetBrains Mono',monospace;--display:'Space Grotesk',sans-serif;--sans:'Inter',sans-serif;}
+:root{
+--bg:#080b14;--bg2:#0e1422;--bg3:#141b2d;
+--card:rgba(20,27,45,0.55);--card-solid:#141b2d;
+--border:rgba(255,255,255,0.06);--border2:rgba(255,255,255,0.12);--border-active:rgba(0,217,255,0.4);
+--text:#f1f5f9;--text2:#94a3b8;--muted:#64748b;
+--blue:#3b82f6;--purple:#a78bfa;--cyan:#00d9ff;--mint:#10b981;
+--green:#10b981;--red:#f43f5e;--yellow:#f59e0b;--orange:#fb923c;
+--gradient-success:linear-gradient(135deg,#10b981 0%,#059669 100%);
+--gradient-target:linear-gradient(135deg,#10b981 0%,#a78bfa 50%,#00d9ff 100%);
+--gradient-card:linear-gradient(135deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0.01) 100%);
+--shadow-glow:0 0 32px rgba(0,217,255,0.08);
+--shadow-card:0 8px 32px rgba(0,0,0,0.32);
+--blur:saturate(180%) blur(20px);
+--mono:'JetBrains Mono',monospace;--display:'Space Grotesk',sans-serif;--sans:'Inter',sans-serif;
+--ease:cubic-bezier(0.4,0,0.2,1);}
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden}
-.bg-fx{position:fixed;inset:0;background:radial-gradient(circle at 25% 30%,rgba(34,197,94,0.05) 0%,transparent 45%),radial-gradient(circle at 75% 70%,rgba(167,139,250,0.06) 0%,transparent 45%);z-index:0;pointer-events:none}
-.container{position:relative;z-index:1;max-width:1480px;margin:0 auto;padding:1.5rem}
+.bg-fx{position:fixed;inset:0;background:
+  radial-gradient(circle at 20% 20%,rgba(0,217,255,0.06) 0%,transparent 50%),
+  radial-gradient(circle at 80% 70%,rgba(167,139,250,0.05) 0%,transparent 50%),
+  radial-gradient(circle at 50% 100%,rgba(16,185,129,0.04) 0%,transparent 60%);z-index:0;pointer-events:none}
+.container{position:relative;z-index:1;max-width:1520px;margin:0 auto;padding:1.25rem}
+
+/* ============ MODERN GLASSMORPHISM CARD ============ */
+.glass-card{background:var(--card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-card);transition:all 0.3s var(--ease)}
+.glass-card:hover{border-color:var(--border2);box-shadow:var(--shadow-card),var(--shadow-glow)}
+.glass-card-accent{border-color:var(--border-active);box-shadow:0 8px 32px rgba(0,0,0,0.4),0 0 24px rgba(0,217,255,0.1)}
+
+/* ============ STICKY COMPACT HEADER ============ */
+.smart-header{position:sticky;top:0;z-index:200;background:rgba(8,11,20,0.85);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border-bottom:1px solid var(--border);padding:0.75rem 1.25rem;margin:-1.25rem -1.25rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.smart-header-left{display:flex;align-items:center;gap:0.875rem}
+.smart-logo{width:36px;height:36px;background:var(--gradient-target);border-radius:10px;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;box-shadow:0 4px 16px rgba(16,185,129,0.3)}
+.smart-header h1{font-family:var(--display);font-size:1.1rem;font-weight:700;letter-spacing:-0.02em}
+.smart-header .sub{font-size:0.7rem;color:var(--muted);font-family:var(--mono)}
+.smart-header-right{display:flex;align-items:center;gap:0.625rem;flex-wrap:wrap}
+.mini-ticker{display:flex;align-items:center;gap:0.5rem;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:10px;padding:0.4rem 0.75rem;font-family:var(--mono);font-size:0.78rem}
+.mini-ticker .label{color:var(--muted);font-size:0.65rem;text-transform:uppercase;letter-spacing:0.05em}
+.mini-ticker .value{font-weight:700}
+
+/* ============ TAB NAVIGATION ============ */
+.tab-bar{position:sticky;top:60px;z-index:150;display:flex;gap:0.25rem;background:rgba(8,11,20,0.85);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border-bottom:1px solid var(--border);padding:0.5rem 0;margin:0 -1.25rem 1.5rem;overflow-x:auto;scrollbar-width:none}
+.tab-bar::-webkit-scrollbar{display:none}
+.tab-btn{padding:0.5rem 1.125rem;border-radius:10px;font-family:var(--display);font-weight:600;font-size:0.85rem;color:var(--muted);background:transparent;border:1px solid transparent;cursor:pointer;white-space:nowrap;transition:all 0.2s var(--ease);position:relative;display:inline-flex;align-items:center;gap:0.45rem;margin:0 0.25rem}
+.tab-btn:hover{color:var(--text);background:rgba(255,255,255,0.03)}
+.tab-btn.active{color:var(--cyan);background:rgba(0,217,255,0.08);border-color:var(--border-active);box-shadow:inset 0 0 16px rgba(0,217,255,0.05)}
+.tab-btn .badge-count{background:var(--cyan);color:#000;font-size:0.65rem;padding:0.1rem 0.4rem;border-radius:6px;font-weight:700;min-width:18px;text-align:center}
+.tab-btn:not(.active) .badge-count{background:var(--bg3);color:var(--muted)}
+
+/* ============ TAB PANELS ============ */
+.tab-panel{display:none;animation:fadeUp 0.4s var(--ease)}
+.tab-panel.active{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse-cyan{0%,100%{box-shadow:0 0 0 0 rgba(0,217,255,0.4)}50%{box-shadow:0 0 0 8px rgba(0,217,255,0)}}
+@keyframes pulse-green{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,0.4)}50%{box-shadow:0 0 0 6px rgba(16,185,129,0)}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.shimmer{background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,0.05) 50%,transparent 100%);background-size:200% 100%;animation:shimmer 2s linear infinite}
+
+/* ============ HERO SECTION ============ */
+.hero{display:grid;grid-template-columns:1.6fr 1fr;gap:1.25rem;margin-bottom:1.5rem}
+@media(max-width:900px){.hero{grid-template-columns:1fr}}
+.hero-main{background:var(--gradient-card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--border-active);border-radius:20px;padding:1.75rem;position:relative;overflow:hidden}
+.hero-main::before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 0% 0%,rgba(0,217,255,0.08) 0%,transparent 50%);pointer-events:none}
+.hero-label{font-size:0.7rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.5rem}
+.hero-value{font-family:var(--display);font-size:3rem;font-weight:700;letter-spacing:-0.03em;line-height:1.05;margin-bottom:0.5rem}
+.hero-sub{font-size:0.85rem;color:var(--text2);font-family:var(--mono)}
+.hero-progress{margin-top:1.25rem;height:8px;background:rgba(255,255,255,0.05);border-radius:99px;overflow:hidden;position:relative}
+.hero-progress-fill{height:100%;background:var(--gradient-target);border-radius:99px;transition:width 1s var(--ease);box-shadow:0 0 16px rgba(0,217,255,0.4)}
+.hero-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:0.875rem;margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border)}
+.hero-stat-label{font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem}
+.hero-stat-val{font-family:var(--mono);font-size:1.1rem;font-weight:700}
+
+.hero-gauge{background:var(--gradient-card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--border);border-radius:20px;padding:1.75rem;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.gauge-ring{width:160px;height:160px;position:relative;margin-bottom:0.875rem}
+.gauge-ring svg{transform:rotate(-90deg)}
+.gauge-ring .gauge-bg{stroke:rgba(255,255,255,0.06);fill:none;stroke-width:14}
+.gauge-ring .gauge-fill{stroke:url(#gaugeGradient);fill:none;stroke-width:14;stroke-linecap:round;transition:stroke-dashoffset 1.2s var(--ease)}
+.gauge-value{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.gauge-pct{font-family:var(--display);font-size:2.1rem;font-weight:700;line-height:1}
+.gauge-label{font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;margin-top:0.3rem}
+
+/* ============ NEW METRIC CHIPS ============ */
+.metric-chip{background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:12px;padding:0.875rem 1.125rem;transition:all 0.2s var(--ease);position:relative;overflow:hidden}
+.metric-chip:hover{background:rgba(255,255,255,0.05);border-color:var(--border2)}
+.metric-chip-label{font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem}
+.metric-chip-val{font-family:var(--mono);font-size:1.25rem;font-weight:700;line-height:1.2}
+.metric-chip-sub{font-size:0.7rem;color:var(--text2);font-family:var(--mono);margin-top:0.3rem}
+.metric-grid-modern{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:0.75rem;margin-bottom:1.25rem}
+
+/* ============ ACTION CARD MODERN ============ */
+.action-modern{background:var(--card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--border);border-left:3px solid;border-radius:12px;padding:1rem 1.125rem;margin-bottom:0.625rem;transition:all 0.2s var(--ease);position:relative}
+.action-modern:hover{transform:translateX(2px);border-color:var(--border2);background:rgba(255,255,255,0.025)}
+
+/* ============ HIDE OLD ============ */
+.legacy-hide{display:none !important}
+
+/* ============ COLLAPSIBLE DETAILS POLISH ============ */
+details.modern{background:var(--card);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--border);border-radius:14px;margin-bottom:1rem;overflow:hidden;transition:all 0.3s var(--ease)}
+details.modern[open]{border-color:var(--border2)}
+details.modern summary{padding:1rem 1.25rem;cursor:pointer;font-family:var(--display);font-weight:600;display:flex;align-items:center;justify-content:space-between;list-style:none;transition:background 0.2s}
+details.modern summary::-webkit-details-marker{display:none}
+details.modern summary::after{content:'›';font-size:1.5rem;color:var(--muted);transition:transform 0.3s var(--ease)}
+details.modern[open] summary::after{transform:rotate(90deg)}
+details.modern summary:hover{background:rgba(255,255,255,0.02)}
+details.modern > div:not(summary){padding:0 1.25rem 1.25rem}
+
+/* Number animation */
+.num-anim{transition:color 0.3s var(--ease)}
 .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .nav-tabs{position:sticky;top:0;z-index:100;display:flex;gap:0.375rem;background:rgba(6,9,16,0.95);backdrop-filter:blur(12px);border-bottom:1px solid var(--border2);padding:0.625rem 1.5rem;margin:0 -1.5rem 1.5rem;overflow-x:auto}
 .nav-tab{padding:0.375rem 0.875rem;border-radius:8px;font-size:0.75rem;font-weight:600;font-family:var(--mono);white-space:nowrap;color:var(--muted);text-decoration:none;transition:all 0.2s;border:1px solid transparent;cursor:pointer;background:none}
@@ -109,44 +204,39 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </style></head><body>
 <div class="bg-fx"></div><div class="container">
 
-<nav class="nav-tabs">
-  <a href="#editor" class="nav-tab">✏️ Edit Data</a>
-  <a href="#kpi" class="nav-tab">🎯 KPI Tracker</a>
-  <a href="#path35" class="nav-tab">🛣 Path to 35%</a>
-  <a href="#playbook" class="nav-tab">🤖 Playbook</a>
-  <a href="#journal" class="nav-tab">📊 Trades Journal</a>
-  <a href="#aggregate" class="nav-tab">🌍 Market Aggregate</a>
-  <a href="#funding" class="nav-tab">💵 $3,650 Funding</a>
-  <a href="#tp-explain" class="nav-tab">📐 TP Math</a>
-  <a href="#target" class="nav-tab">🎯 35% Target</a>
-  <a href="#changes" class="nav-tab">🔁 Plan Changes</a>
-  <a href="#action" class="nav-tab">⚡ Actions</a>
-  <a href="#dca" class="nav-tab">💎 DCA Pool</a>
-  <a href="#dip" class="nav-tab">📉 Dip Ladder</a>
-  <a href="#squeeze" class="nav-tab">⚡ Squeeze</a>
-  <a href="#stoploss" class="nav-tab">🛑 Stop-Loss</a>
-  <a href="#loan" class="nav-tab">💰 Loan</a>
-  <a href="#alerts" class="nav-tab">⚠️ Alerts</a>
-  <a href="#portfolio" class="nav-tab">📊 Portfolio</a>
-  <a href="#exposure" class="nav-tab">🔍 G9</a>
-  <a href="#stress" class="nav-tab">🛡️ Stress</a>
-  <a href="#tp" class="nav-tab">🎯 TP triggers</a>
-  <a href="#path35" class="nav-tab">🎲 EV→MC</a>
-  <a href="#signals" class="nav-tab">🚦 Signals</a>
-  <a href="#journey" class="nav-tab">🛤️ Journey</a>
-  <a href="#validation" class="nav-tab">✅ Validate</a>
-</nav>
-
-<header class="header">
-  <div style="display:flex;align-items:center;gap:1rem">
-    <div class="logo-icon">CALC</div>
-    <div class="logo-text">
-      <h1>Crypto Portfolio Calculator</h1>
-      <p id="hdr-sub">Mr Ray · v73 engine · SOP v1.6 · 14 modules + M12b + M16</p>
-      <div class="version-badge" id="hdr-badge">Loading…</div>
+<div class="smart-header">
+  <div class="smart-header-left">
+    <div class="smart-logo">CALC</div>
+    <div>
+      <h1>Portfolio Terminal</h1>
+      <div class="sub" id="hdr-sub">Mr Ray · loading…</div>
     </div>
   </div>
-</header>
+  <div class="smart-header-right">
+    <div class="mini-ticker" id="ticker-btc"><span class="label">BTC</span><span class="value" id="ticker-btc-val">—</span></div>
+    <div class="mini-ticker" id="ticker-net"><span class="label">NET</span><span class="value" id="ticker-net-val">—</span></div>
+    <div class="mini-ticker" id="ticker-phit"><span class="label">P(35%)</span><span class="value" id="ticker-phit-val">—</span></div>
+    <div class="mini-ticker" id="ticker-stance" style="background:rgba(16,185,129,0.06);border-color:rgba(16,185,129,0.2)"><span class="label">Stance</span><span class="value" id="ticker-stance-val" style="color:var(--mint)">—</span></div>
+  </div>
+</div>
+
+<nav class="tab-bar" id="tab-bar">
+  <button class="tab-btn active" data-tab="overview">📊 Overview</button>
+  <button class="tab-btn" data-tab="strategy">🎯 Strategy <span class="badge-count" id="cnt-actions">0</span></button>
+  <button class="tab-btn" data-tab="positions">💼 Positions</button>
+  <button class="tab-btn" data-tab="market">🌍 Market</button>
+  <button class="tab-btn" data-tab="tactical">⚡ Tactical</button>
+  <button class="tab-btn" data-tab="settings">🔧 Settings</button>
+</nav>
+
+<!-- ============ TAB PANELS ============ -->
+<div class="tab-panel active" data-panel="overview" id="panel-overview"></div>
+<div class="tab-panel" data-panel="strategy" id="panel-strategy"></div>
+<div class="tab-panel" data-panel="positions" id="panel-positions"></div>
+<div class="tab-panel" data-panel="market" id="panel-market"></div>
+<div class="tab-panel" data-panel="tactical" id="panel-tactical"></div>
+<div class="tab-panel" data-panel="settings" id="panel-settings">
+<!-- Static settings sections move here -->
 
 <!-- ============ INPUT EDITOR ============ -->
 <details class="editor-card" id="manual-avg" style="border-color:var(--green)" open>
@@ -225,8 +315,13 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </div>
 </details>
 
-<!-- ============ DYNAMIC SECTIONS ============ -->
-<div id="render"></div>
+<div id="settings-extra"></div>
+
+<!-- end settings panel -->
+</div>
+
+<!-- ============ LEGACY RENDER (will be split into tabs by render() function) ============ -->
+<div id="render" style="display:none"></div>
 
 <div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.78rem;text-align:center;line-height:1.7">
 <b>Portfolio Calculator</b> · ported from engine-v47-v2.py · 14 modules + M12b plan-diff + M16 funding analyzer<br>
@@ -555,42 +650,106 @@ const colorPnl = x => x >= 0 ? 'var(--green)' : 'var(--red)';
 // ===================== RENDER =====================
 function render() {
   const M = buildMaster(state);
-  // Header
   const stColor = M.m9.stance_color;
-  document.getElementById('hdr-badge').innerHTML =
-    `💵 FUNDING $${state.funding_yearly}/yr · target ${state.target_pct}% · Stance <span style="color:${stColor}">${M.m9.stance} ${M.m9.net>=0?'+':''}${M.m9.net}</span>`;
+
+  // === COMPACT STICKY HEADER TICKERS ===
+  const btcPrice = state.holdings.BTC.price;
+  const btcChg = state.market.btc_24h ?? 0;
+  const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  const setHTML = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
+  setHTML('ticker-btc-val', `${fmt$(btcPrice, 0)} <span style="color:${btcChg >= 0 ? 'var(--mint)' : 'var(--red)'};font-size:0.7rem">${btcChg >= 0 ? '+' : ''}${btcChg.toFixed(2)}%</span>`);
+  setText('ticker-net-val', fmt$(M.m1.net));
+  // P(hit target) - prefer Monte Carlo if available, fall back to scenario calc
+  const pHit = (state.pathMC?.probHit ?? 0).toFixed(0);
+  setHTML('ticker-phit-val', `<span style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit}%</span>`);
+  setHTML('ticker-stance-val', `<span style="color:${stColor}">${M.m9.stance.replace('_',' ')} ${M.m9.net >= 0 ? '+' : ''}${M.m9.net}</span>`);
   document.getElementById('hdr-sub').textContent =
-    `Mr Ray · Stance ${M.m9.stance} · NET ${fmt$(M.m1.net)} · Gross ${fmt$(M.m1.gross)} · Loan ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Validation ${M.m14.pass}/${M.m14.total} ${M.m14.result}`;
+    `NET ${fmt$(M.m1.net)} · Gross ${fmt$(M.m1.gross)} · Loan ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Validation ${M.m14.pass}/${M.m14.total}`;
 
-  let html = '';
-  html += renderKPITracker(M);
-  html += renderPathTo35(M);
-  html += renderExpertPlaybook(M);
-  html += renderTradesJournal(M);
-  html += renderMarketAggregate(M);
-  html += renderFunding(M);
-  html += renderTPExplain(M);
-  html += renderTarget(M);
-  html += renderPlanChanges(M);
-  html += renderActions(M);
-  html += renderPoolROI(M);
-  html += renderPlanEvaluation(M);
-  html += renderDCA(M);
-  html += renderDipLadder(M);
-  html += renderSqueeze(M);
-  html += renderStopLoss(M);
-  html += renderLoanOrdersPrecise(M);
-  html += renderLoan(M);
-  html += renderAlerts(M);
-  html += renderPortfolio(M);
-  html += renderExposure(M);
-  html += renderStress(M);
-  html += renderTPTriggers(M);
-  html += renderSignals(M);
-  html += renderJourney(M);
-  html += renderValidation(M);
+  // === TAB PANELS — segmented sections ===
+  // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
+  let strategyHTML = renderPathTo35(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
+  if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += renderPlanChanges(M);
+  document.getElementById('panel-strategy').innerHTML = strategyHTML;
 
-  document.getElementById('render').innerHTML = html;
+  // OVERVIEW: Hero (uses state.pathMC from above) + KPI snapshot + Portfolio summary
+  let overviewHTML = renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
+  document.getElementById('panel-overview').innerHTML = overviewHTML;
+
+  // Also update header tickers with MC data now that it's computed
+  const pHitVal = (state.pathMC?.probHit ?? 0).toFixed(0);
+  setHTML('ticker-phit-val', `<span style="color:${pHitVal >= 50 ? 'var(--mint)' : pHitVal >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHitVal}%</span>`);
+
+  // POSITIONS: Holdings detail, Pool ROI, Plan Health, DCA Pool, Loan orders, Trades Journal, G9
+  let positionsHTML = renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
+  document.getElementById('panel-positions').innerHTML = positionsHTML;
+
+  // MARKET: Coinalyze aggregate, Signal aggregator, TP triggers, TP math, Journey
+  let marketHTML = renderMarketAggregate(M) + renderSignals(M) + renderTPTriggers(M) + renderTPExplain(M);
+  if (state.prev) marketHTML += renderJourney(M);
+  document.getElementById('panel-market').innerHTML = marketHTML;
+
+  // TACTICAL: Squeeze, Dip-Ladder, Stop-Loss, Stress test
+  let tacticalHTML = renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
+  document.getElementById('panel-tactical').innerHTML = tacticalHTML;
+
+  // SETTINGS: validation appended after static settings cards
+  const settingsExtra = document.getElementById('settings-extra');
+  if (settingsExtra) settingsExtra.innerHTML = renderValidation(M);
+
+  // Active actions count badge on Strategy tab
+  const actionsCount = (strategyHTML.match(/border-left:4px solid var\(/g) || []).length;
+  const cntEl = document.getElementById('cnt-actions');
+  if (cntEl) cntEl.textContent = String(actionsCount);
+}
+
+// === HERO SECTION ===
+function renderHero(M) {
+  const anchor = state.target_anchor;
+  const target = anchor * (1 + state.target_pct/100);
+  const currentNet = M.m1.net;
+  const progressPct = Math.max(0, Math.min(100, (currentNet / target) * 100));
+  const gap = target - currentNet;
+  const pHit = state.pathMC?.probHit ?? 0;
+  const gaugeCircumference = 2 * Math.PI * 68; // r=68
+  const gaugeOffset = gaugeCircumference * (1 - pHit/100);
+
+  return `<div class="hero">
+    <div class="hero-main">
+      <div class="hero-label">Current NET vs ${state.target_pct}% target</div>
+      <div class="hero-value" style="color:${currentNet >= target ? 'var(--mint)' : currentNet >= anchor ? 'var(--cyan)' : 'var(--text)'}">${fmt$(currentNet)}</div>
+      <div class="hero-sub">Target EOY: <b style="color:var(--mint)">${fmt$(target)}</b> · Anchor ${fmt$(anchor)} · Gap ${fmt$(gap)}</div>
+      <div class="hero-progress"><div class="hero-progress-fill" style="width:${progressPct}%"></div></div>
+      <div class="hero-stats">
+        <div><div class="hero-stat-label">Gross</div><div class="hero-stat-val">${fmt$(M.m1.gross)}</div></div>
+        <div><div class="hero-stat-label">Loan</div><div class="hero-stat-val" style="color:var(--red)">${fmt$(M.loan)}</div></div>
+        <div><div class="hero-stat-label">Total Wealth</div><div class="hero-stat-val" style="color:var(--cyan)">${fmt$(currentNet + state.pool.value)}</div></div>
+      </div>
+    </div>
+    <div class="hero-gauge">
+      <div class="gauge-ring">
+        <svg width="160" height="160" viewBox="0 0 160 160">
+          <defs>
+            <linearGradient id="gaugeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#10b981"/>
+              <stop offset="50%" stop-color="#a78bfa"/>
+              <stop offset="100%" stop-color="#00d9ff"/>
+            </linearGradient>
+          </defs>
+          <circle class="gauge-bg" cx="80" cy="80" r="68"/>
+          <circle class="gauge-fill" cx="80" cy="80" r="68" stroke-dasharray="${gaugeCircumference}" stroke-dashoffset="${gaugeOffset}"/>
+        </svg>
+        <div class="gauge-value">
+          <div class="gauge-pct" style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit.toFixed(0)}%</div>
+          <div class="gauge-label">P(hit 35%)</div>
+        </div>
+      </div>
+      <div style="font-size:0.78rem;color:var(--text2);text-align:center;line-height:1.5">
+        Monte Carlo 500 sims · σ ${(state.pathMC?.sigma ?? 0).toFixed(0)}%/yr<br>
+        <span style="color:var(--muted);font-size:0.7rem">Expected EOY: <b style="color:${(state.pathMC?.expectedEoy ?? 0) >= target ? 'var(--mint)' : 'var(--text2)'}">${fmt$(state.pathMC?.expectedEoy ?? currentNet)}</b></span>
+      </div>
+    </div>
+  </div>`;
 }
 
 // === 🎯 KPI TRACKER — 35% target progress ===
@@ -1036,6 +1195,9 @@ function renderPathTo35(M) {
   const pHit = simResults.filter(r=>r.hitsTarget).length / N_SIMS * 100;
   const mcEV = simResults.reduce((s,r)=>s+r.totalRet,0) / N_SIMS;
   const mcEoyNet = currentNet + mcEV;
+
+  // Expose to state for Hero section access
+  state.pathMC = { probHit: pHit, sigma: sigma*100, expectedEoy: mcEoyNet, mcEV, simulations: N_SIMS };
 
   const pctiles = [5,15,30,50,70,85,95];
   let tbody = '';
@@ -3448,5 +3610,27 @@ if (localStorage.getItem('autoRefresh') === '1') {
   document.getElementById('auto-refresh-toggle').checked = true;
   toggleAutoRefresh(true);
 }
+
+// === TAB SWITCHING ===
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelector(`.tab-panel[data-panel="${tab}"]`)?.classList.add('active');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+});
+
+// Restore last tab from localStorage
+const savedTab = localStorage.getItem('activeTab');
+if (savedTab) {
+  const btn = document.querySelector(`.tab-btn[data-tab="${savedTab}"]`);
+  if (btn) btn.click();
+}
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => localStorage.setItem('activeTab', btn.dataset.tab));
+});
 </script>
 </body></html>
