@@ -190,9 +190,8 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
       <label style="min-width:auto">Proxy Token (X-Auth-Token)</label>
       <input type="password" id="api-proxy-token" placeholder="••••••••" style="width:100%">
     </div>
-    <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem;margin-top:0.875rem;padding-top:0.875rem;border-top:1px dashed var(--border2)">
-      <label style="min-width:auto;color:var(--purple)">🌍 Coinalyze API key (optional — aggregated data)</label>
-      <input type="password" id="coinalyze-key" placeholder="Coinalyze key (active sau 2 phút)" style="width:100%">
+    <div style="margin-top:0.875rem;padding-top:0.875rem;border-top:1px dashed var(--border2);font-size:0.72rem;color:var(--muted);line-height:1.6">
+      🌍 <b>Coinalyze key</b>: nay được lưu trong <b>worker secret</b> (Cloudflare → Variables → add <code style="background:var(--bg2);padding:0 0.3rem;border-radius:3px">COINALYZE_KEY</code>). Worker auto-inject vào request → tránh CORS block + bảo mật hơn (key không lộ qua browser).
     </div>
   </div>
   <div class="editor-group">
@@ -1874,54 +1873,54 @@ async function testWorkerConnection() {
 function saveBinanceCreds() {
   const url = document.getElementById('api-worker-url').value.trim();
   const token = document.getElementById('api-proxy-token').value.trim();
-  const coinalyze = document.getElementById('coinalyze-key')?.value.trim();
   if (!url || !token) { setApiStatus('Cần điền cả Worker URL và Proxy Token', 'err'); return; }
   localStorage.setItem('workerUrl', url);
   localStorage.setItem('proxyToken', token);
-  if (coinalyze) localStorage.setItem('coinalyzeKey', coinalyze);
-  setApiStatus(`✓ Saved · Binance ${url ? '✓' : '✗'} · Coinalyze ${coinalyze ? '✓' : '—'}`, 'ok');
+  // Coinalyze key now in worker secret — clean any old browser-side key
+  localStorage.removeItem('coinalyzeKey');
+  setApiStatus(`✓ Saved · Worker URL + token (Coinalyze key check worker secret)`, 'ok');
 }
 function clearBinanceCreds() {
   localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken'); localStorage.removeItem('coinalyzeKey');
   document.getElementById('api-worker-url').value = '';
   document.getElementById('api-proxy-token').value = '';
-  if (document.getElementById('coinalyze-key')) document.getElementById('coinalyze-key').value = '';
   setApiStatus('Đã xóa creds khỏi localStorage', 'info');
   setApiBadge('⚪ Not connected', 'err');
 }
 function loadBinanceCreds() {
   const url = localStorage.getItem('workerUrl');
   const token = localStorage.getItem('proxyToken');
-  const coinalyze = localStorage.getItem('coinalyzeKey');
   if (url) document.getElementById('api-worker-url').value = url;
   if (token) document.getElementById('api-proxy-token').value = token;
-  if (coinalyze && document.getElementById('coinalyze-key')) document.getElementById('coinalyze-key').value = coinalyze;
   if (url && token) { setApiStatus('Creds đã load (chưa test)', 'info'); setApiBadge('🟡 Saved', 'warn'); }
 }
 
-// === COINALYZE INTEGRATION — aggregated futures data across exchanges ===
+// === COINALYZE INTEGRATION — via worker proxy (CORS-friendly, key in worker secret) ===
 async function fetchCoinalyze(endpoint, params = {}) {
-  const key = (localStorage.getItem('coinalyzeKey') || document.getElementById('coinalyze-key')?.value || '').trim();
-  if (!key) throw new Error('No Coinalyze key');
-  const qs = new URLSearchParams({ ...params, api_key: key }).toString();
-  const url = `https://api.coinalyze.net/v1${endpoint}?${qs}`;
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Coinalyze ${resp.status}`);
-  return resp.json();
+  const { url, token } = getCreds();
+  if (!url || !token) throw new Error('Worker creds missing for Coinalyze proxy');
+  const qs = new URLSearchParams(params).toString();
+  const fullUrl = `${url}/coinalyze${endpoint}${qs ? '?' + qs : ''}`;
+  const resp = await fetch(fullUrl, { headers: { 'X-Auth-Token': token } });
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`Coinalyze proxy ${resp.status}: ${text.slice(0,150)}`);
+  return JSON.parse(text);
 }
 
 async function fetchCoinalyzeAggregates() {
-  if (!localStorage.getItem('coinalyzeKey') && !document.getElementById('coinalyze-key')?.value) return null;
+  // Only attempt if worker creds available — COINALYZE_KEY now in worker secret
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
   try {
-    // Coinalyze uses symbols like BTCUSD_PERP.A (aggregated). Try multiple known patterns.
-    const symbol = 'BTCUSD_PERP.A';
+    const symbol = 'BTCUSD_PERP.A'; // aggregated BTC perpetual cross-exchange
     const now = Math.floor(Date.now() / 1000);
     const from7d = now - 7 * 86400;
     const [funding, oi, lsRatio] = await Promise.all([
-      fetchCoinalyze('/funding-rate-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(() => null),
-      fetchCoinalyze('/open-interest', { symbols: symbol, convert_to_usd: 'true' }).catch(() => null),
-      fetchCoinalyze('/long-short-ratio-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(() => null),
+      fetchCoinalyze('/funding-rate-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(e => { console.warn('CA funding:', e.message); return null; }),
+      fetchCoinalyze('/open-interest', { symbols: symbol, convert_to_usd: 'true' }).catch(e => { console.warn('CA OI:', e.message); return null; }),
+      fetchCoinalyze('/long-short-ratio-history', { symbols: symbol, interval: '1hour', from: from7d, to: now }).catch(e => { console.warn('CA LS:', e.message); return null; }),
     ]);
+    if (!funding && !oi && !lsRatio) return null;
     return { funding, oi, lsRatio, symbol };
   } catch (e) {
     console.warn('Coinalyze fetch error:', e.message);
