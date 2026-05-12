@@ -2583,8 +2583,11 @@ async function fetchFromBinance() {
       futuresTrades: safe('futuresTrades', callWorker('/fapi/v1/userTrades', { symbol: 'BTCUSDT', limit: 1000 })),
       coinalyze: safe('coinalyze', fetchCoinalyzeAggregates()),
       // Yield income + cost of leverage (Sprint mandate)
-      loanIncome: safe('loanIncome', callWorker('/sapi/v1/loan/income', { type: 'borrowOut', limit: 100 })),
-      earnRewards: safe('earnRewards', callWorker('/sapi/v1/simple-earn/flexible/history/rewardsRecord', { size: 100 })),
+      // Loan income: get all types (no filter), parse interest types in JS
+      loanIncome: safe('loanIncome', callWorker('/sapi/v1/loan/income', { limit: 100 })),
+      // Earn rewards: REALTIME = daily flexible interest (most relevant for yield tracking)
+      earnRewards: safe('earnRewards', callWorker('/sapi/v1/simple-earn/flexible/history/rewardsRecord', { type: 'REALTIME', size: 100 })),
+      earnRewardsBonus: safe('earnRewardsBonus', callWorker('/sapi/v1/simple-earn/flexible/history/rewardsRecord', { type: 'BONUS', size: 100 })),
       wbethRewards: safe('wbethRewards', callWorker('/sapi/v1/eth-staking/eth/history/wbethRewardsHistory', { size: 100 })),
       bnsolRewards: safe('bnsolRewards', callWorker('/sapi/v1/sol-staking/sol/history/bnsolRewardsHistory', { size: 100 })),
       // Coinalyze advanced signals
@@ -2822,18 +2825,17 @@ async function fetchFromBinance() {
         }
       }
     }
-    // Earn flexible rewards
-    if (Array.isArray(r.earnRewards?.rows || r.earnRewards)) {
-      const arr = r.earnRewards.rows || r.earnRewards;
-      for (const rw of arr) {
-        const t = rw.time || rw.timestamp || 0;
-        if (t < now30d) continue;
-        const amt = parseFloat(rw.rewards || rw.amount || 0);
-        const asset = rw.asset || 'USDT';
-        // Approximate USD value (stablecoin = $1, else use spot price)
-        const usdValue = ['USDT','USDC','BUSD','FDUSD'].includes(asset) ? amt : amt * (state.holdings[asset]?.price || 0);
-        state.income.earn_flexible_rewards_30d += usdValue;
-      }
+    // Earn flexible rewards (REALTIME = daily interest + BONUS = promo rewards)
+    const earnSources = [];
+    if (Array.isArray(r.earnRewards?.rows || r.earnRewards)) earnSources.push(...(r.earnRewards.rows || r.earnRewards));
+    if (Array.isArray(r.earnRewardsBonus?.rows || r.earnRewardsBonus)) earnSources.push(...(r.earnRewardsBonus.rows || r.earnRewardsBonus));
+    for (const rw of earnSources) {
+      const t = rw.time || rw.timestamp || 0;
+      if (t < now30d) continue;
+      const amt = parseFloat(rw.rewards || rw.amount || 0);
+      const asset = rw.asset || 'USDT';
+      const usdValue = ['USDT','USDC','BUSD','FDUSD'].includes(asset) ? amt : amt * (state.holdings[asset]?.price || 0);
+      state.income.earn_flexible_rewards_30d += usdValue;
     }
     // WBETH staking rewards (ETH-denominated)
     if (Array.isArray(r.wbethRewards?.rows || r.wbethRewards)) {
