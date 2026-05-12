@@ -804,35 +804,54 @@ function renderPlanEvaluation(M) {
 
 function renderPoolROI(M) {
   const roi = state.pool_roi;
-  if (!roi) return '';
-  const c = roi.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-  const annC = roi.annualizedROI >= 35 ? 'var(--green)' : roi.annualizedROI >= 0 ? 'var(--yellow)' : 'var(--red)';
+  const apiPnl = state.pool.api_pnl;
+  const apiRoi = state.pool.api_roi;
+  const apiInvested = state.pool.api_total_invested;
+  const apiDays = state.pool.api_days_running;
+  const apiNext = state.pool.api_next_execution;
+  const hasApiDirect = apiPnl !== undefined && apiInvested > 0;
+
+  // Use API-direct values (more accurate) when available
+  const useFullValue = state.pool.value;
+  const useFullPnl = hasApiDirect ? apiPnl : (roi?.pnl ?? 0);
+  const useFullInvested = hasApiDirect ? apiInvested : (roi?.totalInvested ?? 0);
+  const useFullPct = useFullInvested > 0 ? (useFullPnl / useFullInvested) * 100 : 0;
+  const useDays = apiDays || roi?.days || 0;
+  const annROI = useDays > 0 ? useFullPct * (365 / useDays) : 0;
+
+  const c = useFullPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const annC = annROI >= 35 ? 'var(--green)' : annROI >= 0 ? 'var(--yellow)' : 'var(--red)';
+
   let targetRows = '';
-  for (const [target, d] of Object.entries(roi.byTarget)) {
-    const tc = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-    targetRows += `<tr><td><b style="color:${ASSET_COLORS[target]||'var(--text)'}">${target}</b></td><td>${d.count}</td><td>${fmt$(d.invested)}</td><td>${fmtQty(d.qty)}</td><td>${fmt$(d.currentValue)}</td><td style="color:${tc}">${fmt$signed(d.pnl)}</td><td style="color:${tc}">${fmtPct(d.pnl_pct)}</td></tr>`;
+  if (roi?.byTarget) {
+    for (const [target, d] of Object.entries(roi.byTarget)) {
+      const tc = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      targetRows += `<tr><td><b style="color:${ASSET_COLORS[target]||'var(--text)'}">${target}</b></td><td>${d.count}</td><td>${fmt$(d.invested)}</td><td>${fmtQty(d.qty)}</td><td>${fmt$(d.currentValue)}</td><td style="color:${tc}">${fmt$signed(d.pnl)}</td><td style="color:${tc}">${fmtPct(d.pnl_pct)}</td></tr>`;
+    }
   }
-  const partialNote = roi.historyComplete
-    ? '<span style="color:var(--green)">✅ API history nearly complete</span>'
-    : `<span style="color:var(--yellow)">⚠ API trả ${roi.historyEntries} entries (${roi.days}d) — ước tính ${fmt$(roi.preHistoryValue)} từ trước retention period không track được</span>`;
+  const nextRun = apiNext ? new Date(apiNext).toLocaleString('vi-VN') : '—';
+
   return `<div class="card" style="border:2px solid ${c};margin-bottom:1.375rem">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:0.875rem">
-      <div style="font-family:var(--display);font-size:1.15rem;font-weight:700">💎 Pool ROI · API last ${roi.days} days · ${roi.totalExecutions} executions</div>
-      <span class="badge" style="background:${c}33;color:${c};border:1px solid ${c}">${fmtPct(roi.pnl_pct)} · annualized ${fmtPct(roi.annualizedROI)}</span>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.875rem">
+      <div style="font-family:var(--display);font-size:1.15rem;font-weight:700">💎 Pool ROI · ${useDays}d · plan ${state.pool.api_plan_id ?? '?'} · ${state.pool.api_status ?? 'unknown'}</div>
+      <span class="badge" style="background:${c}33;color:${c};border:1px solid ${c}">${fmtPct(useFullPct)} · ann ${fmtPct(annROI)}</span>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="metric-label">Total invested</div><div class="metric-value">${fmt$(roi.totalInvested)}</div><div class="metric-sub">USDT từ DCA</div></div>
-      <div class="metric"><div class="metric-label">Current value (period)</div><div class="metric-value">${fmt$(roi.currentValuePartial)}</div><div class="metric-sub">qty × live price</div></div>
-      <div class="metric"><div class="metric-label">Pool PnL (partial)</div><div class="metric-value" style="color:${c}">${fmt$signed(roi.pnl)}</div><div class="metric-sub">${fmtPct(roi.pnl_pct)}</div></div>
-      <div class="metric"><div class="metric-label">Annualized ROI</div><div class="metric-value" style="color:${annC}">${fmtPct(roi.annualizedROI)}</div><div class="metric-sub">vs ${state.target_pct}% target</div></div>
-      <div class="metric"><div class="metric-label">Full Pool value</div><div class="metric-value" style="color:var(--cyan)">${fmt$(roi.fullPoolValue)}</div><div class="metric-sub">Binance-reported</div></div>
-      <div class="metric"><div class="metric-label">Pre-API history value</div><div class="metric-value" style="color:var(--muted)">${fmt$(roi.preHistoryValue)}</div><div class="metric-sub">est. from before retention</div></div>
+      <div class="metric"><div class="metric-label">Total invested (API)</div><div class="metric-value">${fmt$(useFullInvested)}</div><div class="metric-sub">${state.pool.api_subscription_amount ? `${fmt$(state.pool.api_subscription_amount)}/${state.pool.api_subscription_cycle||'cycle'}` : 'cumulative'}</div></div>
+      <div class="metric"><div class="metric-label">Current value (API)</div><div class="metric-value" style="color:var(--cyan)">${fmt$(useFullValue)}</div><div class="metric-sub">live mark</div></div>
+      <div class="metric"><div class="metric-label">Pool PnL (API)</div><div class="metric-value" style="color:${c}">${fmt$signed(useFullPnl)}</div><div class="metric-sub">${fmtPct(useFullPct)}</div></div>
+      <div class="metric"><div class="metric-label">Annualized ROI</div><div class="metric-value" style="color:${annC}">${fmtPct(annROI)}</div><div class="metric-sub">vs ${state.target_pct}% target</div></div>
+      <div class="metric"><div class="metric-label">Days running</div><div class="metric-value">${useDays}d</div><div class="metric-sub">first exec ${state.pool.api_first_execution ? new Date(state.pool.api_first_execution).toLocaleDateString('vi-VN') : '—'}</div></div>
+      <div class="metric"><div class="metric-label">Next execution</div><div class="metric-value" style="font-size:1rem;color:var(--purple)">${nextRun}</div><div class="metric-sub">auto DCA</div></div>
     </div>
+    ${targetRows ? `<div style="font-size:0.8rem;color:var(--text2);margin:0.5rem 0">Per-target breakdown từ Auto-Invest history (API trả ${roi.historyEntries} entries · last ${roi.days}d):</div>
     <table>
       <thead><tr><th>Target</th><th>Executions</th><th>Invested</th><th>Qty</th><th>Current value</th><th>PnL $</th><th>PnL %</th></tr></thead>
       <tbody>${targetRows}</tbody>
-    </table>
-    <div class="warning-bar" style="margin-top:0.875rem">${partialNote} · Annualized ROI ${roi.annualizedROI >= 35 ? '✅ ABOVE' : '✗ BELOW'} ${state.target_pct}% target</div>
+    </table>` : ''}
+    <div class="${annROI >= 35 ? 'safety-bar' : annROI >= 0 ? 'warning-bar' : 'danger-bar'}" style="margin-top:0.875rem">
+      ${annROI >= 35 ? '✅' : annROI >= 0 ? '⚠️' : '🚨'} <b>Verdict</b>: Annualized ROI <b>${fmtPct(annROI)}</b> ${annROI >= 35 ? 'ĐẠT' : 'CHƯA ĐẠT'} target ${state.target_pct}%/yr. ${annROI < 0 ? 'Pool đang lỗ → cân nhắc tilt nặng vào underwater coin (xem 🤖 Plan Health bên dưới).' : annROI < 35 ? 'Pool đang dưới target — thị trường recovery cần để compensate.' : 'Pool đang vượt target ✓ giữ plan.'}
+    </div>
   </div>`;
 }
 
@@ -2041,25 +2060,62 @@ async function fetchFromBinance() {
     // SPRINT 1 P1: Pool ROI (compute after H prices set)
     const _priceMap = { BTC: H.BTC.price, WBETH: H.WBETH.price, LINK: H.LINK.price, BNB: H.BNB.price, BNSOL: H.BNSOL.price };
 
-    // DCA Pool from Auto-Invest — try common Binance field names + log unknown structure
-    if (r.autoPlan?.list && r.autoPlan.list.length) {
-      // Prefer ONGOING plan, fall back to first
-      const plan = r.autoPlan.list.find(p => (p.status || '').toUpperCase() === 'ONGOING') || r.autoPlan.list[0];
-      const value = parseFloat(plan.planValueUsdt || plan.planValueInUSD || plan.totalValueInUSDT || plan.planValue || plan.totalValue || r.autoPlan.planValueInUSD || 0);
-      // Try many candidate field names for the target allocation array
-      const targets = plan.planTargetTokens || plan.targetTokens || plan.subscriptionDetails || plan.allocationDetails || plan.targets || plan.assetList || plan.subscriptionAssetList || plan.details || [];
-      const allocs = {};
-      for (const t of targets) {
-        const sym = t.targetToken || t.targetAsset || t.asset || t.targetAssetName || t.coin || t.symbol;
-        const pct = parseFloat(t.percentage || t.allocPercentage || t.percentageList || t.allocation || t.weight || t.percent || 0);
-        if (sym && pct > 0) allocs[sym] = pct;
+    // DCA Pool from Auto-Invest plan list — use top-level totals (more accurate)
+    if (r.autoPlan) {
+      const fullValue = parseFloat(r.autoPlan.planValueInUSD || 0);
+      const fullPnl = parseFloat(r.autoPlan.pnlInUSD || 0);
+      const fullRoi = parseFloat(r.autoPlan.roi || 0) * 100; // 0.0361 → 3.61%
+      if (fullValue > 0) state.pool.value = fullValue;
+      state.pool.api_pnl = fullPnl;
+      state.pool.api_roi = fullRoi;
+      // Plans array — Binance uses "plans" key (NOT "list")
+      const plans = r.autoPlan.plans || r.autoPlan.list || [];
+      const plan = plans.find(p => (p.status || '').toUpperCase() === 'ONGOING') || plans[0];
+      if (plan) {
+        state.pool.api_total_invested = parseFloat(plan.totalInvestedInUSD || 0);
+        state.pool.api_subscription_amount = parseFloat(plan.subscriptionAmount || 0);
+        state.pool.api_subscription_cycle = plan.subscriptionCycle;
+        state.pool.api_first_execution = plan.firstExecutionDateTime;
+        state.pool.api_next_execution = plan.nextExecutionDateTime;
+        state.pool.api_plan_id = plan.planId;
+        state.pool.api_status = plan.status;
+        // Days running computed from firstExecution
+        if (plan.firstExecutionDateTime) {
+          state.pool.api_days_running = Math.floor((Date.now() - plan.firstExecutionDateTime) / 86400000);
+        }
       }
-      if (value > 0) state.pool.value = value;
-      if (Object.keys(allocs).length > 0) {
-        state.pool.plan_alloc = allocs;
-        state.pool.plan_source = 'api-live';
-      } else {
-        state.pool.plan_source = 'api-failed-mapping (xem console log)';
+    }
+
+    // EXTRACT allocation from MOST RECENT Auto-Invest history cycle
+    // Plan list endpoint doesn't expose per-target % — but recent executions reflect current plan
+    if (r.poolHistory && r.poolHistory.length > 0) {
+      const byDay = {};
+      for (const h of r.poolHistory) {
+        if (h.transactionStatus !== 'SUCCESS') continue;
+        const dayKey = Math.floor((h.transactionDateTime || 0) / 86400000);
+        if (!byDay[dayKey]) byDay[dayKey] = [];
+        byDay[dayKey].push(h);
+      }
+      const sortedDays = Object.keys(byDay).map(Number).sort((a, b) => b - a);
+      for (const day of sortedDays) {
+        const entries = byDay[day];
+        // Need at least 3 distinct targets to confidently determine plan
+        const distinctTargets = new Set(entries.map(e => e.targetAsset));
+        if (distinctTargets.size >= 3) {
+          const totalAmount = entries.reduce((s, e) => s + parseFloat(e.sourceAssetAmount || 0), 0);
+          if (totalAmount > 0) {
+            const alloc = {};
+            for (const e of entries) {
+              const pct = (parseFloat(e.sourceAssetAmount || 0) / totalAmount) * 100;
+              alloc[e.targetAsset] = (alloc[e.targetAsset] || 0) + pct;
+            }
+            // Round to whole numbers (Binance plans use integer percents)
+            for (const k of Object.keys(alloc)) alloc[k] = Math.round(alloc[k]);
+            state.pool.plan_alloc = alloc;
+            state.pool.plan_source = `recent-cycle ${new Date(day * 86400000).toLocaleDateString('vi-VN')}`;
+            break;
+          }
+        }
       }
     }
 
