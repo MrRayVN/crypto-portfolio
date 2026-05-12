@@ -131,7 +131,7 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
   <a href="#exposure" class="nav-tab">🔍 G9</a>
   <a href="#stress" class="nav-tab">🛡️ Stress</a>
   <a href="#tp" class="nav-tab">🎯 TP triggers</a>
-  <a href="#scenarios" class="nav-tab">🎲 EV</a>
+  <a href="#path35" class="nav-tab">🎲 EV→MC</a>
   <a href="#signals" class="nav-tab">🚦 Signals</a>
   <a href="#journey" class="nav-tab">🛤️ Journey</a>
   <a href="#validation" class="nav-tab">✅ Validate</a>
@@ -466,7 +466,7 @@ function m16_funding(holdings, fundingYearly, targetPct, days=365) {
   }
   function simPool(eoy, alloc) {
     const btcChg = eoy/btcPrice - 1;
-    const betas = {BTC:1.0, WBETH:0.95, BNB:1.0, LINK: btcChg>0 ? 1.5 : 1.2};
+    const betas = state.market.betas || {BTC:1.0, WBETH:0.95, BNB:1.0, LINK:1.4};
     let end = 0;
     for (const k in alloc) {
       const inv = fundingYearly * alloc[k] / 100;
@@ -586,7 +586,6 @@ function render() {
   html += renderExposure(M);
   html += renderStress(M);
   html += renderTPTriggers(M);
-  html += renderScenarios(M);
   html += renderSignals(M);
   html += renderJourney(M);
   html += renderValidation(M);
@@ -995,99 +994,123 @@ function renderPathTo35(M) {
   const gap = target - currentNet;
   const btcPrice = state.holdings.BTC.price;
 
-  // Yield contribution annualized
   const yieldApr = state.income?.yield_apr_estimate ?? 0;
   const yieldAnnual = (currentNet + state.pool.value) * yieldApr / 100;
-
-  // Cost of leverage annualized
-  const totalLoan = state.loan_orders ? state.loan_orders.reduce((s,o) => s + o.debt, 0) : state.loan;
   const intAnnual = (state.income?.loan_interest_paid_30d ?? 0) * 12;
 
-  // Squeeze annual EV (if conditions met often)
-  const squeezeAnnualEV = 232; // from EV calc (15 plays × $15.5)
+  // Dynamic Squeeze EV from actual futures win rate (fallback 232)
+  const squeezeAnnualEV = computeSqueezeEV(state.futures);
+  const squeezeSrc = (state.futures?.winning_trades||0)+(state.futures?.losing_trades||0) >= 5
+    ? `${state.futures.winning_trades}W/${state.futures.losing_trades}L actual`
+    : 'fallback (no data)';
 
-  // Scenarios (BTC EOY price, probability)
-  const scenarios = [
-    { name: 'Capitulation', eoyBtc: 55000, prob: 0.10, fgMode: 'panic' },
-    { name: 'Bear', eoyBtc: 70000, prob: 0.15, fgMode: 'fear' },
-    { name: 'Sideways', eoyBtc: 85000, prob: 0.25, fgMode: 'cautious' },
-    { name: 'Recovery', eoyBtc: 113000, prob: 0.30, fgMode: 'optimistic' },
-    { name: 'Bull', eoyBtc: 135000, prob: 0.15, fgMode: 'greed' },
-    { name: 'Stretch', eoyBtc: 160000, prob: 0.05, fgMode: 'euphoria' },
-  ];
+  // Dynamic betas from rolling 30d (or fallback)
+  const betas = state.market.betas || { BTC:1.0, WBETH:1.0, LINK:1.4, BNB:1.0, BNSOL:1.2, USDC:0 };
+  const betaSrc = state.market.betas_source || 'fallback-defaults';
 
-  // Simulate per scenario:
-  //   spot_unrealized_delta = sum holdings qty × (eoy_price_est - current_price)
-  //   estimate price per asset based on BTC change × beta
-  const betas = { BTC: 1.0, WBETH: 1.0, LINK: 1.5, BNB: 0.8, BNSOL: 1.2, USDC: 0 };
-  const rows = scenarios.map(sc => {
-    const btcChg = sc.eoyBtc / btcPrice - 1;
+  // === MONTE CARLO — Geometric Brownian Motion ===
+  const sigma = (state.coinalyze?.btc_realized_vol_annual_pct ?? 65) / 100;
+  let yearStartTs = parseInt(localStorage.getItem('kpiYearStart') || 0);
+  if (!yearStartTs) { yearStartTs = Date.now(); localStorage.setItem('kpiYearStart', String(yearStartTs)); }
+  const daysElapsed = Math.max(1, Math.floor((Date.now() - yearStartTs) / 86400000));
+  const daysRemaining = Math.max(1, 365 - daysElapsed);
+  const T = daysRemaining / 365;
+  const N_SIMS = 500;
+
+  const simResults = [];
+  for (let i = 0; i < N_SIMS; i++) {
+    const eoyBtc = btcPrice * Math.exp((-sigma*sigma/2)*T + sigma*Math.sqrt(T)*randNormal());
+    const btcChg = eoyBtc / btcPrice - 1;
     let spotDelta = 0;
     for (const [sym, h] of Object.entries(state.holdings)) {
-      const beta = betas[sym] || 1.0;
-      const estPrice = h.price * (1 + btcChg * beta);
-      spotDelta += h.qty * (estPrice - h.price);
+      const b = betas[sym] !== undefined ? betas[sym] : 1.0;
+      spotDelta += h.qty * (h.price*(1+btcChg*b) - h.price);
     }
-    // Stop-loss caps downside: if BTC < $65K + F&G ≤ 15 → triggers → preserve 70% of holdings value
-    const stopLossActive = sc.eoyBtc < 65000;
-    const stopLossSave = stopLossActive ? Math.abs(spotDelta) * 0.30 : 0; // saves 30% of loss
-    const adjSpotDelta = spotDelta + stopLossSave;
+    const stopLossSave = eoyBtc < 65000 ? Math.abs(Math.min(0, spotDelta))*0.30 : 0;
+    const adjDelta = spotDelta + stopLossSave;
+    const totalRet = adjDelta + yieldAnnual - intAnnual + squeezeAnnualEV*(eoyBtc>80000?1:0.3);
+    simResults.push({ eoyBtc, btcChg:btcChg*100, spotDelta:adjDelta, totalRet, eoyNet:currentNet+totalRet, hitsTarget:currentNet+totalRet>=target });
+  }
+  simResults.sort((a,b) => a.totalRet - b.totalRet);
 
-    // TP discipline gains: if BTC ≥ TP1 ($105K)
-    const tpGain = sc.eoyBtc >= 105000 ? state.holdings.BTC.qty * (sc.eoyBtc * 1.0) * 0.15 * (1 - btcPrice/sc.eoyBtc) : 0;
+  const pHit = simResults.filter(r=>r.hitsTarget).length / N_SIMS * 100;
+  const mcEV = simResults.reduce((s,r)=>s+r.totalRet,0) / N_SIMS;
+  const mcEoyNet = currentNet + mcEV;
 
-    // Total return per scenario
-    const totalRet = adjSpotDelta + yieldAnnual - intAnnual + squeezeAnnualEV * (sc.eoyBtc > 80000 ? 1 : 0.3);
-    const eoyNet = currentNet + totalRet;
-    const hitsTarget = eoyNet >= target;
-    const retPct = (totalRet / currentNet) * 100;
-    return { ...sc, btcChg: btcChg * 100, spotDelta, stopLossSave, tpGain, yieldAnnual, intAnnual, squeezeAnnualEV, totalRet, eoyNet, hitsTarget, retPct };
-  });
-
-  // Probability-weighted EV
-  const weightedEV = rows.reduce((s, r) => s + r.totalRet * r.prob, 0);
-  const probHitTarget = rows.filter(r => r.hitsTarget).reduce((s, r) => s + r.prob, 0) * 100;
-  const expectedEoyNet = currentNet + weightedEV;
-
+  const pctiles = [5,15,30,50,70,85,95];
   let tbody = '';
-  for (const r of rows) {
+  for (const p of pctiles) {
+    const r = simResults[Math.min(Math.floor(N_SIMS*p/100), N_SIMS-1)];
     const c = r.hitsTarget ? 'var(--green)' : r.totalRet > 0 ? 'var(--yellow)' : 'var(--red)';
-    tbody += `<tr ${r.hitsTarget ? 'style="background:rgba(34,197,94,0.05)"' : ''}>
-      <td><b style="color:${c}">${r.name}</b></td>
-      <td>${(r.prob*100).toFixed(0)}%</td>
-      <td>${fmt$(r.eoyBtc, 0)}</td>
+    tbody += `<tr ${r.hitsTarget?'style="background:rgba(34,197,94,0.05)"':''}>
+      <td><b style="color:${c}">P${p}</b></td>
+      <td>${fmt$(r.eoyBtc,0)}</td>
       <td>${fmtPct(r.btcChg)}</td>
       <td style="color:${r.spotDelta>=0?'var(--green)':'var(--red)'}">${fmt$signed(r.spotDelta)}</td>
-      <td>${fmt$signed(r.yieldAnnual - r.intAnnual)}</td>
-      <td>${fmt$signed(r.squeezeAnnualEV * (r.eoyBtc > 80000 ? 1 : 0.3))}</td>
       <td style="color:${c}"><b>${fmt$signed(r.totalRet)}</b></td>
-      <td style="color:${c}"><b>${fmtPct(r.retPct)}</b></td>
+      <td style="color:${c}"><b>${fmtPct(r.totalRet/currentNet*100)}</b></td>
       <td style="color:${c}"><b>${fmt$(r.eoyNet)}</b></td>
-      <td style="color:${r.hitsTarget?'var(--green)':'var(--red)'}">${r.hitsTarget ? '🎯 HIT' : '✗ MISS'}</td>
+      <td style="color:${r.hitsTarget?'var(--green)':'var(--red)'}">${r.hitsTarget?'🎯 HIT':'✗ MISS'}</td>
     </tr>`;
   }
 
-  return `<div id="path35" class="section-title section-title-target">🛣 Path to ${state.target_pct}% · Scenario simulator + EV</div>
+  // Named reference scenarios (collapsed)
+  const refScenarios = [
+    {name:'Capitulation',eoyBtc:55000,prob:0.10},{name:'Bear',eoyBtc:70000,prob:0.15},
+    {name:'Sideways',eoyBtc:85000,prob:0.25},{name:'Recovery',eoyBtc:113000,prob:0.30},
+    {name:'Bull',eoyBtc:135000,prob:0.15},{name:'Stretch',eoyBtc:160000,prob:0.05},
+  ];
+  let refTbody = '';
+  for (const sc of refScenarios) {
+    const btcChg = sc.eoyBtc/btcPrice - 1;
+    let spot = 0;
+    for (const [sym,h] of Object.entries(state.holdings)) spot += h.qty*(h.price*(1+btcChg*(betas[sym]??1.0))-h.price);
+    const sl = sc.eoyBtc<65000 ? Math.abs(Math.min(0,spot))*0.30 : 0;
+    const adj = spot+sl;
+    const totalRet = adj + yieldAnnual - intAnnual + squeezeAnnualEV*(sc.eoyBtc>80000?1:0.3);
+    const eoyNet = currentNet+totalRet;
+    const hit = eoyNet>=target;
+    const c = hit?'var(--green)':totalRet>0?'var(--yellow)':'var(--red)';
+    refTbody += `<tr ${hit?'style="background:rgba(34,197,94,0.04)"':''}>
+      <td><b style="color:${c}">${sc.name}</b></td><td>${(sc.prob*100).toFixed(0)}%</td>
+      <td>${fmt$(sc.eoyBtc,0)}</td><td>${fmtPct(btcChg*100)}</td>
+      <td style="color:${adj>=0?'var(--green)':'var(--red)'}">${fmt$signed(adj)}</td>
+      <td style="color:${c}"><b>${fmt$signed(totalRet)}</b></td>
+      <td style="color:${c}"><b>${fmtPct(totalRet/currentNet*100)}</b></td>
+      <td style="color:${c}"><b>${fmt$(eoyNet)}</b></td>
+      <td style="color:${hit?'var(--green)':'var(--red)'}">${hit?'🎯 HIT':'✗ MISS'}</td>
+    </tr>`;
+  }
+
+  return `<div id="path35" class="section-title section-title-target">🛣 Path to ${state.target_pct}% · Monte Carlo (N=${N_SIMS}) + EV</div>
   <div class="target-card" style="border-color:var(--cyan)">
-    <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">Simulator: BTC EOY × 4 LEVERS combined → EOY NET</div>
+    <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">Monte Carlo GBM · σ=${(sigma*100).toFixed(1)}%/yr · T=${T.toFixed(2)}yr · ${N_SIMS} sims</div>
     <div style="font-size:0.82rem;color:var(--text2);margin-bottom:1rem;line-height:1.55">
-      Mỗi scenario tính NET cuối năm dựa trên: <b>(spot price change × beta)</b> + <b>yield annual (${yieldApr.toFixed(2)}% APR)</b> − <b>loan interest annual ($${intAnnual.toFixed(0)})</b> + <b>Squeeze EV ($${squeezeAnnualEV})</b> + <b>Stop-loss save (30% loss capped)</b> + <b>TP discipline (15% sell at BTC ≥ $105K)</b>. Betas: BTC 1.0 · WBETH 1.0 · LINK 1.5 · BNB 0.8 · BNSOL 1.2.
+      Model: <b>eoyBTC = BTC × exp(−σ²/2·T + σ·√T·Z)</b> · Z~N(0,1). Per sim: spot Δ (betas <span style="color:var(--muted)">${betaSrc}</span>: BTC ${betas.BTC} · WBETH ${(betas.WBETH||0.95).toFixed(2)} · LINK ${(betas.LINK||1.4).toFixed(2)} · BNB ${(betas.BNB||1.0).toFixed(2)}) + yield − interest + Squeeze EV (<span style="color:var(--muted)">${squeezeSrc}</span>) + stop-loss save.
     </div>
     <div class="metrics" style="margin-bottom:1rem">
-      <div class="metric"><div class="metric-label">Prob-weighted EV</div><div class="metric-value" style="color:${weightedEV>=gap?'var(--green)':weightedEV>=0?'var(--yellow)':'var(--red)'}">${fmt$signed(weightedEV)}</div><div class="metric-sub">expected $ return</div></div>
-      <div class="metric"><div class="metric-label">Expected EOY NET</div><div class="metric-value" style="color:${expectedEoyNet>=target?'var(--green)':'var(--orange)'}">${fmt$(expectedEoyNet)}</div><div class="metric-sub">vs target ${fmt$(target)}</div></div>
-      <div class="metric"><div class="metric-label">P(hit target)</div><div class="metric-value" style="color:${probHitTarget>=50?'var(--green)':probHitTarget>=30?'var(--yellow)':'var(--red)'}">${probHitTarget.toFixed(0)}%</div><div class="metric-sub">prob-weighted scenarios</div></div>
+      <div class="metric"><div class="metric-label">MC EV (mean)</div><div class="metric-value" style="color:${mcEV>=gap?'var(--green)':mcEV>=0?'var(--yellow)':'var(--red)'}">${fmt$signed(mcEV)}</div><div class="metric-sub">mean of ${N_SIMS} sims</div></div>
+      <div class="metric"><div class="metric-label">Expected EOY NET</div><div class="metric-value" style="color:${mcEoyNet>=target?'var(--green)':'var(--orange)'}">${fmt$(mcEoyNet)}</div><div class="metric-sub">vs target ${fmt$(target)}</div></div>
+      <div class="metric"><div class="metric-label">P(hit target) MC</div><div class="metric-value" style="color:${pHit>=50?'var(--green)':pHit>=30?'var(--yellow)':'var(--red)'}">${pHit.toFixed(1)}%</div><div class="metric-sub">${N_SIMS} MC sims · σ=${(sigma*100).toFixed(0)}%</div></div>
       <div class="metric"><div class="metric-label">Yield contribution</div><div class="metric-value">${fmt$(yieldAnnual)}/yr</div><div class="metric-sub">${yieldApr.toFixed(2)}% APR passive</div></div>
       <div class="metric"><div class="metric-label">Leverage cost</div><div class="metric-value" style="color:var(--red)">−${fmt$(intAnnual)}/yr</div><div class="metric-sub">interest drag</div></div>
-      <div class="metric"><div class="metric-label">Squeeze EV cap</div><div class="metric-value">${fmt$(squeezeAnnualEV)}/yr</div><div class="metric-sub">15 plays max</div></div>
+      <div class="metric"><div class="metric-label">Squeeze EV</div><div class="metric-value">${fmt$(squeezeAnnualEV)}/yr</div><div class="metric-sub">${squeezeSrc}</div></div>
     </div>
+    <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Percentile distribution</div>
     <table>
-      <thead><tr><th>Scenario</th><th>P</th><th>BTC EOY</th><th>BTC Δ%</th><th>Spot Δ</th><th>Yield−Cost</th><th>Squeeze</th><th>Total $</th><th>Total %</th><th>EOY NET</th><th>Status</th></tr></thead>
+      <thead><tr><th>Pctile</th><th>BTC EOY</th><th>BTC Δ%</th><th>Spot Δ</th><th>Total $</th><th>Total %</th><th>EOY NET</th><th>Status</th></tr></thead>
       <tbody>${tbody}</tbody>
     </table>
-    <div class="${probHitTarget>=50?'safety-bar':probHitTarget>=30?'warning-bar':'danger-bar'}" style="margin-top:0.875rem">
-      ${probHitTarget>=50?'✅':probHitTarget>=30?'⚠️':'🚨'} <b>Verdict</b>: P(hit target) <b>${probHitTarget.toFixed(0)}%</b>. ${probHitTarget>=50?'Probability OK — execute Expert Playbook để maximize.':probHitTarget>=30?'Probability dưới mức an toàn — phải execute MOST aggressive actions trong Playbook để tăng EV.':'Probability THẤP — target hiện tại khó với current setup. Cần (1) thêm capital, (2) tăng risk (loan deploy), HOẶC (3) extend timeline. Expert Playbook chỉ ra actions tốt nhất.'}
+    <div class="${pHit>=50?'safety-bar':pHit>=30?'warning-bar':'danger-bar'}" style="margin-top:0.875rem">
+      ${pHit>=50?'✅':pHit>=30?'⚠️':'🚨'} <b>MC Verdict</b>: P(hit ${state.target_pct}% target) = <b>${pHit.toFixed(1)}%</b> (${N_SIMS} GBM sims · σ=${(sigma*100).toFixed(0)}%). ${pHit>=50?'Probability OK — execute Expert Playbook.':pHit>=30?'Probability dưới mức an toàn — aggressive execution needed.':'Probability THẤP — cần thêm capital hoặc extend timeline.'}
     </div>
+    <details style="margin-top:1rem">
+      <summary style="cursor:pointer;font-family:var(--display);font-size:0.9rem;font-weight:600;color:var(--muted);list-style:none;padding:0.5rem">▶ 6 named reference scenarios (betas ${betaSrc} · Squeeze EV ${squeezeSrc})</summary>
+      <table style="margin-top:0.5rem">
+        <thead><tr><th>Scenario</th><th>P</th><th>BTC EOY</th><th>BTC Δ%</th><th>Spot Δ</th><th>Total $</th><th>Total %</th><th>EOY NET</th><th>Status</th></tr></thead>
+        <tbody>${refTbody}</tbody>
+      </table>
+    </details>
   </div>`;
 }
 
@@ -1333,6 +1356,35 @@ function stddev(arr) {
   const m = arr.reduce((s,v)=>s+v,0) / arr.length;
   const v = arr.reduce((s,x)=>s+(x-m)**2,0) / arr.length;
   return Math.sqrt(v);
+}
+function computeBeta(altCloses, btcCloses) {
+  if (!altCloses || !btcCloses || altCloses.length < 2 || btcCloses.length < 2) return null;
+  const n = Math.min(altCloses.length, btcCloses.length);
+  const altR = [], btcR = [];
+  for (let i = 1; i < n; i++) {
+    if (altCloses[i-1] > 0 && altCloses[i] > 0) altR.push(Math.log(altCloses[i] / altCloses[i-1]));
+    if (btcCloses[i-1] > 0 && btcCloses[i] > 0) btcR.push(Math.log(btcCloses[i] / btcCloses[i-1]));
+  }
+  const m2 = Math.min(altR.length, btcR.length);
+  if (m2 < 5) return null;
+  const mA = altR.slice(0,m2).reduce((s,v)=>s+v,0)/m2, mB = btcR.slice(0,m2).reduce((s,v)=>s+v,0)/m2;
+  let cov = 0, varB = 0;
+  for (let i = 0; i < m2; i++) { cov += (altR[i]-mA)*(btcR[i]-mB); varB += (btcR[i]-mB)**2; }
+  return varB > 0 ? cov/varB : null;
+}
+function randNormal() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v);
+}
+function computeSqueezeEV(futures, playsPerYear) {
+  playsPerYear = playsPerYear || 15;
+  if (!futures) return 232;
+  const wt = (futures.winning_trades||0) + (futures.losing_trades||0);
+  if (wt < 5 || !(futures.avg_win > 0)) return 232;
+  const wr = futures.winning_trades / wt;
+  return Math.max(0, (wr * futures.avg_win - (1-wr) * (futures.avg_loss||0)) * playsPerYear);
 }
 
 // SOP M5 Priority-Score: alloc ideal ∝ max(1, BEP_gap_pp + 8) (tilt to underwater)
@@ -1800,14 +1852,31 @@ function renderStress(M) {
   </div>`;
 }
 
+function getTPReinvest(sym, tierIdx, M) {
+  const others = ['BTC','WBETH','LINK','BNB'].filter(s => s !== sym && M.m2[s]?.bep_gap !== undefined);
+  const top = others.sort((a,b) => (M.m2[b].bep_gap||0) - (M.m2[a].bep_gap||0))[0] || 'BTC';
+  const gap = (M.m2[top]?.bep_gap ?? 0).toFixed(1);
+  const loanWarn = M.m7.liq_dist < 60 ? ' ⚠loan full' : '';
+  const plans = [
+    `100% → ${top} (BEP gap ${gap}%)`,
+    `60% → ${top} · 40% repay loan`,
+    `30% → ${top} · 50% repay · 20% USDC`,
+    `20% → ${top} · 60% repay · 20% USDC`,
+  ];
+  return (plans[tierIdx] || plans[0]) + loanWarn;
+}
+
 function renderTPTriggers(M) {
   let rows = '';
   for (const sym of ['BTC','WBETH','BNB','LINK']) {
     if (!M.m3[sym]) continue;
+    let tIdx = 0;
     for (const t of M.m3[sym]) {
       const status = `${t.p_ok?'<span class="cond-on">✅p</span>':'<span class="cond-off">❌p</span>'} ${t.fg_ok?'<span class="cond-on">✅fg</span>':'<span class="cond-off">❌fg</span>'} ${t.bull_ok?'<span class="cond-on">✅b</span>':'<span class="cond-off">❌b</span>'}`;
       const fires = t.fires ? '<span class="badge b-bull">🔥 FIRE</span>' : `<span class="badge b-grey">${status} · wait</span>`;
-      rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym} · ${t.name}</b></td><td>${fmt$(t.trigger)}</td><td>≥ ${t.fg} (now ${state.market.fg_cg})</td><td>≥ ${t.bull} (now ${M.m9.bull_total})</td><td>${fires}</td><td>sell ${t.sell}%</td></tr>`;
+      const reinvest = getTPReinvest(sym, tIdx, M);
+      rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym} · ${t.name}</b></td><td>${fmt$(t.trigger)}</td><td>≥ ${t.fg} (now ${state.market.fg_cg})</td><td>≥ ${t.bull} (now ${M.m9.bull_total})</td><td>${fires}</td><td>sell ${t.sell}%</td><td style="font-size:0.72rem;color:var(--cyan);max-width:160px">${reinvest}</td></tr>`;
+      tIdx++;
     }
   }
   return `<div id="tp" class="section-title">🎯 TP Triggers per coin (3-cond gate)</div>
@@ -1815,36 +1884,13 @@ function renderTPTriggers(M) {
   <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
   <b>SOP M3 gate</b>: TP fires CHỈ khi 3/3: <code>price ≥ trigger</code> AND <code>F&amp;G ≥ threshold</code> AND <code>bull_pts ≥ N</code>.
   </div>
-  <table><thead><tr><th>Asset · TP</th><th>Trigger</th><th>F&G ≥</th><th>Bull pts ≥</th><th>3-cond</th><th>Sell</th></tr></thead><tbody>${rows}</tbody></table>
-  <div class="warning-bar">📐 TP1 = avg × 1.40 · TP2 × 1.80 · TP3 × 2.50 · TP4 × 3.50. Cumulative 65% sell, 35% hold.</div>
+  <table><thead><tr><th>Asset · TP</th><th>Trigger</th><th>F&G ≥</th><th>Bull pts ≥</th><th>3-cond</th><th>Sell</th><th>Reinvest proceeds</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="warning-bar">📐 TP1 = avg × 1.40 · TP2 × 1.80 · TP3 × 2.50 · TP4 × 3.50. Cumulative 65% sell, 35% hold. Reinvest → most underwater by BEP gap.</div>
   </div>`;
 }
 
 function renderScenarios(M) {
-  const scenarios = [
-    {name:'🩸 Capitulation', prob:15, ret:-30, desc:'Stop-loss G13 caps -45→-30%', color:'red'},
-    {name:'↔️ Sideways', prob:30, ret:5, desc:'DCA accum + funding income', color:'green'},
-    {name:'📈 Recovery', prob:35, ret:58, desc:`90d momentum +${state.market.ret_90d.toFixed(1)}% extends · BTC target hit`, color:'green', best:true},
-    {name:'🚀 Bull', prob:20, ret:92, desc:'BTC stretch + alt season', color:'green'},
-  ];
-  const ev = scenarios.reduce((s,sc)=>s + sc.prob/100 * sc.ret, 0);
-  const evDollar = M.m1.net * ev / 100;
-  const pHit = scenarios.filter(s=>s.ret>=state.target_pct).reduce((s,sc)=>s + sc.prob, 0);
-  const maxDD = Math.min(...scenarios.map(s=>s.ret));
-  let tiles = '';
-  for (const s of scenarios) {
-    tiles += `<div class="scen-tile" style="${s.best?'border:2px solid var(--green)':''}"><h4>${s.name}</h4><div class="scen-prob">prob ${s.prob}%</div><div class="scen-return" style="color:${s.ret>=0?'var(--green)':'var(--red)'}">${fmtPct(s.ret)}</div><div class="scen-prob">${s.desc}</div></div>`;
-  }
-  return `<div id="scenarios" class="section-title">🎲 EV Scenarios</div>
-  <div class="scen-grid">${tiles}</div>
-  <div class="card" style="margin-top:0.85rem">
-  <div class="metrics">
-  <div class="metric"><div class="metric-label">EV %</div><div class="metric-value" style="color:${ev>=state.target_pct?'var(--green)':'var(--yellow)'}">${fmtPct(ev)}</div><div class="metric-sub">prob-weighted on NET</div></div>
-  <div class="metric"><div class="metric-label">EV $</div><div class="metric-value" style="color:${evDollar>=0?'var(--green)':'var(--red)'}">${fmt$signed(evDollar)}</div><div class="metric-sub">NET ${fmt$(M.m1.net)}</div></div>
-  <div class="metric"><div class="metric-label">P(≥${state.target_pct}%)</div><div class="metric-value" style="color:var(--purple)">~${pHit}%</div><div class="metric-sub">scenarios hit target</div></div>
-  <div class="metric"><div class="metric-label">Max DD</div><div class="metric-value" style="color:var(--red)">${fmtPct(maxDD)}</div><div class="metric-sub">Capitulation cap</div></div>
-  <div class="metric"><div class="metric-label">R/R</div><div class="metric-value" style="color:var(--green)">${(scenarios.filter(s=>s.ret>0).reduce((s,sc)=>s+sc.prob*sc.ret,0)/Math.max(1,Math.abs(scenarios.filter(s=>s.ret<0).reduce((s,sc)=>s+sc.prob*sc.ret,0)))).toFixed(2)}</div><div class="metric-sub">upside/downside</div></div>
-  </div></div>`;
+  return `<div id="scenarios"></div>`; // merged into 🛣 Path to 35% Monte Carlo section
 }
 
 function renderSignals(M) {
@@ -2771,6 +2817,9 @@ async function fetchFromBinance() {
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       weeklyKlines: safe('weeklyKlines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=210')),
+      klinesLINK: safe('klinesLINK', fetchPublic('/api/v3/klines?symbol=LINKUSDT&interval=1d&limit=31')),
+      klinesWBETH: safe('klinesWBETH', fetchPublic('/api/v3/klines?symbol=WBETHUSDT&interval=1d&limit=31')),
+      klinesBNB: safe('klinesBNB', fetchPublic('/api/v3/klines?symbol=BNBUSDT&interval=1d&limit=31')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
     };
     const keys = Object.keys(tasks);
@@ -2991,6 +3040,32 @@ async function fetchFromBinance() {
         state.market.btc_200wma = ma200w;
         state.market.btc_above_200wma = currentBtc > ma200w;
         state.market.btc_200wma_distance_pct = ((currentBtc / ma200w) - 1) * 100;
+      }
+    }
+
+    // === ROLLING 30d BETA COMPUTATION from alt klines (Todo 1) ===
+    {
+      const defaultBetas = { BTC:1.0, WBETH:0.95, BNB:1.0, LINK:1.4, BNSOL:1.2, USDC:0 };
+      const btc30 = r.klines && r.klines.length >= 31
+        ? r.klines.slice(-31).map(k => parseFloat(k[4])) : null;
+      if (btc30) {
+        const tryBeta = (kl, fallback) => {
+          if (!kl || kl.length < 2) return fallback;
+          const cl = kl.slice(-31).map(k => parseFloat(k[4]));
+          const b = computeBeta(cl, btc30);
+          return b !== null && isFinite(b) && b > 0.1 && b < 8 ? parseFloat(b.toFixed(3)) : fallback;
+        };
+        const computed = {
+          BTC: 1.0, USDC: 0, BNSOL: defaultBetas.BNSOL,
+          LINK:  tryBeta(r.klinesLINK,  defaultBetas.LINK),
+          WBETH: tryBeta(r.klinesWBETH, defaultBetas.WBETH),
+          BNB:   tryBeta(r.klinesBNB,   defaultBetas.BNB),
+        };
+        state.market.betas = computed;
+        state.market.betas_source = `30d-corr (LINK:${computed.LINK} WBETH:${computed.WBETH} BNB:${computed.BNB})`;
+      } else {
+        state.market.betas = defaultBetas;
+        state.market.betas_source = 'fallback-defaults';
       }
     }
 
@@ -3308,6 +3383,10 @@ async function fetchFromBinance() {
       const realizedPnls = r.futuresTrades.map(t => parseFloat(t.realizedPnl || 0));
       state.futures.winning_trades = realizedPnls.filter(p => p > 0).length;
       state.futures.losing_trades = realizedPnls.filter(p => p < 0).length;
+      const winPnls = realizedPnls.filter(p => p > 0);
+      const lossPnls = realizedPnls.filter(p => p < 0);
+      state.futures.avg_win = winPnls.length ? winPnls.reduce((s,v)=>s+v,0)/winPnls.length : 0;
+      state.futures.avg_loss = lossPnls.length ? Math.abs(lossPnls.reduce((s,v)=>s+v,0)/lossPnls.length) : 0;
     }
 
     // Save snapshot for next-fetch diff
