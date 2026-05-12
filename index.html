@@ -531,6 +531,7 @@ function render() {
   html += renderPlanChanges(M);
   html += renderActions(M);
   html += renderPoolROI(M);
+  html += renderPlanEvaluation(M);
   html += renderDCA(M);
   html += renderDipLadder(M);
   html += renderSqueeze(M);
@@ -736,6 +737,71 @@ function renderActions(M) {
   return html;
 }
 
+// SOP M5 Priority-Score: alloc ideal ∝ max(1, BEP_gap_pp + 8) (tilt to underwater)
+function evaluatePoolPlan(m2_bep, plan_alloc) {
+  const assets = ['LINK', 'BNB', 'BTC', 'WBETH'];
+  const priorities = {}; let total = 0;
+  for (const a of assets) {
+    const bep = m2_bep[a]?.bep_gap ?? 0;
+    const w = Math.max(1, bep + 8);
+    priorities[a] = w; total += w;
+  }
+  const ideal = {}, diff = {}, rationale = {};
+  for (const a of assets) {
+    ideal[a] = (priorities[a] / total) * 100;
+    const actual = plan_alloc[a] || 0;
+    diff[a] = actual - ideal[a];
+    const bep = m2_bep[a]?.bep_gap ?? 0;
+    let r = '';
+    if (bep > 5) r = `🔴 underwater +${bep.toFixed(1)}% → ideal đẩy alloc cao`;
+    else if (bep > 0) r = `🟡 hơi underwater +${bep.toFixed(1)}% → alloc trung bình`;
+    else if (bep > -5) r = `🟢 gần BEP ${bep.toFixed(1)}% → alloc cân bằng`;
+    else r = `💚 profitable ${bep.toFixed(1)}% → alloc thấp ưu tiên anchor`;
+    rationale[a] = r;
+  }
+  const maxDiff = Math.max(...Object.values(diff).map(Math.abs));
+  return { priorities, ideal, diff, rationale, maxDiff, aligned: maxDiff < 8 };
+}
+
+function renderPlanEvaluation(M) {
+  if (!state.pool.plan_alloc) return '';
+  const ev = evaluatePoolPlan(M.m2, state.pool.plan_alloc);
+  let rows = '';
+  for (const a of ['LINK', 'BNB', 'BTC', 'WBETH']) {
+    const actual = state.pool.plan_alloc[a] || 0;
+    const ideal = ev.ideal[a];
+    const d = ev.diff[a];
+    const dC = Math.abs(d) > 15 ? 'var(--red)' : Math.abs(d) > 8 ? 'var(--orange)' : Math.abs(d) > 3 ? 'var(--yellow)' : 'var(--green)';
+    const verdict = Math.abs(d) > 15 ? '✗ very off' : Math.abs(d) > 8 ? '⚠ misaligned' : Math.abs(d) > 3 ? '~ slight drift' : '✓ aligned';
+    const sign = d >= 0 ? '+' : '';
+    rows += `<tr>
+      <td><b style="color:${ASSET_COLORS[a]||'var(--text)'}">${a}</b></td>
+      <td>${actual}%</td>
+      <td>${ideal.toFixed(1)}%</td>
+      <td style="color:${dC}"><b>${sign}${d.toFixed(1)}pp · ${verdict}</b></td>
+      <td style="font-size:0.78rem;color:var(--text2)">${ev.rationale[a]}</td>
+    </tr>`;
+  }
+  const overallC = ev.aligned ? 'var(--green)' : ev.maxDiff < 15 ? 'var(--yellow)' : 'var(--red)';
+  const sourceTag = state.pool.plan_source ? `<span style="font-size:0.7rem;color:var(--muted);font-family:var(--mono)">[plan source: ${state.pool.plan_source}]</span>` : '';
+  return `<div class="card" style="border:2px solid ${overallC};margin-bottom:1.375rem">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.875rem">
+      <div style="font-family:var(--display);font-size:1.15rem;font-weight:700">🤖 Plan Health · Auto-evaluation theo BEP gap (SOP M5)</div>
+      <span class="badge" style="background:${overallC}33;color:${overallC};border:1px solid ${overallC}">${ev.aligned ? '✅ Aligned' : `⚠ Max drift ${ev.maxDiff.toFixed(1)}pp`}</span>
+    </div>
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.65">
+      Ideal alloc tính theo công thức <code style="background:var(--bg2);padding:0.1rem 0.4rem;border-radius:4px">w = max(1, BEP_gap + 8)</code> → coin càng underwater càng nên DCA nhiều (mua khi giá thấp avg). ${sourceTag}
+    </div>
+    <table>
+      <thead><tr><th>Asset</th><th>Actual %</th><th>Ideal % (BEP-weighted)</th><th>Drift</th><th>Rationale</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="${ev.aligned ? 'safety-bar' : ev.maxDiff < 15 ? 'warning-bar' : 'danger-bar'}">
+      ${ev.aligned ? '✅' : '⚠️'} <b>Verdict</b>: ${ev.aligned ? 'Plan alloc hiện tại HỢP LÝ theo signals — không cần rebalance.' : ev.maxDiff < 15 ? 'Plan drift nhẹ — cân nhắc rebalance nếu drift kéo dài.' : 'Plan LỆCH XA ideal — recommend rebalance ngay (xem cột Drift để biết coin nào tăng/giảm).'}
+    </div>
+  </div>`;
+}
+
 function renderPoolROI(M) {
   const roi = state.pool_roi;
   if (!roi) return '';
@@ -832,19 +898,25 @@ function renderSqueeze(M) {
   const evPerPlay = tpGain * winRate + slLoss * (1 - winRate);
   const playsPerYear = 15;
   const annualEV = evPerPlay * playsPerYear;
+  // ADAPTIVE thresholds — fall back to fixed if data unavailable
+  const fundingThreshold = state.market.funding_threshold_adaptive ?? -0.005;
+  const priceThreshold = state.market.btc_sma20 ?? 79000;
+  const volRatioThreshold = 1.5; // current vol must be > 1.5× 14d avg
+  const volRatio = state.market.btc_vol_ratio ?? (1 + state.market.vol_change / 100);
+  const isAdaptive = state.market.funding_threshold_adaptive !== undefined;
   const conds = [
-    {name:'Funding rate', threshold:'≤ -0.005%',
-     current:`${state.market.funding_btc_pct.toFixed(4)}% / Binance ${state.market.funding_binance.toFixed(4)}%`,
-     met: state.market.funding_btc_pct <= -0.005 || state.market.funding_binance <= -0.005},
-    {name:'RSI 6 (1d)', threshold:'> 70',
-     current: state.market.rsi6_1d.toFixed(2),
+    {name:'Funding rate', threshold: isAdaptive ? `≤ ${fundingThreshold.toFixed(4)}% (20th pctile 7d)` : '≤ -0.005% (fixed)',
+     current:`${state.market.funding_btc_pct.toFixed(4)}% (median 7d ${(state.market.funding_history_median ?? 0).toFixed(4)}%)`,
+     met: state.market.funding_btc_pct <= fundingThreshold},
+    {name:'RSI 6 (1d)', threshold:'> 70 (overbought)',
+     current: `${state.market.rsi6_1d.toFixed(2)} (range 0-100)`,
      met: state.market.rsi6_1d > 70},
-    {name:'Price holding', threshold:'BTC > $79K',
-     current: fmt$(state.holdings.BTC.price),
-     met: state.holdings.BTC.price > 79000},
-    {name:'BTC volume surge', threshold:'+50%',
-     current: fmtPct(state.market.vol_change),
-     met: state.market.vol_change > 50},
+    {name:'Price holding', threshold: isAdaptive ? `BTC > SMA20 (${fmt$(priceThreshold,0)})` : 'BTC > $79K (fixed)',
+     current: `${fmt$(state.holdings.BTC.price)} vs SMA20 ${fmt$(state.market.btc_sma20 ?? 0,0)}`,
+     met: state.holdings.BTC.price > priceThreshold},
+    {name:'BTC volume surge', threshold: isAdaptive ? `> 1.5× 14d avg (${volRatioThreshold}x)` : '+50% (fixed)',
+     current: `${volRatio.toFixed(2)}x of 14d avg`,
+     met: volRatio > volRatioThreshold},
   ];
   const metCount = conds.filter(c=>c.met).length;
   const allMet = metCount === 4;
@@ -1908,6 +1980,7 @@ async function fetchFromBinance() {
       autoPlan: safe('autoPlan', callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' })),
       poolHistory: safe('poolHistory', fetchAllPoolHistory()),
       funding: safe('funding', callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' })),
+      fundingHistory: safe('fundingHistory', callWorker('/fapi/v1/fundingRate', { symbol: 'BTCUSDT', limit: 21 })),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
@@ -1968,19 +2041,26 @@ async function fetchFromBinance() {
     // SPRINT 1 P1: Pool ROI (compute after H prices set)
     const _priceMap = { BTC: H.BTC.price, WBETH: H.WBETH.price, LINK: H.LINK.price, BNB: H.BNB.price, BNSOL: H.BNSOL.price };
 
-    // DCA Pool from Auto-Invest (try multiple field names)
+    // DCA Pool from Auto-Invest — try common Binance field names + log unknown structure
     if (r.autoPlan?.list && r.autoPlan.list.length) {
-      const plan = r.autoPlan.list[0];
-      const value = parseFloat(plan.planValueUsdt || plan.planValueInUSD || plan.totalValueInUSDT || plan.planValue || 0);
-      const targets = plan.planTargetTokens || plan.targetTokens || plan.subscriptionDetails || plan.allocationDetails || [];
+      // Prefer ONGOING plan, fall back to first
+      const plan = r.autoPlan.list.find(p => (p.status || '').toUpperCase() === 'ONGOING') || r.autoPlan.list[0];
+      const value = parseFloat(plan.planValueUsdt || plan.planValueInUSD || plan.totalValueInUSDT || plan.planValue || plan.totalValue || r.autoPlan.planValueInUSD || 0);
+      // Try many candidate field names for the target allocation array
+      const targets = plan.planTargetTokens || plan.targetTokens || plan.subscriptionDetails || plan.allocationDetails || plan.targets || plan.assetList || plan.subscriptionAssetList || plan.details || [];
       const allocs = {};
       for (const t of targets) {
-        const sym = t.targetToken || t.targetAsset || t.asset;
-        const pct = parseFloat(t.percentage || t.allocPercentage || t.percentageList || 0);
+        const sym = t.targetToken || t.targetAsset || t.asset || t.targetAssetName || t.coin || t.symbol;
+        const pct = parseFloat(t.percentage || t.allocPercentage || t.percentageList || t.allocation || t.weight || t.percent || 0);
         if (sym && pct > 0) allocs[sym] = pct;
       }
       if (value > 0) state.pool.value = value;
-      if (Object.keys(allocs).length > 0) state.pool.plan_alloc = allocs;
+      if (Object.keys(allocs).length > 0) {
+        state.pool.plan_alloc = allocs;
+        state.pool.plan_source = 'api-live';
+      } else {
+        state.pool.plan_source = 'api-failed-mapping (xem console log)';
+      }
     }
 
     // F&G
@@ -1997,7 +2077,20 @@ async function fetchFromBinance() {
       state.market.funding_binance = parseFloat(r.funding.lastFundingRate) * 100; // mirror
     }
 
-    // Returns + RSI from BTC daily klines
+    // ADAPTIVE THRESHOLDS — funding rate from 7d history
+    if (Array.isArray(r.fundingHistory) && r.fundingHistory.length > 0) {
+      const rates = r.fundingHistory.map(x => parseFloat(x.fundingRate) * 100).sort((a, b) => a - b);
+      const pct20Index = Math.floor(rates.length * 0.20);
+      state.market.funding_threshold_adaptive = rates[pct20Index]; // 20th percentile (more bearish)
+      state.market.funding_history_min = rates[0];
+      state.market.funding_history_max = rates[rates.length - 1];
+      state.market.funding_history_median = rates[Math.floor(rates.length / 2)];
+    }
+
+    // Debug log Auto-Invest plan response to identify correct field names
+    if (r.autoPlan) console.log('[DEBUG] autoPlan raw response:', JSON.stringify(r.autoPlan, null, 2).slice(0, 2000));
+
+    // Returns + RSI + ADAPTIVE thresholds from BTC daily klines
     if (r.klines && r.klines.length > 0) {
       const closes = r.klines.map(k => parseFloat(k[4]));
       const volumes = r.klines.map(k => parseFloat(k[5]));
@@ -2019,6 +2112,31 @@ async function fetchFromBinance() {
       if (volumes.length >= 8) {
         const avg7 = volumes.slice(-8, -1).reduce((s,v)=>s+v,0) / 7;
         state.market.vol_change = avg7 > 0 ? (volumes[volumes.length-1] / avg7 - 1) * 100 : 0;
+      }
+      // ADAPTIVE: SMA20 of BTC for price support threshold
+      if (closes.length >= 20) {
+        const last20 = closes.slice(-20);
+        state.market.btc_sma20 = last20.reduce((s,v)=>s+v,0) / 20;
+        // EMA20 alternative
+        const k = 2 / 21;
+        let ema = closes[closes.length - 21];
+        for (let i = closes.length - 20; i < closes.length; i++) ema = closes[i] * k + ema * (1 - k);
+        state.market.btc_ema20 = ema;
+      }
+      // ADAPTIVE: 14-day rolling volume average + percentile
+      if (volumes.length >= 14) {
+        const last14 = volumes.slice(-15, -1); // exclude today
+        state.market.btc_vol_avg14 = last14.reduce((s,v)=>s+v,0) / 14;
+        state.market.btc_vol_ratio = state.market.btc_vol_avg14 > 0 ? volumes[volumes.length-1] / state.market.btc_vol_avg14 : 1;
+      }
+      // ADAPTIVE: Bollinger-like price band (mean ± 2σ over 20d) — used for support/resistance
+      if (closes.length >= 20) {
+        const last20 = closes.slice(-20);
+        const mean = last20.reduce((s,v)=>s+v,0) / 20;
+        const variance = last20.reduce((s,v)=>s+(v-mean)**2,0) / 20;
+        const stddev = Math.sqrt(variance);
+        state.market.btc_bb_upper = mean + 2 * stddev;
+        state.market.btc_bb_lower = mean - 2 * stddev;
       }
     }
 
