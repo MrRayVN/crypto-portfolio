@@ -658,7 +658,7 @@ function renderKPITracker(M) {
       <div class="metric"><div class="metric-label">Days remaining</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">elapsed ${elapsedPct.toFixed(1)}%</div></div>
       <div class="metric"><div class="metric-label">Required daily rate</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/d</div><div class="metric-sub">compound to EOY</div></div>
       <div class="metric"><div class="metric-label">Required monthly</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/mo</div><div class="metric-sub">compound</div></div>
-      <div class="metric"><div class="metric-label">Current rate (TRUE)</div><div class="metric-value" style="color:${currentRatePctPerDay >= 0 ? 'var(--green)' : 'var(--red)'}">${currentRatePctPerDay.toFixed(3)}%/d</div><div class="metric-sub">${trueRateSrc} · annual ${trueAnnualRate !== undefined ? trueAnnualRate.toFixed(1) + '%/y' : '—'}</div></div>
+      <div class="metric"><div class="metric-label">Current rate (TRUE)</div><div class="metric-value" style="color:${trueDailyRate !== undefined && currentRatePctPerDay >= 0 ? 'var(--green)' : trueDailyRate !== undefined ? 'var(--red)' : 'var(--muted)'}">${trueDailyRate !== undefined ? currentRatePctPerDay.toFixed(3) + '%/d' : 'N/A'}</div><div class="metric-sub">${trueRateSrc}${trueAnnualRate !== undefined ? ` · annual ${trueAnnualRate.toFixed(1)}%/y` : ''}${state.snapshot?.note ? '<br><span style="font-size:0.65rem;opacity:0.7">⚠ ' + state.snapshot.note.slice(0,80) + '</span>' : ''}</div></div>
     </div>
 
     <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Return breakdown (KHÔNG double-count — Pool đã trong Spot unrealized)</div>
@@ -2264,13 +2264,17 @@ async function fetchCoinalyzePredFundingHistory() {
   } catch (e) { return null; }
 }
 
-// Account snapshot: heavy weight (2400), cache 24h in localStorage
+// Account snapshot: heavy weight (2400), cache 24h in localStorage with sanity-check invalidation
 async function fetchAccountSnapshotCached() {
   const cached = localStorage.getItem('accountSnapshotCache');
   if (cached) {
     try {
       const { ts, data } = JSON.parse(cached);
-      if (Date.now() - ts < 86400000) return data; // 24h
+      // Sanity check: at least 50% of snapshots have totalAssetOfBtc > 0
+      const valid = Array.isArray(data?.snapshotVos)
+        && data.snapshotVos.filter(s => parseFloat(s.data?.totalAssetOfBtc || s.data?.totalAssetOfBTC || 0) > 0).length >= data.snapshotVos.length * 0.5;
+      if (Date.now() - ts < 86400000 && valid) return data;
+      if (!valid) console.warn('[snapshot] Cache invalidated — bad data detected');
     } catch {}
   }
   try {
@@ -3246,27 +3250,50 @@ async function fetchFromBinance() {
       }
     }
 
-    // === ACCOUNT SNAPSHOT — historical NET for TRUE current rate ===
-    state.snapshot = { net_30d_ago: null, net_history: [] };
+    // === ACCOUNT SNAPSHOT — historical NET for TRUE current rate (outlier filter + sanity check) ===
+    state.snapshot = { net_30d_ago: null, net_history: [], note: '' };
     if (r.accountSnapshot?.snapshotVos && Array.isArray(r.accountSnapshot.snapshotVos)) {
       const sortedSnaps = r.accountSnapshot.snapshotVos.sort((a, b) => a.updateTime - b.updateTime);
-      // For each snapshot, sum balances × current price (approximate — Binance returns balances)
-      state.snapshot.net_history = sortedSnaps.map(s => {
-        const totalBtc = parseFloat(s.data?.totalAssetOfBtc || 0);
-        const btcPrice = state.holdings.BTC.price;
-        return { time: s.updateTime, value_usd: totalBtc * btcPrice };
+      const btcPrice = state.holdings.BTC.price;
+      // Multi-field fallback for Binance API field naming variations
+      const allSnaps = sortedSnaps.map(s => {
+        const totalBtc = parseFloat(s.data?.totalAssetOfBtc || s.data?.totalAssetOfBTC || 0);
+        return { time: s.updateTime, value_usd: totalBtc * btcPrice, total_btc: totalBtc };
       });
-      if (state.snapshot.net_history.length > 0) {
-        state.snapshot.net_30d_ago = state.snapshot.net_history[0].value_usd;
-        state.snapshot.net_today_snapshot = state.snapshot.net_history[state.snapshot.net_history.length - 1].value_usd;
-        const days = (state.snapshot.net_history[state.snapshot.net_history.length-1].time - state.snapshot.net_history[0].time) / 86400000;
-        // True 30-day return
-        if (state.snapshot.net_30d_ago > 0 && days > 0) {
-          const totalRet = (state.snapshot.net_today_snapshot / state.snapshot.net_30d_ago) - 1;
-          state.snapshot.true_30d_return_pct = totalRet * 100;
-          state.snapshot.true_daily_compound_pct = (Math.pow(1 + totalRet, 1 / days) - 1) * 100;
-          state.snapshot.true_annual_compound_pct = (Math.pow(1 + totalRet, 365 / days) - 1) * 100;
+      console.log('[DEBUG] accountSnapshot:', allSnaps.length, 'snaps · values $:', allSnaps.map(s => s.value_usd.toFixed(0)).join(', '));
+      // Filter outliers: value_usd > $50 (any active portfolio); skip days API hasn't computed yet
+      const validSnaps = allSnaps.filter(s => s.value_usd > 50);
+      state.snapshot.net_history = validSnaps;
+      state.snapshot.filtered_count = allSnaps.length - validSnaps.length;
+      if (validSnaps.length >= 2) {
+        const first = validSnaps[0];
+        const last = validSnaps[validSnaps.length - 1];
+        const days = (last.time - first.time) / 86400000;
+        // Compare snapshot value vs current NET — if mismatch large, SPOT snapshot is incomplete for this user
+        const localGross = Object.values(state.holdings).reduce((s, h) => s + h.qty * h.price, 0);
+        const localNet = localGross - state.loan;
+        const snapNetRatio = localNet > 0 ? last.value_usd / localNet : 0;
+        const isCoverageOK = snapNetRatio > 0.30 && snapNetRatio < 3.0; // SPOT snap covers reasonable % of NET
+        if (days >= 1 && isCoverageOK) {
+          const totalRet = (last.value_usd / first.value_usd) - 1;
+          if (totalRet > -0.95 && totalRet < 20) {
+            state.snapshot.net_30d_ago = first.value_usd;
+            state.snapshot.net_today_snapshot = last.value_usd;
+            state.snapshot.actual_days = days;
+            state.snapshot.true_30d_return_pct = totalRet * 100;
+            state.snapshot.true_daily_compound_pct = (Math.pow(1 + totalRet, 1 / days) - 1) * 100;
+            state.snapshot.true_annual_compound_pct = (Math.pow(1 + totalRet, 365 / days) - 1) * 100;
+            state.snapshot.note = `${validSnaps.length} snaps · ${days.toFixed(0)}d · snap/NET ratio ${(snapNetRatio*100).toFixed(0)}%`;
+          } else {
+            state.snapshot.note = `Outlier rejected: totalRet ${(totalRet*100).toFixed(1)}% — snapshot data inconsistent.`;
+          }
+        } else if (!isCoverageOK) {
+          state.snapshot.note = `Snapshot value ${fmt$(last.value_usd)} vs current NET ${fmt$(localNet)} = ratio ${(snapNetRatio*100).toFixed(0)}%. SPOT snapshot KHÔNG cover Loan collateral/Pool — skip TRUE rate (sẽ misleading). Theo dõi qua sessions để build NET history thủ công.`;
+        } else {
+          state.snapshot.note = `Need ≥1d span, got ${days.toFixed(1)}d.`;
         }
+      } else {
+        state.snapshot.note = `Only ${validSnaps.length} valid snapshots (filtered ${state.snapshot.filtered_count} outliers).`;
       }
     }
 
