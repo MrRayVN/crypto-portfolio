@@ -530,10 +530,12 @@ function render() {
   html += renderTarget(M);
   html += renderPlanChanges(M);
   html += renderActions(M);
+  html += renderPoolROI(M);
   html += renderDCA(M);
   html += renderDipLadder(M);
   html += renderSqueeze(M);
   html += renderStopLoss(M);
+  html += renderLoanOrdersPrecise(M);
   html += renderLoan(M);
   html += renderAlerts(M);
   html += renderPortfolio(M);
@@ -734,6 +736,40 @@ function renderActions(M) {
   return html;
 }
 
+function renderPoolROI(M) {
+  const roi = state.pool_roi;
+  if (!roi) return '';
+  const c = roi.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const annC = roi.annualizedROI >= 35 ? 'var(--green)' : roi.annualizedROI >= 0 ? 'var(--yellow)' : 'var(--red)';
+  let targetRows = '';
+  for (const [target, d] of Object.entries(roi.byTarget)) {
+    const tc = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    targetRows += `<tr><td><b style="color:${ASSET_COLORS[target]||'var(--text)'}">${target}</b></td><td>${d.count}</td><td>${fmt$(d.invested)}</td><td>${fmtQty(d.qty)}</td><td>${fmt$(d.currentValue)}</td><td style="color:${tc}">${fmt$signed(d.pnl)}</td><td style="color:${tc}">${fmtPct(d.pnl_pct)}</td></tr>`;
+  }
+  const partialNote = roi.historyComplete
+    ? '<span style="color:var(--green)">✅ API history nearly complete</span>'
+    : `<span style="color:var(--yellow)">⚠ API trả ${roi.historyEntries} entries (${roi.days}d) — ước tính ${fmt$(roi.preHistoryValue)} từ trước retention period không track được</span>`;
+  return `<div class="card" style="border:2px solid ${c};margin-bottom:1.375rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:0.875rem">
+      <div style="font-family:var(--display);font-size:1.15rem;font-weight:700">💎 Pool ROI · API last ${roi.days} days · ${roi.totalExecutions} executions</div>
+      <span class="badge" style="background:${c}33;color:${c};border:1px solid ${c}">${fmtPct(roi.pnl_pct)} · annualized ${fmtPct(roi.annualizedROI)}</span>
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Total invested</div><div class="metric-value">${fmt$(roi.totalInvested)}</div><div class="metric-sub">USDT từ DCA</div></div>
+      <div class="metric"><div class="metric-label">Current value (period)</div><div class="metric-value">${fmt$(roi.currentValuePartial)}</div><div class="metric-sub">qty × live price</div></div>
+      <div class="metric"><div class="metric-label">Pool PnL (partial)</div><div class="metric-value" style="color:${c}">${fmt$signed(roi.pnl)}</div><div class="metric-sub">${fmtPct(roi.pnl_pct)}</div></div>
+      <div class="metric"><div class="metric-label">Annualized ROI</div><div class="metric-value" style="color:${annC}">${fmtPct(roi.annualizedROI)}</div><div class="metric-sub">vs ${state.target_pct}% target</div></div>
+      <div class="metric"><div class="metric-label">Full Pool value</div><div class="metric-value" style="color:var(--cyan)">${fmt$(roi.fullPoolValue)}</div><div class="metric-sub">Binance-reported</div></div>
+      <div class="metric"><div class="metric-label">Pre-API history value</div><div class="metric-value" style="color:var(--muted)">${fmt$(roi.preHistoryValue)}</div><div class="metric-sub">est. from before retention</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Target</th><th>Executions</th><th>Invested</th><th>Qty</th><th>Current value</th><th>PnL $</th><th>PnL %</th></tr></thead>
+      <tbody>${targetRows}</tbody>
+    </table>
+    <div class="warning-bar" style="margin-top:0.875rem">${partialNote} · Annualized ROI ${roi.annualizedROI >= 35 ? '✅ ABOVE' : '✗ BELOW'} ${state.target_pct}% target</div>
+  </div>`;
+}
+
 function renderDCA(M) {
   const a = state.pool.plan_alloc;
   const prevA = state.prev.pool_alloc;
@@ -877,6 +913,41 @@ function renderStopLoss(M) {
   </div>
   <table><thead><tr><th>Trigger</th><th>F&G</th><th>Action</th><th>Mục đích</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="${M.m7.over_accept > 0 ? 'danger-bar' : 'safety-bar'}">${M.m7.over_accept > 0 ? '🚨' : '🛡️'} <b>Constraint</b>: Loan capacity ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor → ${M.m7.over_accept > 0 ? 'giảm dip-buy capacity. Phải dùng cash từ sell BNSOL+USDC trước khi add loan.' : 'còn buffer cho dip-buy. Nếu BTC dump → có thể add loan T2.'}</div>
+  </div>`;
+}
+
+function renderLoanOrdersPrecise(M) {
+  if (!state.loan_orders || state.loan_orders.length === 0) return '';
+  let rows = '';
+  let totalDebt = 0, totalCollValue = 0;
+  for (const o of state.loan_orders) {
+    totalDebt += o.debt; totalCollValue += o.collValue;
+    const ltvC = o.currentLTV >= 0.85 ? 'var(--red)' : o.currentLTV >= 0.78 ? 'var(--orange)' : o.currentLTV >= 0.65 ? 'var(--yellow)' : 'var(--green)';
+    const bufC = o.bufferToMarginCallPct < 15 ? 'var(--red)' : o.bufferToMarginCallPct < 25 ? 'var(--orange)' : 'var(--green)';
+    rows += `<tr>
+      <td><b style="color:${ASSET_COLORS[o.collateralCoin]||'var(--text)'}">${o.collateralCoin}</b>-backed</td>
+      <td>${fmt$(o.debt)}</td>
+      <td>${fmtQty(o.collQty)} ${o.collateralCoin}<br><span style="color:var(--muted);font-size:0.7rem">${fmt$(o.collValue)} @ ${fmt$(o.collPrice)}</span></td>
+      <td style="color:${ltvC}"><b>${(o.currentLTV*100).toFixed(2)}%</b></td>
+      <td style="color:var(--orange)">${fmt$(o.marginCallPrice,0)}<br><span style="color:${bufC};font-size:0.7rem">buffer ${o.bufferToMarginCallPct.toFixed(1)}%</span></td>
+      <td style="color:var(--red)">${fmt$(o.liquidationPrice,0)}<br><span style="color:var(--red);font-size:0.7rem">buffer ${o.bufferToLiqPct.toFixed(1)}%</span></td>
+    </tr>`;
+  }
+  const aggregateLTV = totalCollValue > 0 ? totalDebt / totalCollValue : 0;
+  const aggC = aggregateLTV >= 0.85 ? 'var(--red)' : aggregateLTV >= 0.78 ? 'var(--orange)' : 'var(--green)';
+  return `<div class="card" style="border:2px solid var(--orange);margin-bottom:1.375rem">
+    <div style="font-family:var(--display);font-size:1.15rem;font-weight:700;margin-bottom:0.875rem">💰 Loan Orders · Precise LTV (Binance Flexible Loan thresholds)</div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Total debt</div><div class="metric-value">${fmt$(totalDebt)}</div><div class="metric-sub">${state.loan_orders.length} orders</div></div>
+      <div class="metric"><div class="metric-label">Total collateral</div><div class="metric-value">${fmt$(totalCollValue)}</div><div class="metric-sub">live mark</div></div>
+      <div class="metric"><div class="metric-label">Aggregate LTV</div><div class="metric-value" style="color:${aggC}">${(aggregateLTV*100).toFixed(2)}%</div><div class="metric-sub">init 78% · MC 85% · liq 91%</div></div>
+      <div class="metric"><div class="metric-label">Headroom to MC</div><div class="metric-value" style="color:var(--orange)">${fmt$((LOAN_LTV_MARGIN_CALL * totalCollValue) - totalDebt)}</div><div class="metric-sub">debt headroom</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Order</th><th>Debt</th><th>Collateral</th><th>Current LTV</th><th>Margin Call price (85%)</th><th>Liquidation price (91%)</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="${aggregateLTV >= 0.78 ? 'danger-bar' : aggregateLTV >= 0.65 ? 'warning-bar' : 'safety-bar'}">${aggregateLTV >= 0.78 ? '🚨' : aggregateLTV >= 0.65 ? '⚠️' : '🛡️'} <b>Real-time risk</b>: per-asset margin call/liquidation tính theo LTV thật của Binance, KHÔNG dùng formula custom v1.6 cũ. Mỗi loan có collateral riêng → giá liq độc lập (BTC dump không ảnh hưởng WBETH-backed loan và ngược lại).</div>
   </div>`;
 }
 
@@ -1725,6 +1796,94 @@ function toggleAutoRefresh(enabled) {
   }
 }
 
+// === SPRINT 1 P1: Pool ROI computation from Auto-Invest history ===
+async function fetchAllPoolHistory() {
+  const all = [];
+  for (let page = 1; page < 30; page++) {
+    try {
+      const r = await callWorker('/sapi/v1/lending/auto-invest/history/list', { current: page, size: 100 });
+      const list = r.list || r.rows || [];
+      if (list.length === 0) break;
+      all.push(...list);
+      if (list.length < 100) break;
+    } catch (e) { break; }
+  }
+  return all;
+}
+
+function computePoolROI(history, pricesMap, fullPoolValue) {
+  if (!history || history.length === 0) return null;
+  const stableAssets = new Set(['USDT', 'USDC', 'FDUSD', 'TUSD', 'BUSD']);
+  let totalInvested = 0, earliestTime = Date.now(), totalExecutions = 0;
+  const byTarget = {};
+  for (const h of history) {
+    if (h.transactionStatus !== 'SUCCESS') continue;
+    const sourceAsset = h.sourceAsset, sourceAmount = parseFloat(h.sourceAssetAmount || 0);
+    if (!stableAssets.has(sourceAsset)) continue;
+    if (sourceAmount <= 0) continue;
+    totalInvested += sourceAmount;
+    totalExecutions++;
+    const time = h.transactionDateTime || 0;
+    if (time > 0 && time < earliestTime) earliestTime = time;
+    const target = h.targetAsset;
+    if (!byTarget[target]) byTarget[target] = { invested: 0, qty: 0, count: 0, currentValue: 0, pnl: 0, pnl_pct: 0 };
+    byTarget[target].invested += sourceAmount;
+    byTarget[target].qty += parseFloat(h.targetAssetAmount || 0);
+    byTarget[target].count++;
+  }
+  // Compute partial-period current value using qty bought × current price
+  let currentValuePartial = 0;
+  for (const [target, d] of Object.entries(byTarget)) {
+    const price = pricesMap[target] || 0;
+    d.currentValue = d.qty * price;
+    d.pnl = d.currentValue - d.invested;
+    d.pnl_pct = d.invested > 0 ? (d.pnl / d.invested) * 100 : 0;
+    currentValuePartial += d.currentValue;
+  }
+  const days = totalInvested > 0 ? Math.max(1, Math.floor((Date.now() - earliestTime) / 86400000)) : 0;
+  const pnlPartial = currentValuePartial - totalInvested;
+  const pnlPctPartial = totalInvested > 0 ? (pnlPartial / totalInvested) * 100 : 0;
+  const annualizedROI = days > 0 ? pnlPctPartial * (365 / days) : 0;
+  const preHistoryValue = Math.max(0, fullPoolValue - currentValuePartial);
+  return {
+    totalInvested, currentValuePartial, fullPoolValue,
+    pnl: pnlPartial, pnl_pct: pnlPctPartial,
+    days, earliestTime, totalExecutions, annualizedROI,
+    byTarget, historyEntries: history.length,
+    preHistoryValue,
+    historyComplete: preHistoryValue < fullPoolValue * 0.05, // <5% pre-history → mostly complete
+  };
+}
+
+// === SPRINT 1 P2: Precise liquidation per Binance Flexible Loan LTV ===
+const LOAN_LTV_INITIAL = 0.78;
+const LOAN_LTV_MARGIN_CALL = 0.85;
+const LOAN_LTV_LIQUIDATION = 0.91;
+
+function computeLoanOrders(loansResponse, holdings) {
+  if (!loansResponse?.rows) return [];
+  return loansResponse.rows.map(r => {
+    const debt = parseFloat(r.totalDebt);
+    const collQty = parseFloat(r.collateralAmount);
+    const collCoin = r.collateralCoin;
+    const collPrice = holdings[collCoin]?.price || 0;
+    const collValue = collQty * collPrice;
+    const currentLTV = collValue > 0 ? debt / collValue : 0;
+    const marginCallPrice = collQty > 0 ? debt / (collQty * LOAN_LTV_MARGIN_CALL) : 0;
+    const liquidationPrice = collQty > 0 ? debt / (collQty * LOAN_LTV_LIQUIDATION) : 0;
+    const bufferToMarginCallPct = collPrice > 0 ? (collPrice / marginCallPrice - 1) * 100 : 0;
+    const bufferToLiqPct = collPrice > 0 ? (collPrice / liquidationPrice - 1) * 100 : 0;
+    return {
+      loanCoin: r.loanCoin,
+      collateralCoin: collCoin,
+      debt, collQty, collValue, collPrice,
+      currentLTV: parseFloat(r.currentLTV || currentLTV),
+      marginCallPrice, liquidationPrice,
+      bufferToMarginCallPct, bufferToLiqPct,
+    };
+  });
+}
+
 async function fetchFromBinance() {
   setApiStatus('Đang fetch live data...', 'info');
   const t0 = Date.now();
@@ -1747,6 +1906,7 @@ async function fetchFromBinance() {
       spot: safe('spot', callWorker('/api/v3/account')),
       loans: safe('loans', callWorker('/sapi/v2/loan/flexible/ongoing/orders')),
       autoPlan: safe('autoPlan', callWorker('/sapi/v1/lending/auto-invest/plan/list', { planType: 'PORTFOLIO' })),
+      poolHistory: safe('poolHistory', fetchAllPoolHistory()),
       funding: safe('funding', callWorker('/fapi/v1/premiumIndex', { symbol: 'BTCUSDT' })),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
@@ -1802,6 +1962,12 @@ async function fetchFromBinance() {
     state.holdings = H;
     state.loan = totalLoan;
 
+    // SPRINT 1 P2: precise loan orders per LTV thresholds
+    state.loan_orders = computeLoanOrders(r.loans, H);
+
+    // SPRINT 1 P1: Pool ROI (compute after H prices set)
+    const _priceMap = { BTC: H.BTC.price, WBETH: H.WBETH.price, LINK: H.LINK.price, BNB: H.BNB.price, BNSOL: H.BNSOL.price };
+
     // DCA Pool from Auto-Invest (try multiple field names)
     if (r.autoPlan?.list && r.autoPlan.list.length) {
       const plan = r.autoPlan.list[0];
@@ -1819,6 +1985,11 @@ async function fetchFromBinance() {
 
     // F&G
     if (r.fg !== null) state.market.fg_cg = r.fg;
+
+    // SPRINT 1 P1: Compute Pool ROI after pool.value resolved
+    if (r.poolHistory && r.poolHistory.length > 0) {
+      state.pool_roi = computePoolROI(r.poolHistory, _priceMap, state.pool.value);
+    }
 
     // Funding rate (BTCUSDT-PERP)
     if (r.funding?.lastFundingRate !== undefined) {
