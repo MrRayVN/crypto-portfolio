@@ -112,6 +112,7 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 <nav class="nav-tabs">
   <a href="#editor" class="nav-tab">✏️ Edit Data</a>
   <a href="#kpi" class="nav-tab">🎯 KPI Tracker</a>
+  <a href="#path35" class="nav-tab">🛣 Path to 35%</a>
   <a href="#playbook" class="nav-tab">🤖 Playbook</a>
   <a href="#journal" class="nav-tab">📊 Trades Journal</a>
   <a href="#aggregate" class="nav-tab">🌍 Market Aggregate</a>
@@ -550,6 +551,7 @@ function render() {
 
   let html = '';
   html += renderKPITracker(M);
+  html += renderPathTo35(M);
   html += renderExpertPlaybook(M);
   html += renderTradesJournal(M);
   html += renderMarketAggregate(M);
@@ -758,12 +760,55 @@ function renderExpertPlaybook(M) {
     }
   }
 
-  // === Action: OI buildup warning ===
+  // === Action: OI buildup warning + OI TREND ===
   if (ca?.oi_current !== undefined) {
     const oiBn = ca.oi_current / 1e9;
-    const dnaOI = [`Agg OI ${oiBn.toFixed(2)}B USD`];
-    if (oiBn > 35) {
-      addAction(3, '⚠ VOLATILITY WARN', `OI ${oiBn.toFixed(1)}B — leverage at extreme`, `Total OI > $35B`, `Trim leverage 1 notch (giảm Squeeze size, không tăng loan). Sự kiện vol cao sắp đến.`, currentNet * 0.03, 0.4, 'opportunity cost', 'OI extreme historically precedes flush events. Reduce exposure to volatility.', dnaOI);
+    const trend = ca?.oi_trend;
+    const oi7dChg = ca?.oi_change_7d_pct;
+    const dnaOI = [`Agg OI ${oiBn.toFixed(2)}B USD`, trend ? `Trend ${trend} (${oi7dChg >= 0 ? '+' : ''}${oi7dChg?.toFixed(1)}% 7d)` : ''].filter(Boolean);
+    if (oiBn > 35) addAction(3, '⚠ VOLATILITY WARN', `OI ${oiBn.toFixed(1)}B — leverage at extreme`, `Total OI > $35B`, `Trim leverage 1 notch (giảm Squeeze size, không tăng loan).`, currentNet * 0.03, 0.4, 'opportunity cost', 'OI extreme historically precedes flush.', dnaOI);
+    else if (trend === 'rising' && state.market.btc_24h < 0) addAction(3, '🟠 BEAR SETUP', `OI rising ${oi7dChg.toFixed(1)}% + BTC -${Math.abs(state.market.btc_24h).toFixed(1)}%`, `OI rising với price falling`, `Late-leverage longs — flush risk. Đợi capitulation, KHÔNG dip-buy vội.`, currentNet * 0.02, 0.45, 'wait', 'Rising OI + falling price = longs building into bearish move.', dnaOI);
+  }
+
+  // === Action: Liquidation cascade (Coinalyze) ===
+  if (ca?.liq_24h_total !== undefined && ca.liq_24h_total > 100e6) {
+    const dnaLiq = [`Liq 24h $${(ca.liq_24h_total/1e6).toFixed(1)}M`, `${ca.liq_24h_dominance}`, `Long $${(ca.liq_24h_long/1e6).toFixed(0)}M vs Short $${(ca.liq_24h_short/1e6).toFixed(0)}M`];
+    if (ca.liq_24h_dominance === 'longs-rekt' && ca.liq_24h_long > 200e6) {
+      addAction(2, '🟢 CAPITULATION BUY', `Long liquidation cascade $${(ca.liq_24h_long/1e6).toFixed(0)}M 24h`, `Long liq > $200M = washout`, `Aggressive dip-buy: $50-100 spot LINK/BNB. Capitulation = local low signal.`, currentNet * 0.07, 0.55, 'high — knife catch risk', 'Mass long liq = forced sells exhausted. Historically precedes bounce 24-72h.', dnaLiq);
+    } else if (ca.liq_24h_dominance === 'shorts-rekt' && ca.liq_24h_short > 150e6) {
+      addAction(4, '🟡 SHORT SQUEEZE', `Short liquidation $${(ca.liq_24h_short/1e6).toFixed(0)}M 24h`, `Short liq > $150M`, `Squeeze already happening — KHÔNG chase highs. Đợi pullback để TP nếu profitable.`, currentNet * 0.02, 0.4, 'late entry risk', 'Short squeeze in progress — chasing = bad entry.', dnaLiq);
+    }
+  }
+
+  // === Action: Predicted funding pre-position ===
+  if (ca?.predicted_funding !== undefined) {
+    const pf = ca.predicted_funding;
+    const dnaPF = [`Predicted next funding ${pf.toFixed(4)}%`, `Current ${(ca.funding_current ?? 0).toFixed(4)}%`];
+    if (pf < -0.01) addAction(3, '🟣 PRE-SQUEEZE ARM', `Predicted funding ${pf.toFixed(4)}% (very bearish)`, `Next funding < -0.01% predicted`, `Pre-arm Squeeze monitor. Nếu price hold + RSI build → fire khi funding actual hits prediction.`, currentNet * 0.04, 0.35, 'prediction may not realize', 'Coinalyze predicted funding leading signal — pre-position before market.', dnaPF);
+  }
+
+  // === Action: Cost-of-leverage check (loan interest paid) ===
+  if (state.income?.loan_interest_paid_30d > 0) {
+    const monthlyInt = state.income.loan_interest_paid_30d;
+    const annualInt = monthlyInt * 12;
+    const aggLTV = state.loan_orders ? state.loan_orders.reduce((s,o) => s + o.debt, 0) / state.loan_orders.reduce((s,o) => s + o.collValue, 0) : 0;
+    const totalLoan = state.loan_orders ? state.loan_orders.reduce((s,o) => s + o.debt, 0) : state.loan;
+    const apr = totalLoan > 0 ? (annualInt / totalLoan) * 100 : 0;
+    const dnaInt = [`Interest paid 30d $${monthlyInt.toFixed(2)}`, `Annualized $${annualInt.toFixed(0)} ≈ ${apr.toFixed(1)}% APR on loan`, `Loan total $${totalLoan.toFixed(0)} · LTV ${(aggLTV*100).toFixed(1)}%`];
+    // Loan must generate > APR of cost in expected returns OR repay
+    if (apr > 10 && aggLTV < 0.5) {
+      addAction(3, '💰 COST CHECK', `Loan interest ${apr.toFixed(1)}% APR — high cost vs return`, `Annual interest $${annualInt.toFixed(0)} vs expected market return`, `Nếu market expectation < ${apr.toFixed(0)}% recovery → consider partial repay $${(totalLoan*0.2).toFixed(0)}. Else hold + bias dip-buy.`, monthlyInt * 6, 0.4, 'opportunity cost of leverage', 'Leverage chỉ profitable nếu return > cost. Track APR vs scenario EV.', dnaInt);
+    }
+  }
+
+  // === Action: Yield income optimization ===
+  if (state.income?.total_yield_30d !== undefined) {
+    const yield30 = state.income.total_yield_30d;
+    const apr = state.income.yield_apr_estimate;
+    const totalWealth = currentNet + state.pool.value;
+    const dnaYield = [`Yield 30d $${yield30.toFixed(2)}`, `Annualized APR ${apr.toFixed(2)}%`, `vs ${state.target_pct}% target`];
+    if (apr < 2 && state.holdings.WBETH.qty > 0.1) {
+      addAction(4, '💡 YIELD GAP', `Passive yield APR ${apr.toFixed(2)}% — under-optimized`, `Yield APR < 2%`, `Verify ETH staking ON cho WBETH, SOL staking ON cho BNSOL, Earn Flexible ON cho USDC dust. Expected boost +3-5% APR ≈ $${(totalWealth*0.03/12).toFixed(0)}/month.`, totalWealth * 0.03, 0.7, 'none — passive', 'Yield là contribution chắc chắn nhất tới 35% target. Maximize trước actions risky.', dnaYield);
     }
   }
 
@@ -853,6 +898,110 @@ function renderMarketAggregate(M) {
       ${hasLS ? `<div class="metric"><div class="metric-label">L/S 7d avg</div><div class="metric-value">${ca.ls_avg_7d.toFixed(3)}</div><div class="metric-sub">trend baseline</div></div>` : ''}
     </div>
     ${fundingInterp ? `<div class="warning-bar">📡 <b>Funding signal</b>: ${fundingInterp} · ${lsInterp}</div>` : ''}
+  </div>`;
+}
+
+// === 🛣 PATH TO 35% SIMULATOR ===
+// Simulate multiple BTC EOY scenarios × strategy responses → compute prob-weighted EV vs target
+function renderPathTo35(M) {
+  const currentNet = M.m1.net;
+  const target = state.target_anchor * (1 + state.target_pct/100);
+  const gap = target - currentNet;
+  const btcPrice = state.holdings.BTC.price;
+
+  // Yield contribution annualized
+  const yieldApr = state.income?.yield_apr_estimate ?? 0;
+  const yieldAnnual = (currentNet + state.pool.value) * yieldApr / 100;
+
+  // Cost of leverage annualized
+  const totalLoan = state.loan_orders ? state.loan_orders.reduce((s,o) => s + o.debt, 0) : state.loan;
+  const intAnnual = (state.income?.loan_interest_paid_30d ?? 0) * 12;
+
+  // Squeeze annual EV (if conditions met often)
+  const squeezeAnnualEV = 232; // from EV calc (15 plays × $15.5)
+
+  // Scenarios (BTC EOY price, probability)
+  const scenarios = [
+    { name: 'Capitulation', eoyBtc: 55000, prob: 0.10, fgMode: 'panic' },
+    { name: 'Bear', eoyBtc: 70000, prob: 0.15, fgMode: 'fear' },
+    { name: 'Sideways', eoyBtc: 85000, prob: 0.25, fgMode: 'cautious' },
+    { name: 'Recovery', eoyBtc: 113000, prob: 0.30, fgMode: 'optimistic' },
+    { name: 'Bull', eoyBtc: 135000, prob: 0.15, fgMode: 'greed' },
+    { name: 'Stretch', eoyBtc: 160000, prob: 0.05, fgMode: 'euphoria' },
+  ];
+
+  // Simulate per scenario:
+  //   spot_unrealized_delta = sum holdings qty × (eoy_price_est - current_price)
+  //   estimate price per asset based on BTC change × beta
+  const betas = { BTC: 1.0, WBETH: 1.0, LINK: 1.5, BNB: 0.8, BNSOL: 1.2, USDC: 0 };
+  const rows = scenarios.map(sc => {
+    const btcChg = sc.eoyBtc / btcPrice - 1;
+    let spotDelta = 0;
+    for (const [sym, h] of Object.entries(state.holdings)) {
+      const beta = betas[sym] || 1.0;
+      const estPrice = h.price * (1 + btcChg * beta);
+      spotDelta += h.qty * (estPrice - h.price);
+    }
+    // Stop-loss caps downside: if BTC < $65K + F&G ≤ 15 → triggers → preserve 70% of holdings value
+    const stopLossActive = sc.eoyBtc < 65000;
+    const stopLossSave = stopLossActive ? Math.abs(spotDelta) * 0.30 : 0; // saves 30% of loss
+    const adjSpotDelta = spotDelta + stopLossSave;
+
+    // TP discipline gains: if BTC ≥ TP1 ($105K)
+    const tpGain = sc.eoyBtc >= 105000 ? state.holdings.BTC.qty * (sc.eoyBtc * 1.0) * 0.15 * (1 - btcPrice/sc.eoyBtc) : 0;
+
+    // Total return per scenario
+    const totalRet = adjSpotDelta + yieldAnnual - intAnnual + squeezeAnnualEV * (sc.eoyBtc > 80000 ? 1 : 0.3);
+    const eoyNet = currentNet + totalRet;
+    const hitsTarget = eoyNet >= target;
+    const retPct = (totalRet / currentNet) * 100;
+    return { ...sc, btcChg: btcChg * 100, spotDelta, stopLossSave, tpGain, yieldAnnual, intAnnual, squeezeAnnualEV, totalRet, eoyNet, hitsTarget, retPct };
+  });
+
+  // Probability-weighted EV
+  const weightedEV = rows.reduce((s, r) => s + r.totalRet * r.prob, 0);
+  const probHitTarget = rows.filter(r => r.hitsTarget).reduce((s, r) => s + r.prob, 0) * 100;
+  const expectedEoyNet = currentNet + weightedEV;
+
+  let tbody = '';
+  for (const r of rows) {
+    const c = r.hitsTarget ? 'var(--green)' : r.totalRet > 0 ? 'var(--yellow)' : 'var(--red)';
+    tbody += `<tr ${r.hitsTarget ? 'style="background:rgba(34,197,94,0.05)"' : ''}>
+      <td><b style="color:${c}">${r.name}</b></td>
+      <td>${(r.prob*100).toFixed(0)}%</td>
+      <td>${fmt$(r.eoyBtc, 0)}</td>
+      <td>${fmtPct(r.btcChg)}</td>
+      <td style="color:${r.spotDelta>=0?'var(--green)':'var(--red)'}">${fmt$signed(r.spotDelta)}</td>
+      <td>${fmt$signed(r.yieldAnnual - r.intAnnual)}</td>
+      <td>${fmt$signed(r.squeezeAnnualEV * (r.eoyBtc > 80000 ? 1 : 0.3))}</td>
+      <td style="color:${c}"><b>${fmt$signed(r.totalRet)}</b></td>
+      <td style="color:${c}"><b>${fmtPct(r.retPct)}</b></td>
+      <td style="color:${c}"><b>${fmt$(r.eoyNet)}</b></td>
+      <td style="color:${r.hitsTarget?'var(--green)':'var(--red)'}">${r.hitsTarget ? '🎯 HIT' : '✗ MISS'}</td>
+    </tr>`;
+  }
+
+  return `<div id="path35" class="section-title section-title-target">🛣 Path to ${state.target_pct}% · Scenario simulator + EV</div>
+  <div class="target-card" style="border-color:var(--cyan)">
+    <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">Simulator: BTC EOY × 4 LEVERS combined → EOY NET</div>
+    <div style="font-size:0.82rem;color:var(--text2);margin-bottom:1rem;line-height:1.55">
+      Mỗi scenario tính NET cuối năm dựa trên: <b>(spot price change × beta)</b> + <b>yield annual (${yieldApr.toFixed(2)}% APR)</b> − <b>loan interest annual ($${intAnnual.toFixed(0)})</b> + <b>Squeeze EV ($${squeezeAnnualEV})</b> + <b>Stop-loss save (30% loss capped)</b> + <b>TP discipline (15% sell at BTC ≥ $105K)</b>. Betas: BTC 1.0 · WBETH 1.0 · LINK 1.5 · BNB 0.8 · BNSOL 1.2.
+    </div>
+    <div class="metrics" style="margin-bottom:1rem">
+      <div class="metric"><div class="metric-label">Prob-weighted EV</div><div class="metric-value" style="color:${weightedEV>=gap?'var(--green)':weightedEV>=0?'var(--yellow)':'var(--red)'}">${fmt$signed(weightedEV)}</div><div class="metric-sub">expected $ return</div></div>
+      <div class="metric"><div class="metric-label">Expected EOY NET</div><div class="metric-value" style="color:${expectedEoyNet>=target?'var(--green)':'var(--orange)'}">${fmt$(expectedEoyNet)}</div><div class="metric-sub">vs target ${fmt$(target)}</div></div>
+      <div class="metric"><div class="metric-label">P(hit target)</div><div class="metric-value" style="color:${probHitTarget>=50?'var(--green)':probHitTarget>=30?'var(--yellow)':'var(--red)'}">${probHitTarget.toFixed(0)}%</div><div class="metric-sub">prob-weighted scenarios</div></div>
+      <div class="metric"><div class="metric-label">Yield contribution</div><div class="metric-value">${fmt$(yieldAnnual)}/yr</div><div class="metric-sub">${yieldApr.toFixed(2)}% APR passive</div></div>
+      <div class="metric"><div class="metric-label">Leverage cost</div><div class="metric-value" style="color:var(--red)">−${fmt$(intAnnual)}/yr</div><div class="metric-sub">interest drag</div></div>
+      <div class="metric"><div class="metric-label">Squeeze EV cap</div><div class="metric-value">${fmt$(squeezeAnnualEV)}/yr</div><div class="metric-sub">15 plays max</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Scenario</th><th>P</th><th>BTC EOY</th><th>BTC Δ%</th><th>Spot Δ</th><th>Yield−Cost</th><th>Squeeze</th><th>Total $</th><th>Total %</th><th>EOY NET</th><th>Status</th></tr></thead>
+      <tbody>${tbody}</tbody>
+    </table>
+    <div class="${probHitTarget>=50?'safety-bar':probHitTarget>=30?'warning-bar':'danger-bar'}" style="margin-top:0.875rem">
+      ${probHitTarget>=50?'✅':probHitTarget>=30?'⚠️':'🚨'} <b>Verdict</b>: P(hit target) <b>${probHitTarget.toFixed(0)}%</b>. ${probHitTarget>=50?'Probability OK — execute Expert Playbook để maximize.':probHitTarget>=30?'Probability dưới mức an toàn — phải execute MOST aggressive actions trong Playbook để tăng EV.':'Probability THẤP — target hiện tại khó với current setup. Cần (1) thêm capital, (2) tăng risk (loan deploy), HOẶC (3) extend timeline. Expert Playbook chỉ ra actions tốt nhất.'}
+    </div>
   </div>`;
 }
 
@@ -1907,6 +2056,36 @@ async function fetchCoinalyze(endpoint, params = {}) {
   return JSON.parse(text);
 }
 
+async function fetchCoinalyzeLiquidations() {
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
+  try {
+    const symbol = 'BTCUSD_PERP.A';
+    const now = Math.floor(Date.now() / 1000);
+    const from24h = now - 86400;
+    return await fetchCoinalyze('/liquidation-history', { symbols: symbol, interval: '1hour', from: from24h, to: now, convert_to_usd: 'true' });
+  } catch (e) { return null; }
+}
+
+async function fetchCoinalyzePredictedFunding() {
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
+  try {
+    return await fetchCoinalyze('/predicted-funding-rate', { symbols: 'BTCUSD_PERP.A' });
+  } catch (e) { return null; }
+}
+
+async function fetchCoinalyzeOIHistory() {
+  const { url, token } = getCreds();
+  if (!url || !token) return null;
+  try {
+    const symbol = 'BTCUSD_PERP.A';
+    const now = Math.floor(Date.now() / 1000);
+    const from7d = now - 7 * 86400;
+    return await fetchCoinalyze('/open-interest-history', { symbols: symbol, interval: '1day', from: from7d, to: now, convert_to_usd: 'true' });
+  } catch (e) { return null; }
+}
+
 async function fetchCoinalyzeAggregates() {
   // Only attempt if worker creds available — COINALYZE_KEY now in worker secret
   const { url, token } = getCreds();
@@ -2403,6 +2582,15 @@ async function fetchFromBinance() {
       futuresIncome: safe('futuresIncome', callWorker('/fapi/v1/income', { limit: 1000 })),
       futuresTrades: safe('futuresTrades', callWorker('/fapi/v1/userTrades', { symbol: 'BTCUSDT', limit: 1000 })),
       coinalyze: safe('coinalyze', fetchCoinalyzeAggregates()),
+      // Yield income + cost of leverage (Sprint mandate)
+      loanIncome: safe('loanIncome', callWorker('/sapi/v1/loan/income', { type: 'borrowOut', limit: 100 })),
+      earnRewards: safe('earnRewards', callWorker('/sapi/v1/simple-earn/flexible/history/rewardsRecord', { size: 100 })),
+      wbethRewards: safe('wbethRewards', callWorker('/sapi/v1/eth-staking/eth/history/wbethRewardsHistory', { size: 100 })),
+      bnsolRewards: safe('bnsolRewards', callWorker('/sapi/v1/sol-staking/sol/history/bnsolRewardsHistory', { size: 100 })),
+      // Coinalyze advanced signals
+      caLiquidations: safe('caLiquidations', fetchCoinalyzeLiquidations()),
+      caPredFunding: safe('caPredFunding', fetchCoinalyzePredictedFunding()),
+      caOIHistory: safe('caOIHistory', fetchCoinalyzeOIHistory()),
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
@@ -2610,10 +2798,107 @@ async function fetchFromBinance() {
       }
     } catch {}
 
+    // === YIELD INCOME + COST OF LEVERAGE (Sprint mandate — All Data → Decision) ===
+    state.income = {
+      loan_interest_paid_30d: 0,
+      earn_flexible_rewards_30d: 0,
+      wbeth_staking_rewards_30d: 0,
+      bnsol_staking_rewards_30d: 0,
+      total_yield_30d: 0,
+      total_cost_30d: 0,
+      net_passive_30d: 0,
+      yield_apr_estimate: 0,
+    };
+    const now30d = Date.now() - 30 * 86400000;
+    // Loan interest paid (cost of leverage)
+    if (Array.isArray(r.loanIncome)) {
+      for (const inc of r.loanIncome) {
+        const t = inc.timestamp || inc.time || 0;
+        if (t < now30d) continue;
+        if (inc.type === 'borrowOut' || inc.type === 'borrowIn') continue; // not interest
+        const amt = Math.abs(parseFloat(inc.amount || 0));
+        if (inc.type === 'borrowFee' || inc.type === 'interestPay' || (inc.type || '').includes('Interest')) {
+          state.income.loan_interest_paid_30d += amt;
+        }
+      }
+    }
+    // Earn flexible rewards
+    if (Array.isArray(r.earnRewards?.rows || r.earnRewards)) {
+      const arr = r.earnRewards.rows || r.earnRewards;
+      for (const rw of arr) {
+        const t = rw.time || rw.timestamp || 0;
+        if (t < now30d) continue;
+        const amt = parseFloat(rw.rewards || rw.amount || 0);
+        const asset = rw.asset || 'USDT';
+        // Approximate USD value (stablecoin = $1, else use spot price)
+        const usdValue = ['USDT','USDC','BUSD','FDUSD'].includes(asset) ? amt : amt * (state.holdings[asset]?.price || 0);
+        state.income.earn_flexible_rewards_30d += usdValue;
+      }
+    }
+    // WBETH staking rewards (ETH-denominated)
+    if (Array.isArray(r.wbethRewards?.rows || r.wbethRewards)) {
+      const arr = r.wbethRewards.rows || r.wbethRewards;
+      const ethPrice = state.market.eth_price || 2500;
+      for (const rw of arr) {
+        const t = rw.time || rw.timestamp || 0;
+        if (t < now30d) continue;
+        const amt = parseFloat(rw.amount || rw.amountInETH || 0);
+        state.income.wbeth_staking_rewards_30d += amt * ethPrice;
+      }
+    }
+    // BNSOL staking rewards (SOL-denominated)
+    if (Array.isArray(r.bnsolRewards?.rows || r.bnsolRewards)) {
+      const arr = r.bnsolRewards.rows || r.bnsolRewards;
+      const solPrice = state.market.sol_price || 100;
+      for (const rw of arr) {
+        const t = rw.time || rw.timestamp || 0;
+        if (t < now30d) continue;
+        const amt = parseFloat(rw.amount || rw.amountInSOL || 0);
+        state.income.bnsol_staking_rewards_30d += amt * solPrice;
+      }
+    }
+    state.income.total_yield_30d = state.income.earn_flexible_rewards_30d + state.income.wbeth_staking_rewards_30d + state.income.bnsol_staking_rewards_30d;
+    state.income.total_cost_30d = state.income.loan_interest_paid_30d;
+    state.income.net_passive_30d = state.income.total_yield_30d - state.income.total_cost_30d;
+    // Annualized yield APR (% of total wealth)
+    const totalWealth = M.m1.net + state.pool.value;
+    state.income.yield_apr_estimate = totalWealth > 0 ? (state.income.net_passive_30d * 12 / totalWealth) * 100 : 0;
+
     // === COINALYZE aggregated data ===
     if (r.coinalyze) {
       const ca = r.coinalyze;
       state.coinalyze = { symbol: ca.symbol };
+      // Liquidations 24h
+      if (Array.isArray(r.caLiquidations) && r.caLiquidations.length > 0) {
+        const liqData = r.caLiquidations[0];
+        const history = liqData.history || liqData;
+        if (Array.isArray(history) && history.length > 0) {
+          let totalLong = 0, totalShort = 0;
+          for (const h of history) {
+            totalLong += parseFloat(h.l || h.longs || h.long_liquidations_usd || 0);
+            totalShort += parseFloat(h.s || h.shorts || h.short_liquidations_usd || 0);
+          }
+          state.coinalyze.liq_24h_long = totalLong;
+          state.coinalyze.liq_24h_short = totalShort;
+          state.coinalyze.liq_24h_total = totalLong + totalShort;
+          state.coinalyze.liq_24h_dominance = totalLong > totalShort ? 'longs-rekt' : 'shorts-rekt';
+        }
+      }
+      // Predicted funding
+      if (Array.isArray(r.caPredFunding) && r.caPredFunding.length > 0) {
+        const pf = r.caPredFunding[0];
+        state.coinalyze.predicted_funding = parseFloat(pf.value || pf.predicted_funding_rate || 0) * 100;
+      }
+      // OI history → trend
+      if (Array.isArray(r.caOIHistory) && r.caOIHistory.length > 0) {
+        const oiData = r.caOIHistory[0];
+        const history = oiData.history || oiData;
+        if (Array.isArray(history) && history.length >= 2) {
+          const oiSorted = history.map(h => parseFloat(h.c || h.close || h.v || 0));
+          state.coinalyze.oi_change_7d_pct = oiSorted[0] > 0 ? ((oiSorted[oiSorted.length-1] / oiSorted[0]) - 1) * 100 : 0;
+          state.coinalyze.oi_trend = state.coinalyze.oi_change_7d_pct > 5 ? 'rising' : state.coinalyze.oi_change_7d_pct < -5 ? 'falling' : 'stable';
+        }
+      }
       // Funding history → compute current + avg
       if (Array.isArray(ca.funding) && ca.funding.length > 0) {
         const fundingData = ca.funding[0];
