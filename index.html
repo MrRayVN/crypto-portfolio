@@ -2860,9 +2860,11 @@ async function fetchFromBinance() {
     state.income.total_yield_30d = state.income.earn_flexible_rewards_30d + state.income.wbeth_staking_rewards_30d + state.income.bnsol_staking_rewards_30d;
     state.income.total_cost_30d = state.income.loan_interest_paid_30d;
     state.income.net_passive_30d = state.income.total_yield_30d - state.income.total_cost_30d;
-    // Annualized yield APR (% of total wealth)
-    const totalWealth = M.m1.net + state.pool.value;
-    state.income.yield_apr_estimate = totalWealth > 0 ? (state.income.net_passive_30d * 12 / totalWealth) * 100 : 0;
+    // Annualized yield APR (% of total wealth) — compute từ state, KHÔNG ref M (chưa exist ở đây)
+    const _localGross = Object.values(state.holdings).reduce((s, h) => s + h.qty * h.price, 0);
+    const _localNet = _localGross - state.loan;
+    const _totalWealth = _localNet + state.pool.value;
+    state.income.yield_apr_estimate = _totalWealth > 0 ? (state.income.net_passive_30d * 12 / _totalWealth) * 100 : 0;
 
     // === COINALYZE aggregated data ===
     if (r.coinalyze) {
