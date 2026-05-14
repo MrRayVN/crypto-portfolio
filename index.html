@@ -4933,35 +4933,62 @@ function getBGToken() {
   return localStorage.getItem('bgToken') || BG_DEFAULT_TOKEN;
 }
 
-// Defensive parse — bgeometrics returns time-series JSON: try v/value/c at last entry
-function parseBGLatest(data) {
+// BGeometrics actual format: [{"d":"2026-05-13","unixTs":1778630400,"mvrv":1.4741}, ...]
+// Field name is the METRIC name itself (lowercase), eg "mvrv", "sopr", "nupl"
+// We blacklist timestamp/date fields and pick first numeric value field
+const BG_TIMESTAMP_FIELDS = new Set(['unixts', 't', 'time', 'timestamp', 'd', 'date', 'datetime', 'block', 'blockheight', 'height']);
+
+function pickValueFromBGEntry(obj, metricHint) {
+  if (!obj || typeof obj !== 'object') return null;
+  // 1) Direct hit by metric hint (eg "mvrv", "sopr")
+  if (metricHint && typeof obj[metricHint] === 'number' && isFinite(obj[metricHint])) {
+    return obj[metricHint];
+  }
+  // 2) Try kebab-case → camelCase variants
+  if (metricHint) {
+    const variants = [
+      metricHint,
+      metricHint.replace(/-/g, ''),
+      metricHint.replace(/-([a-z])/g, (_,c) => c.toUpperCase()),
+      metricHint.replace(/_/g, ''),
+    ];
+    for (const k of variants) {
+      const v = obj[k];
+      if (typeof v === 'number' && isFinite(v)) return v;
+    }
+  }
+  // 3) Try common generic names
+  for (const k of ['v', 'value', 'c', 'close', 'y']) {
+    const v = obj[k];
+    if (typeof v === 'number' && isFinite(v)) return v;
+  }
+  // 4) Last resort: pick first numeric field that's NOT a timestamp
+  for (const [k, v] of Object.entries(obj)) {
+    if (BG_TIMESTAMP_FIELDS.has(k.toLowerCase())) continue;
+    if (typeof v === 'number' && isFinite(v) && Math.abs(v) < 1e10) return v;
+  }
+  return null;
+}
+
+function parseBGLatest(data, metricHint) {
   try {
     if (data == null) return null;
     if (typeof data === 'number' && isFinite(data)) return data;
     if (Array.isArray(data) && data.length > 0) {
-      // Search backwards for first valid entry
       for (let i = data.length - 1; i >= Math.max(0, data.length - 5); i--) {
-        const last = data[i];
-        if (last == null) continue;
-        if (typeof last === 'number' && isFinite(last)) return last;
-        if (typeof last !== 'object') {
-          const p = parseFloat(last);
-          if (isFinite(p)) return p;
-          continue;
-        }
-        const v = last.v ?? last.value ?? last.c ?? last.close ?? last.y;
-        if (typeof v === 'number' && isFinite(v)) return v;
-        const p = parseFloat(v);
-        if (isFinite(p)) return p;
+        const item = data[i];
+        if (item == null) continue;
+        if (typeof item === 'number' && isFinite(item) && Math.abs(item) < 1e10) return item;
+        const v = pickValueFromBGEntry(item, metricHint);
+        if (v !== null) return v;
       }
       return null;
     }
     if (typeof data === 'object') {
-      const v = data.value ?? data.v ?? data.last ?? data.latest ?? data.result;
-      if (Array.isArray(v)) return parseBGLatest(v);
-      if (typeof v === 'number' && isFinite(v)) return v;
-      const p = parseFloat(v);
-      return isFinite(p) ? p : null;
+      // Wrapped response: try common wrapper keys
+      const wrapped = data.values || data.data || data.history || data.result;
+      if (Array.isArray(wrapped)) return parseBGLatest(wrapped, metricHint);
+      return pickValueFromBGEntry(data, metricHint);
     }
     return null;
   } catch (e) {
@@ -5015,20 +5042,20 @@ async function fetchBGeometricsOnChainCached() {
     fetchBGOne('top-trader-position-1h'),
   ]);
   const data = {
-    // On-chain core
-    mvrv: parseBGLatest(mvrvRaw),
-    sopr: parseBGLatest(soprRaw),
-    nupl: parseBGLatest(nuplRaw),
-    aviv: parseBGLatest(avivRaw),
-    mvrv_zscore: parseBGLatest(mvrvZRaw),
-    puell_multiple: parseBGLatest(puellRaw),
-    reserve_risk: parseBGLatest(reserveRaw),
+    // On-chain core — pass metric name as hint (BG uses field key = metric name lowercase)
+    mvrv: parseBGLatest(mvrvRaw, 'mvrv'),
+    sopr: parseBGLatest(soprRaw, 'sopr'),
+    nupl: parseBGLatest(nuplRaw, 'nupl'),
+    aviv: parseBGLatest(avivRaw, 'aviv'),
+    mvrv_zscore: parseBGLatest(mvrvZRaw, 'mvrvZscore'),
+    puell_multiple: parseBGLatest(puellRaw, 'puellMultiple'),
+    reserve_risk: parseBGLatest(reserveRaw, 'reserveRisk'),
     // Macro
-    m2_global: parseBGLatest(m2GlobalRaw),
-    m2_global_history: extractBGHistory(m2GlobalRaw, 90), // need history for trend
+    m2_global: parseBGLatest(m2GlobalRaw, 'm2global'),
+    m2_global_history: extractBGHistory(m2GlobalRaw, 90, 'm2global'),
     // Sentiment (hourly granularity)
-    top_trader_account: parseBGLatest(topTraderAcctRaw),
-    top_trader_position: parseBGLatest(topTraderPosRaw),
+    top_trader_account: parseBGLatest(topTraderAcctRaw, 'topTraderAccount'),
+    top_trader_position: parseBGLatest(topTraderPosRaw, 'topTraderPosition'),
     fetched_at: Date.now(),
   };
   try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), data })); } catch {}
@@ -5036,16 +5063,19 @@ async function fetchBGeometricsOnChainCached() {
 }
 
 // Extract last N values from a BG time-series response (for trend analysis)
-function extractBGHistory(data, n) {
+function extractBGHistory(data, n, metricHint) {
   if (!data) return null;
   let arr = Array.isArray(data) ? data : (data && (data.values || data.data || data.history || data.result));
   if (!Array.isArray(arr)) return null;
   return arr.slice(-n).map(item => {
     if (item == null) return NaN;
     if (typeof item === 'number') return item;
-    if (typeof item !== 'object') return parseFloat(item);
-    const v = item.v ?? item.value ?? item.c ?? item.close ?? item.y;
-    return typeof v === 'number' && isFinite(v) ? v : parseFloat(v);
+    if (typeof item !== 'object') {
+      const p = parseFloat(item);
+      return isFinite(p) ? p : NaN;
+    }
+    const v = pickValueFromBGEntry(item, metricHint);
+    return v === null ? NaN : v;
   }).filter(v => typeof v === 'number' && isFinite(v));
 }
 
