@@ -305,6 +305,27 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </div>
 </details>
 
+<details class="editor-card" id="bg-config" style="border-color:var(--purple)">
+<summary style="color:var(--purple)">⛓ BGeometrics On-Chain · Token & Cache <span id="bg-status-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Mặc định</span></summary>
+<div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0;line-height:1.6">
+  On-chain metrics (MVRV, SOPR, NUPL, AVIV) từ BGeometrics free tier. <b>Cache 12h</b> để tiết kiệm 15 req/day limit. Token mặc định: <code style="background:var(--bg2);padding:0.1rem 0.3rem;border-radius:3px">0OPQFnwZA4</code>. Anh có thể paste token riêng nếu muốn dùng account khác.
+</div>
+<div class="editor-grid">
+  <div class="editor-group">
+    <h4>Token (chỉ máy này)</h4>
+    <div class="input-row" style="flex-direction:column;align-items:stretch;gap:0.25rem">
+      <input type="text" id="bg-token-input" placeholder="0OPQFnwZA4" style="width:100%">
+    </div>
+    <div style="display:flex;gap:0.5rem;margin-top:0.875rem;flex-wrap:wrap">
+      <button class="btn" onclick="saveBGToken()" style="background:var(--purple)">💾 Lưu token</button>
+      <button class="btn btn-secondary" onclick="clearBGCache()">🔄 Xoá cache (force fetch)</button>
+      <button class="btn btn-secondary" onclick="clearBGToken()">🗑️ Reset về mặc định</button>
+    </div>
+    <div id="bg-status" style="margin-top:0.75rem;font-size:0.75rem;font-family:var(--mono);color:var(--muted);min-height:1.2em"></div>
+  </div>
+</div>
+</details>
+
 <details class="editor-card" id="editor" open>
 <summary>✏️ Chỉnh sửa dữ liệu (form bên dưới · tự động tính lại khi đổi)</summary>
 <div class="editor-grid" id="editor-grid"></div>
@@ -1120,19 +1141,27 @@ function m21_kelly_sizing(futures) {
   };
 }
 
-// ----- M22: Bayesian Market Regime — combines F&G, returns, on-chain -----
-function m22_regime(market) {
+// ----- M22: Bayesian Market Regime — combines F&G, returns, 200WMA, ON-CHAIN -----
+function m22_regime(market, onchainSignals) {
   const fg = market.fg_cg;
   // Bayesian posterior P(bull|F&G)
   let prior = 0.5;
-  // Adjust prior by 200WMA position if available
   if (market.btc_above_200wma === true) prior = 0.65;
   else if (market.btc_above_200wma === false) prior = 0.30;
   const pBull = QF.fgRegimeBayes(fg, prior);
   // Combine with momentum (30d return)
   const momentum = market.ret_30d || 0;
   const momentumAdj = momentum > 5 ? 0.10 : momentum > 0 ? 0.05 : momentum < -10 ? -0.10 : -0.05;
-  const adjusted = Math.max(0.05, Math.min(0.95, pBull + momentumAdj));
+  let adjusted = Math.max(0.05, Math.min(0.95, pBull + momentumAdj));
+  // === H3 BLEND: on-chain signals (40% weight) + market signals (60% weight) ===
+  let usesOnchain = false;
+  let pBull_market = adjusted, pBull_onchain = null;
+  if (onchainSignals?.available && onchainSignals.combined_pBull != null) {
+    pBull_onchain = onchainSignals.combined_pBull;
+    adjusted = adjusted * 0.6 + pBull_onchain * 0.4;
+    adjusted = Math.max(0.05, Math.min(0.95, adjusted));
+    usesOnchain = true;
+  }
   // Regime classification
   let regime, color;
   if (adjusted >= 0.70) { regime = 'BULL_HIGH_CONVICTION'; color = '#10b981'; }
@@ -1140,7 +1169,11 @@ function m22_regime(market) {
   else if (adjusted >= 0.45) { regime = 'NEUTRAL'; color = '#f59e0b'; }
   else if (adjusted >= 0.30) { regime = 'BEAR_TENTATIVE'; color = '#fb923c'; }
   else { regime = 'BEAR_HIGH_CONVICTION'; color = '#ef4444'; }
-  return {prior, pBull_fg: pBull, momentum_adj: momentumAdj, pBull_final: adjusted, regime, color};
+  return {
+    prior, pBull_fg: pBull, momentum_adj: momentumAdj,
+    pBull_market, pBull_onchain, uses_onchain: usesOnchain,
+    pBull_final: adjusted, regime, color,
+  };
 }
 
 // ===================== M23: UNIFIED DECISION SYNTHESIZER =====================
@@ -1441,7 +1474,8 @@ function buildMaster(s) {
   M.m19 = m19_correlation_matrix(state.klineHistory);
   M.m20 = m20_markowitz_optimize(state.klineHistory, curWeights);
   M.m21 = m21_kelly_sizing(state.futures);
-  M.m22 = m22_regime(s.market);
+  M.m27 = m27_onchain_signals(state.onchain);
+  M.m22 = m22_regime(s.market, M.m27);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
   // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28 etc) ===
@@ -1471,6 +1505,85 @@ function buildMaster(s) {
   }
   M.m14 = m14_validate(M);
   return M;
+}
+
+// ===================== M27: ON-CHAIN SIGNALS (H3) via BGeometrics =====================
+// Maps raw on-chain metric values → P(bull) probability for M22 Bayesian regime
+// Free tier: 10 req/hr · 15 req/day → aggressive 12h+ cache
+function m27_onchain_signals(onchain) {
+  if (!onchain) return null;
+  const out = {available: false, metrics: {}};
+  let signals = [];
+
+  // ----- MVRV interpretation (Market Value / Realized Value) -----
+  // Historical thresholds: <1 = capitulation · 1-1.5 = bargain · 1.5-2.4 = fair · 2.4-3.7 = elevated · >3.7 = top
+  if (typeof onchain.mvrv === 'number' && isFinite(onchain.mvrv)) {
+    const m = onchain.mvrv;
+    let regime, pBull, color;
+    if (m < 1.0) { regime = 'CAPITULATION'; pBull = 0.85; color = 'var(--green)'; }
+    else if (m < 1.5) { regime = 'UNDERVALUED'; pBull = 0.72; color = 'var(--green)'; }
+    else if (m < 2.4) { regime = 'FAIR_VALUE'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (m < 3.7) { regime = 'OVERVALUED'; pBull = 0.30; color = 'var(--orange)'; }
+    else { regime = 'BUBBLE_TOP'; pBull = 0.10; color = 'var(--red)'; }
+    out.metrics.mvrv = {value: m, regime, pBull, color, weight: 1.0};
+    signals.push({pBull, weight: 1.0});
+  }
+
+  // ----- SOPR interpretation (Spent Output Profit Ratio, 7d MA) -----
+  // <0.95 = panic selling at loss · 0.95-1 = loss · 1-1.03 = neutral · 1.03-1.06 = profit-taking · >1.06 = euphoric
+  if (typeof onchain.sopr === 'number' && isFinite(onchain.sopr)) {
+    const s = onchain.sopr;
+    let regime, pBull, color;
+    if (s < 0.95) { regime = 'CAPITULATION_SELL'; pBull = 0.82; color = 'var(--green)'; }
+    else if (s < 1.00) { regime = 'LOSS_REALIZED'; pBull = 0.65; color = 'var(--green)'; }
+    else if (s < 1.03) { regime = 'NEUTRAL'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (s < 1.06) { regime = 'PROFIT_TAKING'; pBull = 0.40; color = 'var(--orange)'; }
+    else { regime = 'EUPHORIC_SELL'; pBull = 0.18; color = 'var(--red)'; }
+    out.metrics.sopr = {value: s, regime, pBull, color, weight: 0.9};
+    signals.push({pBull, weight: 0.9});
+  }
+
+  // ----- NUPL interpretation (Net Unrealized Profit/Loss) -----
+  // <0 = capitulation · 0-0.25 = hope/fear · 0.25-0.5 = optimism/anxiety · 0.5-0.75 = belief/denial · >0.75 = euphoria
+  if (typeof onchain.nupl === 'number' && isFinite(onchain.nupl)) {
+    const n = onchain.nupl;
+    let regime, pBull, color;
+    if (n < 0) { regime = 'CAPITULATION'; pBull = 0.85; color = 'var(--green)'; }
+    else if (n < 0.25) { regime = 'HOPE_FEAR'; pBull = 0.65; color = 'var(--green)'; }
+    else if (n < 0.50) { regime = 'OPTIMISM_ANXIETY'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (n < 0.75) { regime = 'BELIEF_DENIAL'; pBull = 0.32; color = 'var(--orange)'; }
+    else { regime = 'EUPHORIA_GREED'; pBull = 0.12; color = 'var(--red)'; }
+    out.metrics.nupl = {value: n, regime, pBull, color, weight: 1.0};
+    signals.push({pBull, weight: 1.0});
+  }
+
+  // ----- AVIV (Active Investor Value Ratio) — trend signal -----
+  // Lower = more value held in active wallets (recent purchasers, weak hands), higher = vaulted (strong hands)
+  if (typeof onchain.aviv === 'number' && isFinite(onchain.aviv)) {
+    const a = onchain.aviv;
+    let regime, pBull, color;
+    if (a < 0.5) { regime = 'STRONG_HANDS_DOMINANT'; pBull = 0.72; color = 'var(--green)'; }
+    else if (a < 1.0) { regime = 'BALANCED'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (a < 1.5) { regime = 'WEAK_HANDS_BUILDING'; pBull = 0.45; color = 'var(--orange)'; }
+    else { regime = 'TOPPING_RISK'; pBull = 0.30; color = 'var(--red)'; }
+    out.metrics.aviv = {value: a, regime, pBull, color, weight: 0.7};
+    signals.push({pBull, weight: 0.7});
+  }
+
+  // ----- Combine: weighted average P(bull) -----
+  if (signals.length > 0) {
+    const totalW = signals.reduce((s, x) => s + x.weight, 0);
+    out.combined_pBull = signals.reduce((s, x) => s + x.pBull * x.weight, 0) / totalW;
+    out.signal_count = signals.length;
+    out.available = true;
+    // Classification
+    if (out.combined_pBull >= 0.70) { out.regime = 'STRONG_BULL'; out.regime_color = 'var(--green)'; }
+    else if (out.combined_pBull >= 0.55) { out.regime = 'BULL_LEAN'; out.regime_color = '#84cc16'; }
+    else if (out.combined_pBull >= 0.45) { out.regime = 'NEUTRAL'; out.regime_color = 'var(--yellow)'; }
+    else if (out.combined_pBull >= 0.30) { out.regime = 'BEAR_LEAN'; out.regime_color = 'var(--orange)'; }
+    else { out.regime = 'STRONG_BEAR'; out.regime_color = 'var(--red)'; }
+  }
+  return out;
 }
 
 // ===================== M29: BACKTEST M23 CASCADE (C1) =====================
@@ -2081,9 +2194,10 @@ function render() {
   let tacticalHTML = renderUnifiedActionCompact(M) + renderFundingForecast(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
-  // QUANTUM: regime + correlation regime + risk metrics + correlation matrix + Markowitz + Kelly + Jump-Diffusion + Decision Log
+  // QUANTUM: regime + on-chain + correlation regime + risk metrics + correlation matrix + Markowitz + Kelly + Jump-Diffusion + Decision Log
   let quantumHTML = renderUnifiedActionCompact(M)
     + renderQuantumHeader(M)
+    + renderOnChainSignals(M)
     + renderCorrelationRegime(M)
     + renderQuantumPlaybook(M)
     + renderRiskMetrics(M)
@@ -3653,6 +3767,7 @@ function renderQuantumHeader(M) {
     </div>
     <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:rgba(0,0,0,0.2);padding:0.75rem 1rem;border-radius:8px;border-left:3px solid ${r.color}">
       <b>Công thức Bayesian:</b> P(bull|F&G) ∝ P(F&G|bull) × P(bull) — với likelihood Gaussian: bull ~ N(65,13), bear ~ N(28,11). F&G hiện tại <b>${state.market.fg_cg}</b> → likelihood phù hợp với <b>${r.pBull_fg >= 0.5 ? 'BULL' : 'BEAR'}</b> regime. Momentum 30d (${(state.market.ret_30d||0).toFixed(2)}%) điều chỉnh ${r.momentum_adj > 0 ? '+' : ''}${(r.momentum_adj*100).toFixed(0)}pp.
+      ${r.uses_onchain ? `<br><br><b>🔗 On-chain blend (60% market + 40% on-chain)</b>: market alone ${(r.pBull_market*100).toFixed(1)}% · on-chain ${(r.pBull_onchain*100).toFixed(1)}% → final <b style="color:${r.color}">${(r.pBull_final*100).toFixed(1)}%</b>.` : '<br><br>⚠️ Chưa có on-chain data — đang dùng pure F&G+200WMA Bayesian. Fetch BGeometrics để upgrade accuracy.'}
     </div>
   </div>`;
 }
@@ -4044,6 +4159,67 @@ function renderBacktest(M) {
     <div class="${b.p_hit >= 50 ? 'safety-bar' : b.p_hit >= 30 ? 'warning-bar' : 'danger-bar'}" style="margin-top:0.875rem">
       ${b.p_hit >= 50 ? '✅' : b.p_hit >= 30 ? '⚠️' : '🚨'} <b>Verdict</b>: Backtest cho thấy M23 cascade có P(hit ${b.target_pct}%) = <b>${b.p_hit.toFixed(1)}%</b> trên ${b.windows} historical 365d windows. ${b.p_hit >= 50 ? 'Strategy ổn, tiếp tục thực hiện.' : b.p_hit >= 30 ? 'Strategy cận biên — cần thêm capital hoặc adjust cascade.' : 'Strategy chưa đủ — cần thêm leverage, DCA cao hơn, hoặc giảm target.'}
       <br><br><b>Caveat</b>: Backtest dùng F&G proxy (RSI), không cover P7 funding squeeze. Real-world P(hit) có thể cao hơn nhờ M28+ M21 boost.
+    </div>
+  </div>`;
+}
+
+// ===================== M27 On-Chain Signals UI (H3) =====================
+function renderOnChainSignals(M) {
+  const r = M.m27;
+  if (!r) {
+    return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
+    <div class="card"><div class="warning-bar">⚠️ Chưa fetch on-chain data. Click "Tải dữ liệu trực tiếp" để fetch (cache 12h).</div></div>`;
+  }
+  if (!r.available) {
+    return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
+    <div class="card"><div class="danger-bar">🚨 Không parse được on-chain data — BGeometrics API có thể đã thay đổi schema hoặc token sai. Kiểm tra console.</div></div>`;
+  }
+  // Per-metric tiles
+  const metricNames = {
+    mvrv: {name: 'MVRV', formula: 'Market Value / Realized Value', interp: '<1 capit · 1-1.5 bargain · 1.5-2.4 fair · 2.4-3.7 elevated · >3.7 top'},
+    sopr: {name: 'SOPR', formula: 'Spent Output Profit Ratio', interp: '<0.95 panic · 1-1.03 neutral · 1.03-1.06 profit · >1.06 euphoric'},
+    nupl: {name: 'NUPL', formula: 'Net Unrealized PnL', interp: '<0 capit · 0-0.25 hope · 0.25-0.5 optimism · 0.5-0.75 belief · >0.75 euphoria'},
+    aviv: {name: 'AVIV', formula: 'Active/Vaulted Investor Value', interp: '<0.5 strong hands · 1-1.5 weak hands · >1.5 topping'},
+  };
+  let metricRows = '';
+  for (const [k, info] of Object.entries(metricNames)) {
+    const m = r.metrics[k];
+    if (!m) {
+      metricRows += `<tr><td><b>${info.name}</b></td><td>—</td><td colspan="3" style="color:var(--muted);font-size:0.78rem">${info.formula} — ${info.interp}</td></tr>`;
+      continue;
+    }
+    metricRows += `<tr>
+      <td><b>${info.name}</b><div style="font-size:0.7rem;color:var(--muted)">${info.formula}</div></td>
+      <td style="font-family:var(--mono);font-weight:700">${m.value.toFixed(3)}</td>
+      <td style="color:${m.color};font-weight:700">${m.regime.replace(/_/g,' ')}</td>
+      <td style="color:${m.color};font-family:var(--mono)">${(m.pBull*100).toFixed(0)}%</td>
+      <td style="font-size:0.72rem;color:var(--muted)">w=${m.weight} · ${info.interp}</td>
+    </tr>`;
+  }
+  const ageMin = state.onchain?.fetched_at ? Math.floor((Date.now() - state.onchain.fetched_at) / 60000) : '?';
+  return `<div class="section-title">⛓ Tín Hiệu On-Chain · ${r.signal_count} metrics ${ageMin}min cache</div>
+  <div class="card" style="border-left:4px solid ${r.regime_color}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:1rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.4rem;font-weight:700;color:${r.regime_color}">${r.regime.replace(/_/g, ' ')}</div>
+        <div style="font-size:0.8rem;color:var(--text2);margin-top:0.25rem">Combined P(bull) từ ${r.signal_count} on-chain signals → blend 40% vào M22 regime</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase">Combined P(bull)</div>
+        <div style="font-family:var(--mono);font-size:2rem;font-weight:700;color:${r.regime_color}">${(r.combined_pBull*100).toFixed(1)}%</div>
+        <div style="font-size:0.7rem;color:var(--muted)">weighted avg</div>
+      </div>
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:0.5rem 0">📊 Per-metric breakdown</div>
+    <table>
+      <thead><tr><th>Metric</th><th>Giá trị</th><th>Regime</th><th>P(bull)</th><th>Diễn giải</th></tr></thead>
+      <tbody>${metricRows}</tbody>
+    </table>
+    <div style="margin-top:0.875rem;background:rgba(167,139,250,0.05);border-left:3px solid var(--purple);padding:0.6rem 0.9rem;border-radius:6px;font-size:0.78rem;color:var(--text2);line-height:1.5">
+      ℹ️ <b>Cách dùng</b>: On-chain signals lead F&G ~5-10 ngày trong regime shifts. Khi 3-4 metrics đồng thuận BULL/BEAR → M22 regime cứng cáp. Khi divergence (vd MVRV bear nhưng SOPR bull) → market đang transition, cẩn trọng.
+    </div>
+    <div style="margin-top:0.5rem;font-size:0.7rem;color:var(--muted)">
+      Source: BGeometrics free tier · cache 12h · rate limit 15 req/day. Token: <code style="background:var(--bg2);padding:0.1rem 0.3rem;border-radius:3px">${getBGToken().slice(0,4)}...${getBGToken().slice(-2)}</code>
     </div>
   </div>`;
 }
@@ -4498,6 +4674,73 @@ function clearManualAvg() {
 // =================== BINANCE API INTEGRATION ===================
 const BINANCE_PUBLIC_API = 'https://api.binance.com';
 const FG_API = 'https://api.alternative.me/fng/';
+const BG_API = 'https://api.bgeometrics.com/v1';
+const BG_DEFAULT_TOKEN = '0OPQFnwZA4'; // BGeometrics free tier — can override via localStorage
+
+function getBGToken() {
+  return localStorage.getItem('bgToken') || BG_DEFAULT_TOKEN;
+}
+
+// Defensive parse — bgeometrics returns time-series JSON: try v/value/c at last entry
+function parseBGLatest(data) {
+  if (data == null) return null;
+  if (Array.isArray(data) && data.length > 0) {
+    const last = data[data.length - 1];
+    if (last == null) return null;
+    const v = last.v ?? last.value ?? last.c ?? last.close ?? last.y ?? last.unixTs;
+    return typeof v === 'number' && isFinite(v) ? v : (parseFloat(v) || null);
+  }
+  if (typeof data === 'object') {
+    const v = data.value ?? data.v ?? data.last ?? data.latest ?? data.result;
+    if (Array.isArray(v)) return parseBGLatest(v);
+    return typeof v === 'number' && isFinite(v) ? v : (parseFloat(v) || null);
+  }
+  if (typeof data === 'number') return data;
+  return null;
+}
+
+async function fetchBGOne(endpoint) {
+  try {
+    const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${endpoint} HTTP ${r.status}`);
+    return await r.json();
+  } catch (e) {
+    console.warn(`[BG] ${endpoint} fetch failed:`, e.message);
+    return null;
+  }
+}
+
+// Cache all metrics for 12h to respect 15 req/day free tier
+async function fetchBGeometricsOnChainCached() {
+  const cached = localStorage.getItem('bgOnChainCache');
+  if (cached) {
+    try {
+      const { ts, data } = JSON.parse(cached);
+      if (Date.now() - ts < 12*3600*1000) {
+        console.log('[BG] using cached on-chain data (', Math.floor((Date.now()-ts)/60000), 'min old)');
+        return data;
+      }
+    } catch {}
+  }
+  // Fetch 4 essential metrics in parallel (4 req → well within 10/hr, 15/day)
+  console.log('[BG] fetching fresh on-chain data (4 metrics)');
+  const [mvrvRaw, soprRaw, nuplRaw, avivRaw] = await Promise.all([
+    fetchBGOne('mvrv'),
+    fetchBGOne('sopr'),
+    fetchBGOne('nupl'),
+    fetchBGOne('aviv'),
+  ]);
+  const data = {
+    mvrv: parseBGLatest(mvrvRaw),
+    sopr: parseBGLatest(soprRaw),
+    nupl: parseBGLatest(nuplRaw),
+    aviv: parseBGLatest(avivRaw),
+    fetched_at: Date.now(),
+  };
+  try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), data })); } catch {}
+  return data;
+}
 
 function getCreds() {
   const url = (document.getElementById('api-worker-url')?.value || localStorage.getItem('workerUrl') || '').trim().replace(/\/$/, '');
@@ -4558,6 +4801,31 @@ function saveBinanceCreds() {
   localStorage.removeItem('coinalyzeKey');
   setApiStatus(`✓ Saved · Worker URL + token (Coinalyze key check worker secret)`, 'ok');
 }
+function saveBGToken() {
+  const t = document.getElementById('bg-token-input').value.trim();
+  const status = document.getElementById('bg-status');
+  const badge = document.getElementById('bg-status-badge');
+  if (!t) { if (status) status.textContent = '⚠ Token rỗng — không lưu'; return; }
+  localStorage.setItem('bgToken', t);
+  localStorage.removeItem('bgOnChainCache'); // force re-fetch
+  if (status) status.textContent = `✅ Đã lưu token. Click "Tải dữ liệu trực tiếp" để fetch on-chain với token mới.`;
+  if (badge) { badge.textContent = '✅ Custom'; badge.className = 'badge b-bull'; }
+}
+function clearBGToken() {
+  localStorage.removeItem('bgToken');
+  localStorage.removeItem('bgOnChainCache');
+  document.getElementById('bg-token-input').value = '';
+  const status = document.getElementById('bg-status');
+  const badge = document.getElementById('bg-status-badge');
+  if (status) status.textContent = '✅ Reset về token mặc định.';
+  if (badge) { badge.textContent = '⚪ Mặc định'; badge.className = 'badge b-grey'; }
+}
+function clearBGCache() {
+  localStorage.removeItem('bgOnChainCache');
+  const status = document.getElementById('bg-status');
+  if (status) status.textContent = '✅ Cache cleared. Click "Tải dữ liệu trực tiếp" để fetch lần mới.';
+}
+
 function clearBinanceCreds() {
   localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken'); localStorage.removeItem('coinalyzeKey');
   document.getElementById('api-worker-url').value = '';
@@ -5187,6 +5455,8 @@ async function fetchFromBinance() {
       klinesWBETH: safe('klinesWBETH', fetchPublic('/api/v3/klines?symbol=WBETHUSDT&interval=1d&limit=120')),
       klinesBNB: safe('klinesBNB', fetchPublic('/api/v3/klines?symbol=BNBUSDT&interval=1d&limit=120')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
+      // === BGeometrics on-chain (H3) — 12h cache to respect 15 req/day free tier ===
+      onChain: safe('onChain', fetchBGeometricsOnChainCached()),
     };
     const keys = Object.keys(tasks);
     const results = await Promise.all(Object.values(tasks));
@@ -5677,6 +5947,12 @@ async function fetchFromBinance() {
       } else {
         state.snapshot.note = `Only ${validSnaps.length} valid snapshots (filtered ${state.snapshot.filtered_count} outliers).`;
       }
+    }
+
+    // === BGEOMETRICS ON-CHAIN (H3) ===
+    if (r.onChain) {
+      state.onchain = r.onChain;
+      console.log('[BG] on-chain parsed:', state.onchain);
     }
 
     // === LOAN MANAGEMENT HISTORY ===
