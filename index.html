@@ -4348,13 +4348,44 @@ function renderBacktest(M) {
 // ===================== M27 On-Chain Signals UI (H3) =====================
 function renderOnChainSignals(M) {
   const r = M.m27;
-  if (!r) {
+  // Diagnostic: show raw state.onchain inspection
+  const oc = state.onchain;
+  const hasState = oc && typeof oc === 'object';
+  const fields = hasState ? ['mvrv','sopr','nupl','aviv','mvrv_zscore','puell_multiple','reserve_risk'] : [];
+  const validFields = fields.filter(k => typeof oc[k] === 'number' && isFinite(oc[k]));
+  const failedFields = fields.filter(k => oc && k in oc && (oc[k] == null || !isFinite(oc[k])));
+
+  if (!r || !r.available) {
+    let diagHTML = '';
+    if (hasState) {
+      const ageMin = oc.fetched_at ? Math.floor((Date.now()-oc.fetched_at)/60000) : '?';
+      diagHTML = `<div style="margin-top:0.875rem;font-size:0.78rem;color:var(--text2);background:rgba(0,0,0,0.25);padding:0.6rem 0.9rem;border-radius:6px;border-left:3px solid var(--yellow);line-height:1.6">
+        <b>🩺 Diagnostic state.onchain</b> (fetch ${ageMin} phút trước):<br>
+        ${fields.map(k => {
+          const v = oc[k];
+          if (typeof v === 'number' && isFinite(v)) return `✅ ${k}: <b style="color:var(--green)">${v.toFixed(4)}</b>`;
+          return `❌ ${k}: <span style="color:var(--red)">${v === null ? 'null' : v === undefined ? 'undefined' : JSON.stringify(v).slice(0,30)}</span>`;
+        }).join(' · ')}
+      </div>`;
+    }
+    if (!r) {
+      return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
+      <div class="card">
+        <div class="warning-bar">⚠️ <b>Chưa có data</b>. Click "🔄 Tải dữ liệu trực tiếp" (tab Cài Đặt) để fetch lần đầu.</div>
+        ${diagHTML}
+        <div style="margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">💡 Mở F12 → Console → tìm log <code>[BG]</code> để xem chi tiết fetch.</div>
+      </div>`;
+    }
     return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
-    <div class="card"><div class="warning-bar">⚠️ Chưa fetch on-chain data. Click "Tải dữ liệu trực tiếp" để fetch (cache 12h).</div></div>`;
-  }
-  if (!r.available) {
-    return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
-    <div class="card"><div class="danger-bar">🚨 Không parse được on-chain data — BGeometrics API có thể đã thay đổi schema hoặc token sai. Kiểm tra console.</div></div>`;
+    <div class="card">
+      <div class="danger-bar">🚨 <b>Có data nhưng không parse được</b> — ${validFields.length}/${fields.length} metrics hợp lệ. Có thể: token sai · API schema đổi · rate limit 429.</div>
+      ${diagHTML}
+      <div style="margin-top:0.875rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button class="btn btn-secondary" onclick="clearBGCache(); fetchFromBinance();" style="font-size:0.78rem">🔄 Force refetch (xoá cache)</button>
+        <button class="btn btn-secondary" onclick="testBGEndpoint('mvrv')" style="font-size:0.78rem">🧪 Test MVRV endpoint</button>
+      </div>
+      <div style="margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">💡 Mở F12 → Console → tìm log <code>[BG]</code> để xem mỗi endpoint trả về gì.</div>
+    </div>`;
   }
   // Per-metric tiles (7 on-chain metrics)
   const metricNames = {
@@ -4998,13 +5029,22 @@ function parseBGLatest(data, metricHint) {
 }
 
 async function fetchBGOne(endpoint) {
+  const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
   try {
-    const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
     const r = await fetch(url);
-    if (!r.ok) throw new Error(`${endpoint} HTTP ${r.status}`);
-    return await r.json();
+    if (!r.ok) {
+      console.warn(`[BG] ${endpoint} HTTP ${r.status} (${r.status === 403 ? 'paid tier' : r.status === 429 ? 'rate limit' : 'error'})`);
+      return null;
+    }
+    const json = await r.json();
+    const sampleLen = Array.isArray(json) ? json.length : '?';
+    const sampleLast = Array.isArray(json) && json.length > 0 ? JSON.stringify(json[json.length-1]).slice(0,100) : '?';
+    console.log(`[BG] ${endpoint} OK · ${sampleLen} entries · last: ${sampleLast}`);
+    return json;
   } catch (e) {
-    console.warn(`[BG] ${endpoint} fetch failed:`, e.message);
+    // CORS error has e.name === 'TypeError' (fetch failed before getting response)
+    const isCors = e.name === 'TypeError' && /fetch/.test(e.message);
+    console.warn(`[BG] ${endpoint} fetch failed${isCors ? ' (likely CORS block)' : ''}:`, e.message);
     return null;
   }
 }
@@ -5167,6 +5207,23 @@ function clearBGCache() {
   const status = document.getElementById('bg-status');
   if (status) status.textContent = '✅ Cache cleared. Click "Tải dữ liệu trực tiếp" để fetch lần mới.';
 }
+
+// Quick test single endpoint and alert result — for debugging from UI
+window.testBGEndpoint = async function(endpoint) {
+  const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+  try {
+    const r = await fetch(url);
+    const txt = await r.text();
+    let parsed = '';
+    try { const j = JSON.parse(txt); parsed = Array.isArray(j) ? `Array[${j.length}] · last: ${JSON.stringify(j[j.length-1])}` : JSON.stringify(j).slice(0,200); }
+    catch { parsed = txt.slice(0,200); }
+    alert(`[BG ${endpoint}] HTTP ${r.status}\n\n${parsed}\n\nXem F12 console for full response.`);
+    console.log(`[BG test ${endpoint}]`, r.status, JSON.parse(txt));
+  } catch (e) {
+    alert(`[BG ${endpoint}] FETCH FAILED: ${e.message}\n\n(Likely CORS block — need Cloudflare Worker proxy.)`);
+    console.error(`[BG test ${endpoint}]`, e);
+  }
+};
 
 function clearBinanceCreds() {
   localStorage.removeItem('workerUrl'); localStorage.removeItem('proxyToken'); localStorage.removeItem('coinalyzeKey');
