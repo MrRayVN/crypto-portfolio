@@ -1191,27 +1191,35 @@ function m23_unified_decision(M, s) {
   // ---- P6: POOL REBALANCE (drift > 15pp from ideal) ----
   const planHealth = evaluatePoolPlan(M.m2, s.pool.plan_alloc);
   if (planHealth.maxDiff > 15) {
-    let driftSym = '', maxDiff = 0;
-    for (const a in planHealth.diff) {
-      if (Math.abs(planHealth.diff[a]) > Math.abs(maxDiff)) { maxDiff = planHealth.diff[a]; driftSym = a; }
-    }
-    const action = maxDiff > 0 ? 'GIẢM' : 'TĂNG';
+    const rebal = formatRebalanceInstructions(s.pool.plan_alloc, planHealth.ideal);
+    // Build paired DOWN/UP instructions explicitly
+    const downs = rebal.changes.filter(c => c.delta < 0);
+    const ups = rebal.changes.filter(c => c.delta > 0);
+    const titleParts = [];
+    if (downs.length) titleParts.push('GIẢM ' + downs.map(c => `${c.asset} ${Math.abs(c.delta)}pp`).join(' + '));
+    if (ups.length) titleParts.push('TĂNG ' + ups.map(c => `${c.asset} ${c.delta}pp`).join(' + '));
+    const editSteps = rebal.changes.map((c, i) =>
+      `${i+2}. ${c.asset}: ${c.current}% → <b>${c.target}%</b> (${c.delta >= 0 ? '+' : '−'}${Math.abs(c.delta)}pp)`
+    );
+    const finalAlloc = ['LINK', 'BNB', 'BTC', 'WBETH'].map(a => `${a} ${rebal.target[a]}%`).join(' · ');
     return {
       priority: 5, severity: 'MEDIUM', icon: '🔄', color: '#f59e0b',
-      title: `REBALANCE POOL — ${action} ${driftSym} ${Math.abs(maxDiff).toFixed(1)}pp`,
-      coin: driftSym, amount: null, deadline: 'TUẦN NÀY',
+      title: `REBALANCE POOL — ${titleParts.join(' · ')}`,
+      coin: null, amount: null, deadline: 'TUẦN NÀY',
       action_steps: [
-        `1. Binance → Earn → Auto-Invest → Edit plan`,
-        `2. ${action} alloc ${driftSym} từ ${s.pool.plan_alloc[driftSym]}% → ${planHealth.ideal[driftSym].toFixed(0)}%`,
-        `3. Rebalance các coin khác để Σ = 100%`,
+        '1. Binance app → Earn → Auto-Invest → Portfolio plan → Edit',
+        ...editSteps,
+        `${rebal.changes.length + 2}. Lưu plan mới. Phân bổ cuối: <b>${finalAlloc}</b> (Σ = 100%)`,
+        `${rebal.changes.length + 3}. Kiểm tra: lần execution kế tiếp sẽ áp dụng tỷ trọng mới (frequency không đổi)`,
       ],
       rationale: [
-        `${driftSym} drift ${(maxDiff>=0?'+':'')}${maxDiff.toFixed(1)}pp khỏi ideal (${planHealth.ideal[driftSym].toFixed(1)}%)`,
-        `Công thức ideal: w ∝ max(1, BEP_gap + 8) — tilt về coin underwater`,
-        planHealth.rationale[driftSym],
+        `Plan drift ${planHealth.maxDiff.toFixed(1)}pp > 15pp (ngưỡng rebalance)`,
+        `Công thức ideal: w ∝ max(1, BEP_gap + 8) — tilt về coin underwater để compound mua giá thấp`,
+        ...rebal.changes.map(c => `${c.asset}: hiện ${c.current}% vs ideal ${planHealth.ideal[c.asset].toFixed(1)}% → ${planHealth.rationale[c.asset]}`),
+        `Tổng Δ = ${rebal.netDelta}pp (phải = 0, zero-sum rebalance)`,
       ],
       blocks: [],
-      sources_fired: ['M5 Plan Health (SOP)', 'M2 BEP gaps'],
+      sources_fired: ['M5 Plan Health (SOP)', 'M2 BEP gaps', 'formatRebalanceInstructions zero-sum'],
     };
   }
 
@@ -1330,6 +1338,34 @@ function computeCurrentWeights(holdings) {
   const w = {};
   for (const k of ['BTC', 'WBETH', 'BNB', 'LINK']) w[k] = (holdings[k]?.value || 0) / total;
   return w;
+}
+
+// Generate full rebalance plan: rounds ideal to int %, ensures Σ=100, lists deltas per coin
+// Returns sorted list (largest |Δ| first) so user knows the trade-off pair
+function formatRebalanceInstructions(currentAlloc, idealAlloc) {
+  const assets = ['LINK', 'BNB', 'BTC', 'WBETH'];
+  // Round ideal to integers
+  const rounded = {};
+  let totalRound = 0;
+  for (const a of assets) {
+    rounded[a] = Math.round(idealAlloc[a] || 0);
+    totalRound += rounded[a];
+  }
+  // Force Σ = 100 by adjusting via largest fractional remainder rule
+  if (totalRound !== 100) {
+    const diffSum = 100 - totalRound;
+    const fracs = assets.map(a => ({a, frac: Math.abs((idealAlloc[a] || 0) - Math.round(idealAlloc[a] || 0))}));
+    fracs.sort((x,y) => y.frac - x.frac);
+    rounded[fracs[0].a] += diffSum;
+  }
+  const changes = assets.map(a => {
+    const c = currentAlloc[a] || 0;
+    const t = rounded[a];
+    return {asset: a, current: c, target: t, delta: t - c};
+  }).filter(x => x.delta !== 0).sort((x,y) => Math.abs(y.delta) - Math.abs(x.delta));
+  // Net check: deltas should sum to 0 (zero-sum rebalance)
+  const netDelta = changes.reduce((s,c) => s + c.delta, 0);
+  return {changes, target: rounded, netDelta};
 }
 
 // ===================== YEAR-START ANCHOR (first DCA day · target horizon) =====================
@@ -1653,8 +1689,19 @@ function renderExpertPlaybook(M) {
   // === Action 1: Pool rebalance toward underwater coins ===
   const poolEv = state.pool.plan_alloc ? evaluatePoolPlan(M.m2, state.pool.plan_alloc) : null;
   if (poolEv && poolEv.maxDiff > 8) {
-    const worstDriftAsset = Object.entries(poolEv.diff).reduce((a,b) => Math.abs(b[1]) > Math.abs(a[1]) ? b : a)[0];
-    addAction(1, '⚠ ACTION', `Rebalance Pool DCA toward BEP-weighted ideal`, `Plan Health drift ${poolEv.maxDiff.toFixed(1)}pp`, `Edit Binance Auto-Invest plan → adjust ${worstDriftAsset} alloc ${poolEv.diff[worstDriftAsset] > 0 ? 'DOWN' : 'UP'} to ${poolEv.ideal[worstDriftAsset].toFixed(0)}%`, currentNet * 0.05, 0.6, 'low (DCA is dollar-cost averaged)', 'Underwater coins compound faster when bought low. SOP M5 Priority-Score.');
+    const rebal = formatRebalanceInstructions(state.pool.plan_alloc, poolEv.ideal);
+    // Format: "BNB 35% → 30% (−5pp), LINK 47% → 51% (+4pp), BTC 11% → 12% (+1pp)"
+    const fullPlan = rebal.changes.map(c =>
+      `${c.asset} ${c.current}% → ${c.target}% (${c.delta >= 0 ? '+' : '−'}${Math.abs(c.delta)}pp)`
+    ).join(' · ');
+    const downs = rebal.changes.filter(c => c.delta < 0).map(c => `${c.asset} ${Math.abs(c.delta)}pp`).join(', ');
+    const ups = rebal.changes.filter(c => c.delta > 0).map(c => `${c.asset} +${c.delta}pp`).join(', ');
+    addAction(1, '⚠ ACTION', `Rebalance Pool DCA về ideal BEP-weighted`,
+      `Plan Health drift ${poolEv.maxDiff.toFixed(1)}pp`,
+      `Edit Binance Auto-Invest plan: ${fullPlan}. Giảm: ${downs || '—'}. Tăng: ${ups || '—'} (Σ=100% sau rebalance).`,
+      currentNet * 0.05, 0.6,
+      'low (DCA pha tiền theo thời gian)',
+      'Coin underwater compound tốt hơn khi mua giá thấp. SOP M5 Priority-Score · zero-sum rebalance đảm bảo Σalloc=100%.');
   }
 
   // === Action 2: Loan repay if LTV > acceptable ===
