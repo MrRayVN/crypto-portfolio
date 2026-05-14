@@ -5010,15 +5010,20 @@ async function fetchBGOne(endpoint) {
 }
 
 // Cache all metrics 24h to respect 15 req/day free tier
-// 10 endpoints × 1 fetch/day = 10 req/day, leaves 5 spare for cache-bust / retries
+// Cache version bump → auto-invalidate stale bad data (timestamp confusion bug)
+const BG_CACHE_VERSION = 3;
 async function fetchBGeometricsOnChainCached() {
   const cached = localStorage.getItem('bgOnChainCache');
   if (cached) {
     try {
-      const { ts, data } = JSON.parse(cached);
-      if (Date.now() - ts < 24*3600*1000) {
-        console.log('[BG] using cached on-chain data (', Math.floor((Date.now()-ts)/60000), 'min old)');
+      const parsed = JSON.parse(cached);
+      const { ts, data, version } = parsed;
+      // Reject old cache version (eg with timestamp-confusion bug)
+      if (version === BG_CACHE_VERSION && Date.now() - ts < 24*3600*1000) {
+        console.log('[BG] using cached on-chain data (', Math.floor((Date.now()-ts)/60000), 'min old, v' + version + ')');
         return data;
+      } else if (version !== BG_CACHE_VERSION) {
+        console.log('[BG] cache version mismatch (have v' + version + ', want v' + BG_CACHE_VERSION + '), refetching');
       }
     } catch {}
   }
@@ -5058,7 +5063,7 @@ async function fetchBGeometricsOnChainCached() {
     top_trader_position: parseBGLatest(topTraderPosRaw, 'topTraderPosition'),
     fetched_at: Date.now(),
   };
-  try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), data })); } catch {}
+  try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), version: BG_CACHE_VERSION, data })); } catch {}
   return data;
 }
 
