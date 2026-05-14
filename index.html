@@ -1058,6 +1058,239 @@ function m22_regime(market) {
   return {prior, pBull_fg: pBull, momentum_adj: momentumAdj, pBull_final: adjusted, regime, color};
 }
 
+// ===================== M23: UNIFIED DECISION SYNTHESIZER =====================
+// Output DUY NHẤT 1 hành động. Cây ưu tiên: safety > opportunity. Cao nhất thắng.
+// Mọi section khác phải SUPPORT hoặc DEFER, không tạo recommendation riêng conflicting.
+function m23_unified_decision(M, s) {
+  const fg = s.market.fg_cg;
+  const btcP = s.holdings.BTC.price;
+  const sma20 = s.market.btc_sma20 || (s.market.btc_200wma ? s.market.btc_200wma * 1.15 : btcP);
+
+  // ---- P1: LIQUIDATION RISK (vượt hard cap) ----
+  if (M.m7.over_hard > 0) {
+    return {
+      priority: 1, severity: 'CRITICAL', icon: '🚨', color: '#ef4444',
+      title: 'TRẢ NGAY ' + fmt$(M.m7.over_hard) + ' NỢ MARGIN',
+      coin: 'USDC', amount: M.m7.over_hard, deadline: 'TRONG 4-8 GIỜ',
+      action_steps: [
+        '1. Mở Binance app → Vay → Linh hoạt → Coin USDC',
+        `2. Trả tối thiểu ${fmt$(M.m7.over_hard)} (về dưới hard cap ${fmt$(M.m7.hard)})`,
+        `3. Khuyến nghị trả ${fmt$(M.m7.repay_to_soft)} để về soft cap ${fmt$(M.m7.soft)} (an toàn hơn)`,
+      ],
+      rationale: [
+        `Loan hiện tại ${fmt$(M.loan)} > hard cap ${fmt$(M.m7.hard)}`,
+        `Liquidation distance ${M.m7.liq_dist.toFixed(1)}% — nguy cơ thanh lý cao`,
+        `BTC liq price = ${fmt$(M.m7.btc_liq)} (cách giá hiện tại ${((btcP-M.m7.btc_liq)/btcP*100).toFixed(1)}%)`,
+      ],
+      blocks: ['❌ MỌI lệnh mua mới', '❌ Mọi vị thế futures mới', '❌ Pool DCA mới'],
+      sources_fired: ['M7 Loan Framework', 'G9 Cross-portfolio exposure'],
+    };
+  }
+
+  // ---- P2: STOP-LOSS TRIGGERED (BTC < threshold + F&G extreme fear) ----
+  if (btcP < s.bep_threshold && fg <= 15) {
+    const sellPct = 30;
+    const btcSell = s.holdings.BTC.qty * sellPct / 100;
+    return {
+      priority: 1, severity: 'CRITICAL', icon: '🛑', color: '#ef4444',
+      title: `KÍCH HOẠT STOP-LOSS — BÁN ${sellPct}% BTC SPOT VỀ USDC`,
+      coin: 'BTC', amount: btcSell * btcP, deadline: 'TRONG 12 GIỜ',
+      action_steps: [
+        `1. Binance Spot → BTC/USDT → Bán market ${fmtQty(btcSell)} BTC (≈${fmt$(btcSell*btcP)})`,
+        `2. Giữ USDC chờ bottom — KHÔNG mua lại cho đến khi F&G ≥ 25`,
+        `3. Đặt alert giá BTC < ${fmt$(s.bep_threshold * 0.95)} để cắt tiếp đợt 2 nếu cần`,
+      ],
+      rationale: [
+        `BTC ${fmt$(btcP)} < stop-loss threshold ${fmt$(s.bep_threshold)}`,
+        `F&G ${fg} ≤ 15 (Extreme Fear) — tín hiệu downside còn tiếp tục`,
+        'Backstop để bảo toàn vốn cho chu kỳ tiếp theo',
+      ],
+      blocks: ['❌ Mua thêm spot', '❌ Vay tăng leverage'],
+      sources_fired: ['Stop-Loss Framework (Lever #3)', 'F&G extreme fear gate'],
+    };
+  }
+
+  // ---- P3: TP TRIGGER FIRED (3/3 conditions) ----
+  for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
+    if (!M.m3[sym]) continue;
+    for (let i = M.m3[sym].length - 1; i >= 0; i--) {
+      const tier = M.m3[sym][i];
+      if (tier.fires) {
+        const qty = s.holdings[sym].qty * tier.sell / 100;
+        return {
+          priority: 2, severity: 'HIGH', icon: '🎯', color: '#10b981',
+          title: `CHỐT LỜI ${sym} ${tier.name} — BÁN ${tier.sell}% (${fmtQty(qty)} ${sym} ≈ ${fmt$(qty * s.holdings[sym].price)})`,
+          coin: sym, amount: qty * s.holdings[sym].price, deadline: 'TRONG 24 GIỜ',
+          action_steps: [
+            `1. Binance Spot → ${sym}/USDT → Bán market ${fmtQty(qty)} ${sym}`,
+            `2. Phân bổ tiền: 60% USDC giữ chờ dip, 30% Pool DCA, 10% trả loan`,
+            `3. Nếu sau 7 ngày giá ${sym} vẫn > trigger → cân nhắc ${M.m3[sym][i+1] ? M.m3[sym][i+1].name : 'next tier'}`,
+          ],
+          rationale: [
+            `${sym} ${fmt$(s.holdings[sym].price)} ≥ trigger ${fmt$(tier.trigger)} (avg×${tier.mult})`,
+            `F&G ${fg} ≥ gate ${tier.fg}`,
+            `Bull points ${M.m9.bull_total} ≥ gate ${tier.bull}`,
+            'Đủ 3/3 điều kiện cò chốt lời',
+          ],
+          blocks: [],
+          sources_fired: ['M3 TP Triggers', 'M9 Signal Aggregator'],
+        };
+      }
+    }
+  }
+
+  // ---- P4: REGIME EXTREME BEAR (Bayesian P(bull) < 30%) ----
+  if (M.m22.pBull_final < 0.30) {
+    return {
+      priority: 3, severity: 'HIGH', icon: '🐻', color: '#fb923c',
+      title: 'BẢO TOÀN VỐN — TẠM DỪNG DCA MỚI, TĂNG USDC',
+      coin: 'USDC', amount: null, deadline: 'TUẦN NÀY',
+      action_steps: [
+        `1. Tắt Auto-Invest tạm thời (Binance → Earn → Auto-Invest → Pause)`,
+        `2. Chuẩn bị stop-loss BTC ${fmt$(s.bep_threshold)} (giảm ${((btcP-s.bep_threshold)/btcP*100).toFixed(1)}% từ giá hiện tại)`,
+        `3. Cân nhắc trả ${fmt$(Math.min(M.loan*0.30, M.m1.net*0.10))} loan để giảm leverage`,
+        `4. Chờ tín hiệu: F&G ≥ 40 hoặc P(bull) ≥ 50% để resume`,
+      ],
+      rationale: [
+        `Bayesian P(bull│F&G+200WMA+momentum) = ${(M.m22.pBull_final*100).toFixed(1)}% < 30%`,
+        `Regime: ${M.m22.regime.replace(/_/g, ' ')}`,
+        `Prior 200WMA: ${(M.m22.prior*100).toFixed(0)}% · F&G ${fg} → likelihood bear`,
+        `Momentum 30d: ${(s.market.ret_30d||0).toFixed(1)}%`,
+      ],
+      blocks: ['⚠️ Tăng leverage', '⚠️ Mua thêm coin underwater khi chưa có signal đảo chiều'],
+      sources_fired: ['M22 Bayesian Regime', 'M17 Portfolio risk', 'F&G CoinGlass'],
+    };
+  }
+
+  // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40) ----
+  const dipPct = sma20 > 0 ? (1 - btcP / sma20) * 100 : 0;
+  const loanCapacityRemaining = M.m7.soft - M.loan;
+  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < 40 && M.m22.pBull_final > 0.40) {
+    const buyAmount = Math.min(loanCapacityRemaining * 0.5, M.m1.net * 0.05);
+    return {
+      priority: 4, severity: 'HIGH', icon: '🎯', color: '#10b981',
+      title: `DCA MẠNH — VAY ${fmt$(buyAmount)} MUA BTC DIP`,
+      coin: 'BTC', amount: buyAmount, deadline: 'TRONG 48 GIỜ',
+      action_steps: [
+        `1. Binance → Vay → Linh hoạt → Vay ${fmt$(buyAmount)} USDC (collateral BTC)`,
+        `2. Spot BTC/USDT → Mua market ${fmtQty(buyAmount/btcP)} BTC`,
+        `3. Đặt take-profit BTC ${fmt$(btcP * 1.15)} (TP1 tier ~15% gain)`,
+        `4. Stop-loss vị thế này: BTC < ${fmt$(btcP * 0.93)} (giới hạn lỗ 7%)`,
+      ],
+      rationale: [
+        `BTC ${fmt$(btcP)} < SMA20 ${fmt$(sma20,0)} × 0.92 (dip ${dipPct.toFixed(1)}%)`,
+        `Loan capacity còn ${fmt$(loanCapacityRemaining)} (soft cap)`,
+        `F&G ${fg} < 40 (Fear zone — contrarian buy)`,
+        `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 40% — không phải extreme bear`,
+      ],
+      blocks: [],
+      sources_fired: ['Dip Ladder (Lever #1)', 'M7 Loan Framework', 'M22 Regime'],
+    };
+  }
+
+  // ---- P6: POOL REBALANCE (drift > 15pp from ideal) ----
+  const planHealth = evaluatePoolPlan(M.m2, s.pool.plan_alloc);
+  if (planHealth.maxDiff > 15) {
+    let driftSym = '', maxDiff = 0;
+    for (const a in planHealth.diff) {
+      if (Math.abs(planHealth.diff[a]) > Math.abs(maxDiff)) { maxDiff = planHealth.diff[a]; driftSym = a; }
+    }
+    const action = maxDiff > 0 ? 'GIẢM' : 'TĂNG';
+    return {
+      priority: 5, severity: 'MEDIUM', icon: '🔄', color: '#f59e0b',
+      title: `REBALANCE POOL — ${action} ${driftSym} ${Math.abs(maxDiff).toFixed(1)}pp`,
+      coin: driftSym, amount: null, deadline: 'TUẦN NÀY',
+      action_steps: [
+        `1. Binance → Earn → Auto-Invest → Edit plan`,
+        `2. ${action} alloc ${driftSym} từ ${s.pool.plan_alloc[driftSym]}% → ${planHealth.ideal[driftSym].toFixed(0)}%`,
+        `3. Rebalance các coin khác để Σ = 100%`,
+      ],
+      rationale: [
+        `${driftSym} drift ${(maxDiff>=0?'+':'')}${maxDiff.toFixed(1)}pp khỏi ideal (${planHealth.ideal[driftSym].toFixed(1)}%)`,
+        `Công thức ideal: w ∝ max(1, BEP_gap + 8) — tilt về coin underwater`,
+        planHealth.rationale[driftSym],
+      ],
+      blocks: [],
+      sources_fired: ['M5 Plan Health (SOP)', 'M2 BEP gaps'],
+    };
+  }
+
+  // ---- P7: FUNDING SQUEEZE (cross-exchange agg funding < negative threshold) ----
+  if (state.coinalyze?.funding_current !== undefined && state.coinalyze.funding_current < -0.005
+      && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
+    const sqAmount = M.m21?.available && M.m21.quarter_kelly_pct > 0
+      ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
+    return {
+      priority: 6, severity: 'MEDIUM', icon: '⚡', color: '#a78bfa',
+      title: `SQUEEZE LONG BTC — VỊ THẾ ${fmt$(sqAmount)} (Kelly sized)`,
+      coin: 'BTC', amount: sqAmount, deadline: 'TRONG 24 GIỜ',
+      action_steps: [
+        `1. Binance Futures → BTCUSDT Perp → Long 5x leverage`,
+        `2. Size: ${fmt$(sqAmount)} (${M.m21?.available ? 'Quarter Kelly từ history' : '2% NET fallback'})`,
+        `3. Funding entry: ${(state.coinalyze.funding_current*100).toFixed(4)}% (shorts trả phí cho longs)`,
+        `4. Exit: funding về dương hoặc TP +3%, SL −1.5%`,
+      ],
+      rationale: [
+        `Cross-exchange agg funding ${(state.coinalyze.funding_current*100).toFixed(4)}% < −0.5% (shorts crowded)`,
+        `F&G ${fg} > 35 (không extreme fear)`,
+        `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 45%`,
+        `Equity ratio ${M.m1.equity_ratio.toFixed(1)}% > 60% (đủ buffer)`,
+        M.m21?.available ? `Kelly edge confirmed: p=${M.m21.win_rate.toFixed(0)}%, b=${M.m21.payoff_ratio.toFixed(2)}` : 'Kelly chưa có data → conservative 2%',
+      ],
+      blocks: [],
+      sources_fired: ['Funding Squeeze ARM (Lever #2)', 'M21 Kelly', 'Coinalyze aggregate'],
+    };
+  }
+
+  // ---- P8: BULL + UNDERWATER COIN (tilt Pool to underwater) ----
+  if (M.m22.pBull_final > 0.55) {
+    let worstUnderwater = '', worstBep = 0;
+    for (const a of ['LINK', 'BNB', 'WBETH', 'BTC']) {
+      const bep = M.m2[a]?.bep_gap || 0;
+      if (bep > worstBep) { worstBep = bep; worstUnderwater = a; }
+    }
+    if (worstBep > 5) {
+      return {
+        priority: 7, severity: 'LOW', icon: '🟣', color: '#a78bfa',
+        title: `TILT DCA SANG ${worstUnderwater} (${worstBep.toFixed(1)}% underwater)`,
+        coin: worstUnderwater, amount: null, deadline: 'CHU KỲ DCA TIẾP THEO',
+        action_steps: [
+          `1. Edit Auto-Invest plan: tăng ${worstUnderwater} +10pp, giảm coin lãi nhất tương ứng`,
+          `2. Logic: bull regime + ${worstUnderwater} underwater → ưu tiên DCA cải thiện avg`,
+          `3. Maintain DCA frequency hiện tại, chỉ thay tỷ trọng`,
+        ],
+        rationale: [
+          `P(bull) ${(M.m22.pBull_final*100).toFixed(1)}% > 55% — uptrend confirmed`,
+          `${worstUnderwater} BEP gap +${worstBep.toFixed(1)}% — opportunity to lower avg`,
+          `SOP M5: tilt to underwater để cải thiện vị thế trung bình`,
+        ],
+        blocks: [],
+        sources_fired: ['M22 Regime', 'M2 BEP gaps', 'SOP M5 Priority-Score'],
+      };
+    }
+  }
+
+  // ---- P9: DEFAULT — maintain current plan ----
+  return {
+    priority: 9, severity: 'INFO', icon: '✅', color: '#10b981',
+    title: 'DUY TRÌ KẾ HOẠCH DCA HIỆN TẠI',
+    coin: null, amount: null, deadline: 'TIẾP TỤC THƯỜNG KỲ',
+    action_steps: [
+      `1. Tiếp tục Auto-Invest Pool với alloc hiện tại (LINK:${s.pool.plan_alloc.LINK}% · BNB:${s.pool.plan_alloc.BNB}% · BTC:${s.pool.plan_alloc.BTC}% · WBETH:${s.pool.plan_alloc.WBETH}%)`,
+      `2. Theo dõi F&G hàng ngày (hiện ${fg}) và BTC price (${fmt$(btcP,0)})`,
+      `3. Refresh dashboard mỗi 6-24h để cập nhật signals`,
+    ],
+    rationale: [
+      'Không có signal nào kích hoạt trên ngưỡng',
+      `Regime ${M.m22.regime.replace(/_/g, ' ')} (P bull ${(M.m22.pBull_final*100).toFixed(0)}%) — không cần can thiệp`,
+      `Loan ${fmt$(M.loan)} dưới soft cap ${fmt$(M.m7.soft)} (${M.m7.liq_dist.toFixed(1)}% liq distance)`,
+      `Pool plan health: ${planHealth.aligned ? 'aligned' : `drift ${planHealth.maxDiff.toFixed(1)}pp (chưa đến ngưỡng 15pp)`}`,
+    ],
+    blocks: [],
+    sources_fired: ['All M1-M22 within neutral bands'],
+  };
+}
+
 function buildMaster(s) {
   const h = JSON.parse(JSON.stringify(s.holdings));
   computeValues(h);
@@ -1085,6 +1318,8 @@ function buildMaster(s) {
   M.m20 = m20_markowitz_optimize(state.klineHistory, computeCurrentWeights(h));
   M.m21 = m21_kelly_sizing(state.futures);
   M.m22 = m22_regime(s.market);
+  // === M23 UNIFIED DECISION — must run AFTER all other modules ===
+  M.m23 = m23_unified_decision(M, s);
   M.m14 = m14_validate(M);
   return M;
 }
@@ -1145,17 +1380,17 @@ function render() {
   const pHit = (state.pathMC?.probHit ?? 0).toFixed(0);
   setHTML('ticker-phit-val', `<span style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit}%</span>`);
   setHTML('ticker-stance-val', `<span style="color:${stColor}">${M.m9.stance.replace('_',' ')} ${M.m9.net >= 0 ? '+' : ''}${M.m9.net}</span>`);
-  document.getElementById('hdr-sub').textContent =
-    `NET ${fmt$(M.m1.net)} · Tổng tài sản ${fmt$(M.m1.gross)} · Vay ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Kiểm chứng ${M.m14.pass}/${M.m14.total}`;
+  document.getElementById('hdr-sub').innerHTML =
+    `<span style="color:${M.m23.color};font-weight:700">${M.m23.icon} ${M.m23.title}</span> · NET ${fmt$(M.m1.net)} · F&G ${state.market.fg_cg} · ${M.m14.pass}/${M.m14.total}`;
 
   // === TAB PANELS — segmented sections ===
   // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
-  let strategyHTML = renderPathTo35(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
+  let strategyHTML = renderUnifiedActionCompact(M) + renderPathTo35(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
   if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += renderPlanChanges(M);
   document.getElementById('panel-strategy').innerHTML = strategyHTML;
 
-  // OVERVIEW: Hero (uses state.pathMC from above) + KPI snapshot + Portfolio summary
-  let overviewHTML = renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
+  // OVERVIEW: Unified Action (FIRST, prominent) + Hero + KPI + Portfolio + Alerts
+  let overviewHTML = renderUnifiedAction(M) + renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
   document.getElementById('panel-overview').innerHTML = overviewHTML;
 
   // Also update header tickers with MC data now that it's computed
@@ -1163,20 +1398,21 @@ function render() {
   setHTML('ticker-phit-val', `<span style="color:${pHitVal >= 50 ? 'var(--mint)' : pHitVal >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHitVal}%</span>`);
 
   // POSITIONS: Holdings detail, Pool ROI, Plan Health, DCA Pool, Loan orders, Trades Journal, G9
-  let positionsHTML = renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
+  let positionsHTML = renderUnifiedActionCompact(M) + renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
   document.getElementById('panel-positions').innerHTML = positionsHTML;
 
   // MARKET: Coinalyze aggregate, Signal aggregator, TP triggers, TP math, Journey
-  let marketHTML = renderMarketAggregate(M) + renderSignals(M) + renderTPTriggers(M) + renderTPExplain(M);
+  let marketHTML = renderUnifiedActionCompact(M) + renderMarketAggregate(M) + renderSignals(M) + renderTPTriggers(M) + renderTPExplain(M);
   if (state.prev) marketHTML += renderJourney(M);
   document.getElementById('panel-market').innerHTML = marketHTML;
 
   // TACTICAL: Squeeze, Dip-Ladder, Stop-Loss, Stress test
-  let tacticalHTML = renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
+  let tacticalHTML = renderUnifiedActionCompact(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
   // QUANTUM: regime + risk metrics + correlation + Markowitz + Kelly + Jump-Diffusion + Playbook
-  let quantumHTML = renderQuantumHeader(M)
+  let quantumHTML = renderUnifiedActionCompact(M)
+    + renderQuantumHeader(M)
     + renderQuantumPlaybook(M)
     + renderRiskMetrics(M)
     + renderJumpDiffusionMC(M)
@@ -1194,6 +1430,65 @@ function render() {
   const actionsCount = (strategyHTML.match(/border-left:4px solid var\(/g) || []).length;
   const cntEl = document.getElementById('cnt-actions');
   if (cntEl) cntEl.textContent = String(actionsCount);
+}
+
+// === 🎯 M23 UNIFIED ACTION — hiển thị DUY NHẤT 1 hành động, ưu tiên cao nhất ===
+function renderUnifiedAction(M) {
+  const d = M.m23;
+  const sevBg = `linear-gradient(135deg, ${d.color}25, ${d.color}08)`;
+  const stepsHTML = d.action_steps.map(s => `<li style="margin-bottom:0.4rem;line-height:1.6">${s}</li>`).join('');
+  const rationHTML = d.rationale.map(r => `<li style="margin-bottom:0.3rem;line-height:1.55;color:var(--text2);font-size:0.82rem">${r}</li>`).join('');
+  const blocksHTML = d.blocks.length ? d.blocks.map(b => `<li style="color:var(--red);font-size:0.78rem;margin-bottom:0.2rem">${b}</li>`).join('') : '';
+  const srcHTML = d.sources_fired.map(s => `<span class="badge b-grey" style="font-size:0.65rem">${s}</span>`).join(' ');
+  const deadlineBadge = d.deadline ? `<span class="badge" style="background:${d.color}33;color:${d.color};border:1px solid ${d.color};font-size:0.75rem;padding:0.3rem 0.6rem;margin-left:0.5rem">⏰ ${d.deadline}</span>` : '';
+
+  return `<div id="unified-action" style="margin-bottom:1.5rem">
+    <div style="background:${sevBg};border:2px solid ${d.color};border-radius:18px;padding:1.5rem;box-shadow:0 0 32px ${d.color}30;position:relative;overflow:hidden">
+      <div style="position:absolute;top:-30px;right:-30px;font-size:8rem;opacity:0.05;line-height:1">${d.icon}</div>
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;position:relative;z-index:1">
+        <div>
+          <div style="font-size:0.72rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;color:${d.color};font-weight:700">
+            ${d.icon} HÀNH ĐỘNG DUY NHẤT · ƯU TIÊN ${d.priority} · ${d.severity}
+          </div>
+          <div style="font-family:var(--display);font-size:1.5rem;font-weight:700;margin-top:0.4rem;line-height:1.3;color:${d.color}">
+            ${d.title}
+          </div>
+          <div style="margin-top:0.3rem">${deadlineBadge}</div>
+        </div>
+      </div>
+
+      <div style="background:rgba(0,0,0,0.25);border-radius:12px;padding:1rem 1.25rem;margin-top:1rem;border-left:4px solid ${d.color}">
+        <div style="font-family:var(--display);font-weight:700;font-size:0.9rem;margin-bottom:0.6rem;color:var(--text)">📋 Các bước thực hiện:</div>
+        <ol style="padding-left:1.5rem;font-size:0.85rem;color:var(--text)">${stepsHTML}</ol>
+      </div>
+
+      ${blocksHTML ? `<div style="background:rgba(239,68,68,0.08);border-radius:10px;padding:0.75rem 1rem;margin-top:0.75rem;border-left:3px solid var(--red)">
+        <div style="font-family:var(--display);font-weight:700;font-size:0.82rem;color:var(--red);margin-bottom:0.4rem">🚫 KHÔNG ĐƯỢC LÀM:</div>
+        <ul style="padding-left:1.25rem;list-style:none">${blocksHTML}</ul>
+      </div>` : ''}
+
+      <details style="margin-top:1rem">
+        <summary style="cursor:pointer;font-family:var(--display);font-weight:600;font-size:0.85rem;color:var(--text2);list-style:none;padding:0.5rem 0">▶ Lý do (vì sao hành động này là duy nhất đúng)</summary>
+        <ul style="padding-left:1.5rem;margin-top:0.5rem">${rationHTML}</ul>
+        <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px dashed var(--border2)">
+          <div style="font-size:0.7rem;color:var(--muted);margin-bottom:0.4rem">Module/signal đã kích hoạt:</div>
+          ${srcHTML}
+        </div>
+      </details>
+    </div>
+  </div>`;
+}
+
+// === Compact banner for non-Overview tabs ===
+function renderUnifiedActionCompact(M) {
+  const d = M.m23;
+  return `<div style="background:linear-gradient(90deg, ${d.color}20, transparent);border-left:4px solid ${d.color};border-radius:8px;padding:0.75rem 1rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div>
+      <div style="font-size:0.68rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.05em;color:${d.color};font-weight:700">${d.icon} Hành động duy nhất hiện tại</div>
+      <div style="font-family:var(--display);font-weight:700;font-size:1rem;color:${d.color};margin-top:0.15rem">${d.title}</div>
+    </div>
+    <div style="font-size:0.72rem;color:var(--muted);font-family:var(--mono)">⏰ ${d.deadline} · <a href="#unified-action" onclick="document.querySelector('[data-tab=overview]')?.click();return false" style="color:${d.color};text-decoration:underline">Xem chi tiết →</a></div>
+  </div>`;
 }
 
 // === HERO SECTION ===
@@ -1597,7 +1892,10 @@ function renderExpertPlaybook(M) {
     </div>`;
   }
 
-  return `<div id="playbook" class="section-title">🤖 Sổ Tay Chuyên Gia · Các hành động xếp hạng để đạt mục tiêu ${state.target_pct}%</div>
+  return `<div id="playbook" class="section-title">🤖 Chi Tiết Phân Tích · Các tín hiệu hỗ trợ hành động chính</div>
+  <div style="background:rgba(167,139,250,0.05);border-left:3px solid var(--purple);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.5">
+    ℹ️ <b>Mục đích</b>: phần này liệt kê tất cả các tín hiệu/cơ hội phụ. <b>HÀNH ĐỘNG DUY NHẤT</b> đã được tổng hợp ở đầu trang (M23 Decision Synthesizer) — chỉ làm theo hành động đó.
+  </div>
   <div class="card" style="border:2px solid var(--purple)">
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.6">
       Auto-generated actions từ signals hiện tại (BEP gap, LTV, F&G, funding, RSI, volume). Ranked by <b>Expected Value = impact × probability</b>. <b>Tổng EV ước tính ${fmt$(totalImpact)}</b> ≈ <b>${closeGapPct.toFixed(1)}%</b> gap toward ${fmt$(targetEoy)} target.
@@ -1983,7 +2281,11 @@ function renderActions(M) {
     actions.push({color:'var(--green)', icon:'🛑', title:'#5 · Stop-loss enforcement standby', when:'Continuous monitor', detail:`BTC ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)}. Distance ${((state.holdings.BTC.price-state.bep_threshold)/state.bep_threshold*100).toFixed(1)}%. Khi BTC drop và F&G ≤ thresholds → activate dip-buy ladder T1-T4. Khi BTC < ${fmt$(state.bep_threshold,0)} + F&G ≤ 15 = STOP-LOSS reset.`, why:'Capital preservation cho cycle reset. NET threshold $2,000.'});
   }
   if (!actions.length) actions.push({color:'var(--green)', icon:'✅', title:'#0 · Portfolio healthy — no immediate action', when:'Monitor', detail:'All metrics within bounds.', why:''});
-  let html = `<div id="action" class="section-title">⚡ Kế Hoạch Hành Động (xếp theo ưu tiên)</div><div class="card">`;
+  let html = `<div id="action" class="section-title">⚡ Tham Khảo Bổ Sung · Các bước hỗ trợ hành động chính</div>
+  <div style="background:rgba(245,158,11,0.05);border-left:3px solid var(--yellow);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.5">
+    ℹ️ Nội dung dưới đây <b>không thay thế</b> "Hành Động Duy Nhất" (M23). Khi conflict → ưu tiên M23.
+  </div>
+  <div class="card">`;
   for (const a of actions) {
     html += `<div style="border-left:4px solid ${a.color};background:var(--bg2);border-radius:10px;padding:0.95rem 1.1rem;margin-bottom:0.7rem">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
@@ -2929,12 +3231,15 @@ function renderQuantumPlaybook(M) {
   }
 
   if (actions.length === 0) {
-    return `<div class="section-title">🤖 Quantum Playbook · Khuyến nghị tổng hợp</div>
-    <div class="card"><div class="safety-bar">✅ Tất cả quantum signals nằm trong vùng <b>neutral / acceptable</b>. Không có cảnh báo cấp cao. Duy trì plan hiện tại + DCA Pool.</div></div>`;
+    return `<div class="section-title">🤖 Quantum · Tín hiệu phụ trợ</div>
+    <div class="card"><div class="safety-bar">✅ Tất cả quantum signals nằm trong vùng <b>neutral / acceptable</b>. Không có cảnh báo cấp cao bổ sung — theo "Hành Động Duy Nhất" ở đầu trang.</div></div>`;
   }
 
   actions.sort((a,b) => a.prio - b.prio);
-  let html = `<div class="section-title">🤖 Quantum Playbook · ${actions.length} khuyến nghị có thứ tự ưu tiên</div>`;
+  let html = `<div class="section-title">🤖 Quantum · ${actions.length} tín hiệu phụ trợ</div>
+  <div style="background:rgba(167,139,250,0.05);border-left:3px solid var(--purple);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.5">
+    ℹ️ Các tín hiệu Quantum đã được tổng hợp thành <b>1 hành động duy nhất</b> ở M23 (đầu trang). Danh sách dưới là chi tiết tín hiệu nào đang fire, dùng để hiểu lý do.
+  </div>`;
   for (const a of actions) {
     html += `<div class="action-modern" style="border-left-color:${a.color}">
       <div style="font-family:var(--display);font-weight:700;color:${a.color};margin-bottom:0.3rem">${a.title}</div>
