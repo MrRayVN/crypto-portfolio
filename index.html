@@ -886,21 +886,62 @@ QF.jumpDiffusionMC = (s0, mu, sigma, T, lambda=4, jMu=-0.05, jSig=0.15, paths=20
   return results.sort((a,b)=>a-b);
 };
 
-// ----- M17: Portfolio Risk Snapshot — derived from accountSnapshot daily history -----
-function m17_portfolio_risk(snapshotHistory) {
-  if (!snapshotHistory || snapshotHistory.length < 10) return null;
-  // Sort by timestamp ascending if needed
-  const sorted = [...snapshotHistory].sort((a,b) => (a.updateTime || a.ts || 0) - (b.updateTime || b.ts || 0));
-  const equity = sorted.map(s => parseFloat(s.totalAssetOfBtc || s.totalNetAssetOfBtc || s.value || 0)).filter(v => v > 0);
-  if (equity.length < 10) return null;
-  const returns = [];
-  for (let i = 1; i < equity.length; i++) {
-    if (equity[i-1] > 0) returns.push((equity[i] - equity[i-1]) / equity[i-1]);
+// ----- M17: Portfolio Risk Snapshot — auto-fallback to BTC proxy when snapshot insufficient -----
+// Priority cascade:
+//   1. accountSnapshot daily history (real NET) — most accurate IF coverage OK
+//   2. BTC kline + weighted beta proxy — works with 400d daily klines (always available after fetch)
+//   3. Return null only if BOTH unavailable
+function m17_portfolio_risk(snapshotHistory, klineHistory, currentWeights, betas) {
+  // ---- Method 1: real accountSnapshot ----
+  if (snapshotHistory && snapshotHistory.length >= 10) {
+    const sorted = [...snapshotHistory].sort((a,b) => (a.updateTime || a.ts || 0) - (b.updateTime || b.ts || 0));
+    const equity = sorted.map(s => parseFloat(s.totalAssetOfBtc || s.totalNetAssetOfBtc || s.value || 0)).filter(v => v > 0);
+    if (equity.length >= 10) {
+      const returns = [];
+      for (let i = 1; i < equity.length; i++) {
+        if (equity[i-1] > 0) returns.push((equity[i] - equity[i-1]) / equity[i-1]);
+      }
+      if (returns.length >= 5) return _buildRiskOutput(returns, equity, 'snapshot_real', `Binance accountSnapshot ${returns.length}d (NET thực)`);
+    }
   }
-  if (returns.length < 5) return null;
+
+  // ---- Method 2: BTC kline + weighted beta proxy ----
+  if (klineHistory?.BTC && klineHistory.BTC.length >= 30 && currentWeights && betas) {
+    const btcCloses = klineHistory.BTC;
+    const btcReturns = [];
+    for (let i = 1; i < btcCloses.length; i++) {
+      if (btcCloses[i-1] > 0) btcReturns.push(Math.log(btcCloses[i] / btcCloses[i-1]));
+    }
+    // Weighted portfolio beta: r_p ≈ Σ(wᵢ × βᵢ) × r_btc
+    // For non-BTC assets, use their own kline if available for more accurate proxy
+    const assets = ['BTC', 'WBETH', 'BNB', 'LINK'];
+    let weightedBetaSum = 0;
+    let totalWeight = 0;
+    for (const a of assets) {
+      const w = currentWeights[a] || 0;
+      const b = betas[a] !== undefined ? betas[a] : 1.0;
+      weightedBetaSum += w * b;
+      totalWeight += w;
+    }
+    // USDC is risk-free, dampens overall return (weighted at 0 beta)
+    // Result: weightedBetaSum represents portfolio's BTC-equivalent exposure
+    const portReturns = btcReturns.map(r => r * weightedBetaSum);
+    // Build equity series from cumulative log returns
+    const equity = [100]; // start at $100 reference
+    for (const r of portReturns) equity.push(equity[equity.length-1] * Math.exp(r));
+    return _buildRiskOutput(portReturns, equity, 'btc_proxy',
+      `BTC kline ${portReturns.length}d × Σ(w·β)=${weightedBetaSum.toFixed(3)} (proxy)`);
+  }
+
+  return null;
+}
+
+function _buildRiskOutput(returns, equity, method, source) {
   const mdd = QF.maxDrawdown(equity);
   return {
+    method, source,
     sample_size: returns.length,
+    is_proxy: method === 'btc_proxy',
     sharpe: QF.sharpe(returns),
     sortino: QF.sortino(returns),
     omega: QF.omega(returns),
@@ -1014,24 +1055,68 @@ function m20_markowitz_optimize(klineHistory, currentWeights) {
   };
 }
 
-// ----- M21: Kelly position sizing for futures squeeze -----
+// ----- M21: Bayesian Kelly with Beta(2,2) prior + shrinkage when n < 5 -----
+// Always available — uses informative prior centered at 50% win rate
+// Posterior: Beta(α=2+wins, β=2+losses) → mean = (2+w)/(4+n)
+// Shrinkage on Kelly when uncertainty high: adjusted = full × min(1, n/10)
 function m21_kelly_sizing(futures) {
-  if (!futures) return null;
-  const wt = (futures.winning_trades || 0) + (futures.losing_trades || 0);
-  if (wt < 5 || !(futures.avg_win > 0) || !(futures.avg_loss > 0)) {
-    return {available: false, reason: `Cần ≥5 trades (hiện ${wt}) để tính Kelly chính xác`};
+  const wins = futures?.winning_trades || 0;
+  const losses = futures?.losing_trades || 0;
+  const n = wins + losses;
+
+  // Bayesian posterior on win rate p ~ Beta(2+w, 2+l)
+  const alpha = 2 + wins;
+  const beta = 2 + losses;
+  const p_post = alpha / (alpha + beta);
+  // Posterior std for credible interval (90%)
+  const p_var = (alpha * beta) / ((alpha + beta) * (alpha + beta) * (alpha + beta + 1));
+  const p_std = Math.sqrt(p_var);
+  const p_low = Math.max(0.01, p_post - 1.645 * p_std);
+  const p_high = Math.min(0.99, p_post + 1.645 * p_std);
+
+  // Payoff ratio b: use sample mean if n≥3 with valid data, else crypto-futures prior b=1.0
+  let b, b_src;
+  if (n >= 3 && futures?.avg_win > 0 && futures?.avg_loss > 0) {
+    b = futures.avg_win / futures.avg_loss;
+    b_src = `sample mean (n=${n})`;
+  } else if (futures?.avg_win > 0 && futures?.avg_loss > 0) {
+    // Have payoff data but small n — blend 50/50 with prior 1.0
+    const sample_b = futures.avg_win / futures.avg_loss;
+    b = (sample_b + 1.0) / 2;
+    b_src = `Bayesian blend (sample ${sample_b.toFixed(2)} + prior 1.0)`;
+  } else {
+    b = 1.0;
+    b_src = 'prior 1.0 (crypto futures median, không có payoff data)';
   }
-  const p = futures.winning_trades / wt;
-  const b = futures.avg_win / futures.avg_loss;
-  const fullKelly = QF.kelly(p, b);
+
+  // Kelly fractions: full + uncertainty-adjusted
+  const full_kelly = QF.kelly(p_post, b);
+  const kelly_low = QF.kelly(p_low, b);    // pessimistic
+  const kelly_high = QF.kelly(p_high, b);  // optimistic
+  // Shrinkage: scale down by n/10 cap when sample small (institutional practice)
+  const shrinkage = Math.min(1, Math.max(0.1, n / 10));
+  const adjusted_kelly = Math.max(0, full_kelly * shrinkage);
+
   return {
     available: true,
-    win_rate: p * 100,
+    method: n >= 5 ? 'sample-based' : `Bayesian (Beta(2,2) prior + ${n} obs)`,
+    n_trades: n,
+    p_post_pct: p_post * 100,
+    p_low_pct: p_low * 100,
+    p_high_pct: p_high * 100,
     payoff_ratio: b,
-    full_kelly_pct: fullKelly * 100,
-    half_kelly_pct: fullKelly * 50,
-    quarter_kelly_pct: fullKelly * 25,
-    expectation_per_trade: p * futures.avg_win - (1-p) * futures.avg_loss,
+    payoff_source: b_src,
+    full_kelly_pct: full_kelly * 100,
+    kelly_low_pct: kelly_low * 100,
+    kelly_high_pct: kelly_high * 100,
+    shrinkage,
+    adjusted_kelly_pct: adjusted_kelly * 100,
+    quarter_kelly_pct: adjusted_kelly * 25,
+    half_kelly_pct: adjusted_kelly * 50,
+    expectation_per_trade: (futures?.avg_win > 0 && futures?.avg_loss > 0)
+      ? p_post * futures.avg_win - (1 - p_post) * futures.avg_loss : null,
+    uncertain: n < 5,
+    confidence_band: `90% credible: p ∈ [${(p_low*100).toFixed(1)}%, ${(p_high*100).toFixed(1)}%]`,
   };
 }
 
@@ -1226,7 +1311,7 @@ function m23_unified_decision(M, s) {
   // ---- P7: FUNDING SQUEEZE (cross-exchange agg funding < negative threshold) ----
   if (state.coinalyze?.funding_current !== undefined && state.coinalyze.funding_current < -0.005
       && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
-    const sqAmount = M.m21?.available && M.m21.quarter_kelly_pct > 0
+    const sqAmount = M.m21?.quarter_kelly_pct > 0
       ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
     return {
       priority: 6, severity: 'MEDIUM', icon: '⚡', color: '#a78bfa',
@@ -1243,7 +1328,7 @@ function m23_unified_decision(M, s) {
         `F&G ${fg} > 35 (không extreme fear)`,
         `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 45%`,
         `Equity ratio ${M.m1.equity_ratio.toFixed(1)}% > 60% (đủ buffer)`,
-        M.m21?.available ? `Kelly edge confirmed: p=${M.m21.win_rate.toFixed(0)}%, b=${M.m21.payoff_ratio.toFixed(2)}` : 'Kelly chưa có data → conservative 2%',
+        M.m21 ? `Bayesian Kelly: p=${M.m21.p_post_pct.toFixed(0)}% (${M.m21.method}), b=${M.m21.payoff_ratio.toFixed(2)}, shrinkage ${(M.m21.shrinkage*100).toFixed(0)}%` : 'Kelly chưa có data → conservative 2%',
       ],
       blocks: [],
       sources_fired: ['Funding Squeeze ARM (Lever #2)', 'M21 Kelly', 'Coinalyze aggregate'],
@@ -1320,10 +1405,11 @@ function buildMaster(s) {
     btc_needed: h.BTC.price * (1 + (s.target_anchor * (1 + s.target_pct/100) - M.m1.net) / M.m1.gross),
   };
   // === QUANTUM MODULES (v74+) ===
-  M.m17 = m17_portfolio_risk(state.accountSnapshot);
+  const curWeights = computeCurrentWeights(h);
+  M.m17 = m17_portfolio_risk(state.accountSnapshot, state.klineHistory, curWeights, s.market.betas);
   M.m18 = m18_asset_risk(state.klineHistory);
   M.m19 = m19_correlation_matrix(state.klineHistory);
-  M.m20 = m20_markowitz_optimize(state.klineHistory, computeCurrentWeights(h));
+  M.m20 = m20_markowitz_optimize(state.klineHistory, curWeights);
   M.m21 = m21_kelly_sizing(state.futures);
   M.m22 = m22_regime(s.market);
   // === M23 UNIFIED DECISION — must run AFTER all other modules ===
@@ -2991,7 +3077,7 @@ function renderRiskMetrics(M) {
   if (!r) {
     return `<div class="section-title">📈 Chỉ Số Rủi Ro (Risk Metrics)</div>
     <div class="card">
-      <div class="warning-bar">⚠️ Cần ≥10 ngày lịch sử portfolio (từ Binance accountSnapshot) để tính. Hiện chưa đủ dữ liệu — vui lòng connect Binance API và để hệ thống tự fetch snapshot trong vài ngày.</div>
+      <div class="warning-bar">⚠️ Cần BTC kline history (≥30 ngày) HOẶC Binance accountSnapshot (≥10 ngày). Click "Tải dữ liệu trực tiếp" trong Cài Đặt để hệ thống tự fetch.</div>
     </div>`;
   }
   const sharpeC = r.sharpe >= 1 ? 'var(--green)' : r.sharpe >= 0 ? 'var(--yellow)' : 'var(--red)';
@@ -2999,10 +3085,14 @@ function renderRiskMetrics(M) {
   const calmarC = r.calmar >= 1 ? 'var(--green)' : r.calmar >= 0.5 ? 'var(--yellow)' : 'var(--red)';
   const omegaC = r.omega >= 1.5 ? 'var(--green)' : r.omega >= 1 ? 'var(--yellow)' : 'var(--red)';
   const mddC = r.maxDD_pct <= 15 ? 'var(--green)' : r.maxDD_pct <= 30 ? 'var(--yellow)' : 'var(--red)';
-  return `<div class="section-title">📈 Chỉ Số Rủi Ro · ${r.sample_size}d history</div>
+  const methodBadge = r.is_proxy
+    ? '<span class="badge" style="background:rgba(245,158,11,0.15);color:var(--yellow);border:1px solid var(--yellow);font-size:0.7rem">⚠️ PROXY (BTC kline)</span>'
+    : '<span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);font-size:0.7rem">✅ NET THỰC</span>';
+  return `<div class="section-title">📈 Chỉ Số Rủi Ro · ${r.sample_size}d history ${methodBadge}</div>
   <div class="card">
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
-      Tính từ <b>${r.sample_size} ngày</b> lịch sử portfolio (Binance accountSnapshot). Annualized factor √365 (crypto 24/7).
+      Nguồn: <b>${r.source}</b>. Annualized factor √365 (crypto 24/7).
+      ${r.is_proxy ? '<br><span style="color:var(--yellow);font-size:0.78rem">⚠️ <b>Đây là proxy</b> — Binance accountSnapshot không cover Loan+Pool. Dùng BTC kline × Σ(weight·beta) để xấp xỉ. Sẽ chuyển sang NET thực khi build đủ history qua nhiều sessions.</span>' : ''}
     </div>
     <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr))">
       <div class="metric"><div class="metric-label">Sharpe Ratio</div><div class="metric-value" style="color:${sharpeC}">${r.sharpe.toFixed(2)}</div><div class="metric-sub">≥1 tốt · ≥2 xuất sắc</div></div>
@@ -3142,31 +3232,42 @@ function renderMarkowitz(M) {
 
 function renderKellySizing(M) {
   const r = M.m21;
-  if (!r || !r.available) {
-    return `<div class="section-title">💰 Kelly Criterion · Tối ưu kích thước lệnh</div>
-    <div class="card"><div class="warning-bar">⚠️ ${r?.reason || 'Cần futures trade history.'}</div>
-    <div style="font-size:0.85rem;color:var(--text2);margin-top:0.875rem;line-height:1.65">
-      <b>Công thức Kelly</b>: f* = p − (1−p)/b · trong đó p = xác suất thắng, b = avg_win/avg_loss · f* = % vốn mỗi trade. Negative = không bet.
-      Quarter-Kelly (0.25×) là tiêu chuẩn nghề (Thorp, Ed) để tránh blow-up từ misestimation.
-    </div></div>`;
+  if (!r) {
+    return `<div class="section-title">💰 Bayesian Kelly Criterion</div>
+    <div class="card"><div class="warning-bar">⚠️ Module chưa khởi tạo (m21 null).</div></div>`;
   }
   const fullC = r.full_kelly_pct > 0 ? 'var(--green)' : 'var(--red)';
-  return `<div class="section-title">💰 Kelly Criterion · Tối ưu kích thước lệnh futures</div>
+  const adjC = r.adjusted_kelly_pct > 0 ? 'var(--green)' : 'var(--red)';
+  const uncertainBadge = r.uncertain
+    ? '<span class="badge" style="background:rgba(245,158,11,0.15);color:var(--yellow);border:1px solid var(--yellow);font-size:0.7rem">⚠️ Bayesian (n<5)</span>'
+    : '<span class="badge" style="background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);font-size:0.7rem">✅ Sample-based</span>';
+  return `<div class="section-title">💰 Bayesian Kelly · ${r.n_trades} trades ${uncertainBadge}</div>
   <div class="card">
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
-      Dựa trên <b>futures trade history thực</b>. f* = p − (1−p)/b. Quarter-Kelly = safety margin tiêu chuẩn.
+      <b>Phương pháp</b>: ${r.method}. Posterior p ~ Beta(2+wins, 2+losses). Payoff b: <i>${r.payoff_source}</i>.
+      <br><b>Shrinkage</b>: ${(r.shrinkage*100).toFixed(0)}% (giảm size khi sample nhỏ — tránh over-bet do ước lượng noise).
+      ${r.uncertain ? '<br><span style="color:var(--yellow);font-size:0.78rem">⚠️ Sample nhỏ — Kelly đã được shrink xuống ' + (r.shrinkage*100).toFixed(0) + '% Full. Tăng độ tin cậy sau khi có ≥5 trades.</span>' : ''}
     </div>
     <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
-      <div class="metric"><div class="metric-label">Win rate (p)</div><div class="metric-value">${r.win_rate.toFixed(1)}%</div><div class="metric-sub">historical</div></div>
-      <div class="metric"><div class="metric-label">Payoff (b = W/L)</div><div class="metric-value">${r.payoff_ratio.toFixed(2)}</div><div class="metric-sub">avg_win/avg_loss</div></div>
-      <div class="metric"><div class="metric-label">Full Kelly f*</div><div class="metric-value" style="color:${fullC}">${r.full_kelly_pct.toFixed(2)}%</div><div class="metric-sub">⚠️ DANGER zone</div></div>
-      <div class="metric"><div class="metric-label">Half Kelly</div><div class="metric-value" style="color:var(--orange)">${r.half_kelly_pct.toFixed(2)}%</div><div class="metric-sub">Aggressive pro</div></div>
+      <div class="metric"><div class="metric-label">Win rate posterior</div><div class="metric-value">${r.p_post_pct.toFixed(1)}%</div><div class="metric-sub">${r.confidence_band}</div></div>
+      <div class="metric"><div class="metric-label">Payoff (b)</div><div class="metric-value">${r.payoff_ratio.toFixed(2)}</div><div class="metric-sub">${r.payoff_source.substring(0,30)}</div></div>
+      <div class="metric"><div class="metric-label">Full Kelly f* (point)</div><div class="metric-value" style="color:${fullC}">${r.full_kelly_pct.toFixed(2)}%</div><div class="metric-sub">⚠️ Chưa shrinkage</div></div>
+      <div class="metric"><div class="metric-label">Adjusted (shrunk)</div><div class="metric-value" style="color:${adjC}">${r.adjusted_kelly_pct.toFixed(2)}%</div><div class="metric-sub">Full × ${(r.shrinkage*100).toFixed(0)}%</div></div>
       <div class="metric"><div class="metric-label">Quarter Kelly</div><div class="metric-value" style="color:var(--green)">${r.quarter_kelly_pct.toFixed(2)}%</div><div class="metric-sub">✅ Recommended</div></div>
-      <div class="metric"><div class="metric-label">EV per trade</div><div class="metric-value" style="color:${r.expectation_per_trade>=0?'var(--green)':'var(--red)'}">${fmt$signed(r.expectation_per_trade)}</div><div class="metric-sub">p·W − (1-p)·L</div></div>
+      ${r.expectation_per_trade !== null ? `<div class="metric"><div class="metric-label">EV per trade</div><div class="metric-value" style="color:${r.expectation_per_trade>=0?'var(--green)':'var(--red)'}">${fmt$signed(r.expectation_per_trade)}</div><div class="metric-sub">p·W − (1-p)·L</div></div>` : ''}
     </div>
-    ${r.full_kelly_pct <= 0 ?
-      `<div class="danger-bar">🚨 <b>Edge âm</b>: Full Kelly ${r.full_kelly_pct.toFixed(2)}% ≤ 0 → KHÔNG nên bet. Cần cải thiện win rate hoặc payoff trước khi increase size.</div>` :
-      `<div class="safety-bar">✅ <b>Có edge</b>: Quarter Kelly = <b>${r.quarter_kelly_pct.toFixed(2)}%</b> NET mỗi futures trade. Với NET ${fmt$(M.m1.net)} → max position size ≈ <b>${fmt$(M.m1.net * r.quarter_kelly_pct / 100)}</b>/trade.</div>`}
+    <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">📊 Kelly band — uncertainty range</div>
+    <table>
+      <thead><tr><th>Scenario</th><th>Win rate</th><th>Kelly f*</th><th>Position size (NET ${fmt$(M.m1.net)})</th></tr></thead>
+      <tbody>
+        <tr><td style="color:var(--red)">Pessimistic (P5)</td><td>${r.p_low_pct.toFixed(1)}%</td><td style="color:${r.kelly_low_pct>=0?'var(--green)':'var(--red)'}">${r.kelly_low_pct.toFixed(2)}%</td><td>${fmt$(M.m1.net * Math.max(0, r.kelly_low_pct) / 100)}</td></tr>
+        <tr style="background:rgba(167,139,250,0.05)"><td><b>Posterior mean</b></td><td><b>${r.p_post_pct.toFixed(1)}%</b></td><td style="color:${fullC}"><b>${r.full_kelly_pct.toFixed(2)}%</b></td><td><b>${fmt$(M.m1.net * Math.max(0, r.full_kelly_pct) / 100)}</b></td></tr>
+        <tr><td style="color:var(--green)">Optimistic (P95)</td><td>${r.p_high_pct.toFixed(1)}%</td><td style="color:var(--green)">${r.kelly_high_pct.toFixed(2)}%</td><td>${fmt$(M.m1.net * Math.max(0, r.kelly_high_pct) / 100)}</td></tr>
+      </tbody>
+    </table>
+    ${r.adjusted_kelly_pct <= 0 ?
+      `<div class="danger-bar">🚨 <b>Edge âm hoặc chưa rõ</b>: Adjusted Kelly ${r.adjusted_kelly_pct.toFixed(2)}% ≤ 0. ${r.uncertain ? 'Cần thêm trades để confirm edge.' : 'Chiến lược hiện tại không có edge — cần cải thiện setup.'}</div>` :
+      `<div class="safety-bar">✅ <b>Có edge (sau shrinkage)</b>: Quarter Kelly = <b>${r.quarter_kelly_pct.toFixed(2)}%</b> NET. Max futures position size ≈ <b>${fmt$(M.m1.net * r.quarter_kelly_pct / 100)}</b>/trade. ${r.uncertain ? 'Sample nhỏ — bắt đầu thận trọng, tăng dần khi confirmed.' : ''}</div>`}
   </div>`;
 }
 
@@ -3272,9 +3373,10 @@ function renderQuantumPlaybook(M) {
   }
 
   // Action 6: Kelly futures
-  if (r21 && r21.available && r21.quarter_kelly_pct > 0) {
-    actions.push({prio:5, color:'var(--purple)', title:`💰 Kelly position size`,
-      detail:`Quarter Kelly = ${r21.quarter_kelly_pct.toFixed(2)}% NET. Với NET ${fmt$(M.m1.net)} → optimal futures size ${fmt$(M.m1.net * r21.quarter_kelly_pct / 100)}/trade. Edge confirmed (p=${r21.win_rate.toFixed(0)}%, b=${r21.payoff_ratio.toFixed(2)}).`});
+  if (r21 && r21.quarter_kelly_pct > 0) {
+    const uncertWarn = r21.uncertain ? ` ⚠️ Sample nhỏ (n=${r21.n_trades}) — shrinkage ${(r21.shrinkage*100).toFixed(0)}%.` : '';
+    actions.push({prio:5, color:'var(--purple)', title:`💰 Kelly position size (Bayesian)`,
+      detail:`Quarter Kelly = ${r21.quarter_kelly_pct.toFixed(2)}% NET. Với NET ${fmt$(M.m1.net)} → futures size ${fmt$(M.m1.net * r21.quarter_kelly_pct / 100)}/trade. p_posterior=${r21.p_post_pct.toFixed(0)}%, b=${r21.payoff_ratio.toFixed(2)}.${uncertWarn}`});
   }
 
   if (actions.length === 0) {
