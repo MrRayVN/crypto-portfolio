@@ -5029,11 +5029,21 @@ function parseBGLatest(data, metricHint) {
 }
 
 async function fetchBGOne(endpoint) {
-  const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+  // Route via Cloudflare Worker (CORS bypass + token injection from server secret)
+  // Falls back to direct if no worker configured (which will fail CORS — but works in some envs)
+  const { url: workerUrl, token: proxyToken } = getCreds();
+  let fetchUrl, headers = {};
+  if (workerUrl && proxyToken) {
+    fetchUrl = `${workerUrl.replace(/\/$/, '')}/bg/${endpoint}`;
+    headers['X-Auth-Token'] = proxyToken;
+  } else {
+    // Fallback: direct call (CORS will block in browser, but kept for non-browser tests)
+    fetchUrl = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+  }
   try {
-    const r = await fetch(url);
+    const r = await fetch(fetchUrl, { headers });
     if (!r.ok) {
-      console.warn(`[BG] ${endpoint} HTTP ${r.status} (${r.status === 403 ? 'paid tier' : r.status === 429 ? 'rate limit' : 'error'})`);
+      console.warn(`[BG] ${endpoint} HTTP ${r.status} (${r.status === 403 ? 'paid tier hoặc worker chưa cập nhật' : r.status === 429 ? 'rate limit' : r.status === 401 ? 'X-Auth-Token sai' : 'error'})`);
       return null;
     }
     const json = await r.json();
@@ -5042,9 +5052,8 @@ async function fetchBGOne(endpoint) {
     console.log(`[BG] ${endpoint} OK · ${sampleLen} entries · last: ${sampleLast}`);
     return json;
   } catch (e) {
-    // CORS error has e.name === 'TypeError' (fetch failed before getting response)
     const isCors = e.name === 'TypeError' && /fetch/.test(e.message);
-    console.warn(`[BG] ${endpoint} fetch failed${isCors ? ' (likely CORS block)' : ''}:`, e.message);
+    console.warn(`[BG] ${endpoint} fetch failed${isCors ? ' (CORS block — worker chưa có /bg/ route?)' : ''}:`, e.message);
     return null;
   }
 }
@@ -5210,17 +5219,24 @@ function clearBGCache() {
 
 // Quick test single endpoint and alert result — for debugging from UI
 window.testBGEndpoint = async function(endpoint) {
-  const url = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+  const { url: workerUrl, token: proxyToken } = getCreds();
+  let fetchUrl, headers = {};
+  if (workerUrl && proxyToken) {
+    fetchUrl = `${workerUrl.replace(/\/$/, '')}/bg/${endpoint}`;
+    headers['X-Auth-Token'] = proxyToken;
+  } else {
+    fetchUrl = `${BG_API}/${endpoint}?token=${getBGToken()}`;
+  }
   try {
-    const r = await fetch(url);
+    const r = await fetch(fetchUrl, { headers });
     const txt = await r.text();
     let parsed = '';
     try { const j = JSON.parse(txt); parsed = Array.isArray(j) ? `Array[${j.length}] · last: ${JSON.stringify(j[j.length-1])}` : JSON.stringify(j).slice(0,200); }
     catch { parsed = txt.slice(0,200); }
-    alert(`[BG ${endpoint}] HTTP ${r.status}\n\n${parsed}\n\nXem F12 console for full response.`);
-    console.log(`[BG test ${endpoint}]`, r.status, JSON.parse(txt));
+    alert(`[BG ${endpoint}] HTTP ${r.status}\nVia: ${workerUrl ? 'Worker proxy' : 'Direct (CORS likely block)'}\n\n${parsed}\n\nXem F12 console for full response.`);
+    console.log(`[BG test ${endpoint}]`, r.status, parsed);
   } catch (e) {
-    alert(`[BG ${endpoint}] FETCH FAILED: ${e.message}\n\n(Likely CORS block — need Cloudflare Worker proxy.)`);
+    alert(`[BG ${endpoint}] FETCH FAILED: ${e.message}\n\nVia: ${workerUrl ? 'Worker (maybe /bg/ route chưa deploy)' : 'Direct (CORS block — cần Cloudflare Worker với /bg/ route)'}`);
     console.error(`[BG test ${endpoint}]`, e);
   }
 };
