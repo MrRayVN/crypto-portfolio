@@ -5081,13 +5081,12 @@ async function fetchBGeometricsOnChainCached() {
       }
     } catch {}
   }
-  console.log('[BG] fetching fresh on-chain data (10 metrics)');
-  // Fetch all 10 in parallel — well within 10 req/hour limit
+  console.log('[BG] fetching fresh on-chain data (7 core metrics)');
+  // Reduced from 10 → 7 endpoints to stay safely under 10 req/hour free tier
+  // Dropped: m2global (paid tier 403), top-trader-account/position (uncertain tier)
   const [
     mvrvRaw, soprRaw, nuplRaw, avivRaw,
     mvrvZRaw, puellRaw, reserveRaw,
-    m2GlobalRaw,
-    topTraderAcctRaw, topTraderPosRaw,
   ] = await Promise.all([
     fetchBGOne('mvrv'),
     fetchBGOne('sopr'),
@@ -5096,10 +5095,8 @@ async function fetchBGeometricsOnChainCached() {
     fetchBGOne('mvrv-zscore'),
     fetchBGOne('puell-multiple'),
     fetchBGOne('reserve-risk'),
-    fetchBGOne('m2global'),
-    fetchBGOne('top-trader-account-1h'),
-    fetchBGOne('top-trader-position-1h'),
   ]);
+  const m2GlobalRaw = null, topTraderAcctRaw = null, topTraderPosRaw = null;
   // Debug: log raw shapes when parse fails so user can pinpoint issue
   const _debugParse = (raw, hint) => {
     const v = parseBGLatest(raw, hint);
@@ -5125,7 +5122,20 @@ async function fetchBGeometricsOnChainCached() {
     top_trader_position: _debugParse(topTraderPosRaw, 'topTraderPosition'),
     fetched_at: Date.now(),
   };
-  try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), version: BG_CACHE_VERSION, data })); } catch {}
+  // Cache only if at least 2 metrics succeeded — avoid overwriting good stale cache with all-null
+  const validCount = ['mvrv','sopr','nupl','aviv','mvrv_zscore','puell_multiple','reserve_risk']
+    .filter(k => typeof data[k] === 'number' && isFinite(data[k])).length;
+  if (validCount >= 2) {
+    try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), version: BG_CACHE_VERSION, data })); } catch {}
+    console.log(`[BG] cache updated · ${validCount}/7 valid metrics`);
+  } else {
+    console.warn(`[BG] only ${validCount}/7 metrics succeeded — keeping previous cache (likely 429 rate limit)`);
+    // Return previous cache if exists
+    const prev = localStorage.getItem('bgOnChainCache');
+    if (prev) {
+      try { return JSON.parse(prev).data; } catch {}
+    }
+  }
   return data;
 }
 
