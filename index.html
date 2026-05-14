@@ -1141,27 +1141,46 @@ function m21_kelly_sizing(futures) {
   };
 }
 
-// ----- M22: Bayesian Market Regime — combines F&G, returns, 200WMA, ON-CHAIN -----
-function m22_regime(market, onchainSignals) {
+// ----- M22: Bayesian Market Regime — F&G + 200WMA + ON-CHAIN + MACRO + SENTIMENT -----
+function m22_regime(market, onchainSignals, macroOverlay, topTraderSentiment) {
   const fg = market.fg_cg;
   // Bayesian posterior P(bull|F&G)
   let prior = 0.5;
   if (market.btc_above_200wma === true) prior = 0.65;
   else if (market.btc_above_200wma === false) prior = 0.30;
   const pBull = QF.fgRegimeBayes(fg, prior);
-  // Combine with momentum (30d return)
+  // Momentum (30d return)
   const momentum = market.ret_30d || 0;
   const momentumAdj = momentum > 5 ? 0.10 : momentum > 0 ? 0.05 : momentum < -10 ? -0.10 : -0.05;
-  let adjusted = Math.max(0.05, Math.min(0.95, pBull + momentumAdj));
-  // === H3 BLEND: on-chain signals (40% weight) + market signals (60% weight) ===
-  let usesOnchain = false;
-  let pBull_market = adjusted, pBull_onchain = null;
+  let pBull_market = Math.max(0.05, Math.min(0.95, pBull + momentumAdj));
+  let adjusted = pBull_market;
+
+  // === Multi-source fusion with weights ===
+  // Weights tuned so dominant signal is market, on-chain second, sentiment third
+  const sources = [{label: 'market', p: pBull_market, w: 0.50}];
+  let pBull_onchain = null, pBull_sentiment = null;
   if (onchainSignals?.available && onchainSignals.combined_pBull != null) {
     pBull_onchain = onchainSignals.combined_pBull;
-    adjusted = adjusted * 0.6 + pBull_onchain * 0.4;
-    adjusted = Math.max(0.05, Math.min(0.95, adjusted));
-    usesOnchain = true;
+    sources.push({label: 'onchain', p: pBull_onchain, w: 0.30});
   }
+  if (topTraderSentiment?.combined_pBull != null) {
+    pBull_sentiment = topTraderSentiment.combined_pBull;
+    sources.push({label: 'sentiment', p: pBull_sentiment, w: 0.20});
+  }
+  const totalW = sources.reduce((s,x) => s + x.w, 0);
+  adjusted = sources.reduce((s,x) => s + x.p * x.w, 0) / totalW;
+
+  // === Macro overlay: multiplicative bias toward 0.5 (no over-confidence in tight liquidity) ===
+  let macroMultiplier = 1.0;
+  if (macroOverlay?.multiplier != null) {
+    macroMultiplier = macroOverlay.multiplier;
+    // Apply: shift toward bull when liquidity expanding, toward bear when contracting
+    // Conservative: ±5% absolute shift max
+    const shift = (macroMultiplier - 1) * 0.5;
+    adjusted = Math.max(0.05, Math.min(0.95, adjusted + shift));
+  }
+  adjusted = Math.max(0.05, Math.min(0.95, adjusted));
+
   // Regime classification
   let regime, color;
   if (adjusted >= 0.70) { regime = 'BULL_HIGH_CONVICTION'; color = '#10b981'; }
@@ -1171,7 +1190,12 @@ function m22_regime(market, onchainSignals) {
   else { regime = 'BEAR_HIGH_CONVICTION'; color = '#ef4444'; }
   return {
     prior, pBull_fg: pBull, momentum_adj: momentumAdj,
-    pBull_market, pBull_onchain, uses_onchain: usesOnchain,
+    pBull_market, pBull_onchain, pBull_sentiment,
+    uses_onchain: pBull_onchain != null,
+    uses_sentiment: pBull_sentiment != null,
+    macro_multiplier: macroMultiplier,
+    uses_macro: macroMultiplier !== 1.0,
+    sources, // for UI display
     pBull_final: adjusted, regime, color,
   };
 }
@@ -1475,7 +1499,9 @@ function buildMaster(s) {
   M.m20 = m20_markowitz_optimize(state.klineHistory, curWeights);
   M.m21 = m21_kelly_sizing(state.futures);
   M.m27 = m27_onchain_signals(state.onchain);
-  M.m22 = m22_regime(s.market, M.m27);
+  M.m30 = m30_macro_overlay(state.onchain);
+  M.m31 = m31_top_trader(state.onchain);
+  M.m22 = m22_regime(s.market, M.m27, M.m30, M.m31);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
   // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28 etc) ===
@@ -1558,7 +1584,6 @@ function m27_onchain_signals(onchain) {
   }
 
   // ----- AVIV (Active Investor Value Ratio) — trend signal -----
-  // Lower = more value held in active wallets (recent purchasers, weak hands), higher = vaulted (strong hands)
   if (typeof onchain.aviv === 'number' && isFinite(onchain.aviv)) {
     const a = onchain.aviv;
     let regime, pBull, color;
@@ -1568,6 +1593,48 @@ function m27_onchain_signals(onchain) {
     else { regime = 'TOPPING_RISK'; pBull = 0.30; color = 'var(--red)'; }
     out.metrics.aviv = {value: a, regime, pBull, color, weight: 0.7};
     signals.push({pBull, weight: 0.7});
+  }
+
+  // ----- MVRV Z-Score — cycle top/bottom indicator -----
+  // Historical: <0 = capit · 0-2 = bargain · 2-4 = fair · 4-7 = elevated · >7 = bubble top
+  if (typeof onchain.mvrv_zscore === 'number' && isFinite(onchain.mvrv_zscore)) {
+    const z = onchain.mvrv_zscore;
+    let regime, pBull, color;
+    if (z < 0) { regime = 'DEEP_VALUE'; pBull = 0.88; color = 'var(--green)'; }
+    else if (z < 2) { regime = 'BARGAIN'; pBull = 0.72; color = 'var(--green)'; }
+    else if (z < 4) { regime = 'FAIR'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (z < 7) { regime = 'ELEVATED'; pBull = 0.30; color = 'var(--orange)'; }
+    else { regime = 'BUBBLE_TOP'; pBull = 0.08; color = 'var(--red)'; }
+    out.metrics.mvrv_zscore = {value: z, regime, pBull, color, weight: 1.1};
+    signals.push({pBull, weight: 1.1});
+  }
+
+  // ----- Puell Multiple — miner revenue cycle -----
+  // <0.5 = miner capitulation (bottom signal) · 0.5-2 = normal · 2-4 = elevated · >4 = top signal
+  if (typeof onchain.puell_multiple === 'number' && isFinite(onchain.puell_multiple)) {
+    const p = onchain.puell_multiple;
+    let regime, pBull, color;
+    if (p < 0.5) { regime = 'MINER_CAPITULATION'; pBull = 0.85; color = 'var(--green)'; }
+    else if (p < 1.0) { regime = 'MINER_STRESS'; pBull = 0.65; color = 'var(--green)'; }
+    else if (p < 2.0) { regime = 'NORMAL'; pBull = 0.50; color = 'var(--yellow)'; }
+    else if (p < 4.0) { regime = 'ELEVATED'; pBull = 0.30; color = 'var(--orange)'; }
+    else { regime = 'MINER_EUPHORIA_TOP'; pBull = 0.10; color = 'var(--red)'; }
+    out.metrics.puell_multiple = {value: p, regime, pBull, color, weight: 0.9};
+    signals.push({pBull, weight: 0.9});
+  }
+
+  // ----- Reserve Risk — long-term holder confidence (bottom signal) -----
+  // <0.002 = strong bottom · 0.002-0.005 = good buy · 0.005-0.02 = neutral · 0.02-0.06 = caution · >0.06 = top
+  if (typeof onchain.reserve_risk === 'number' && isFinite(onchain.reserve_risk)) {
+    const rr = onchain.reserve_risk;
+    let regime, pBull, color;
+    if (rr < 0.002) { regime = 'STRONG_BOTTOM'; pBull = 0.90; color = 'var(--green)'; }
+    else if (rr < 0.005) { regime = 'GOOD_BUY_ZONE'; pBull = 0.75; color = 'var(--green)'; }
+    else if (rr < 0.02) { regime = 'NEUTRAL'; pBull = 0.55; color = 'var(--yellow)'; }
+    else if (rr < 0.06) { regime = 'CAUTION'; pBull = 0.30; color = 'var(--orange)'; }
+    else { regime = 'TOP_ZONE'; pBull = 0.10; color = 'var(--red)'; }
+    out.metrics.reserve_risk = {value: rr, regime, pBull, color, weight: 1.0};
+    signals.push({pBull, weight: 1.0});
   }
 
   // ----- Combine: weighted average P(bull) -----
@@ -1584,6 +1651,83 @@ function m27_onchain_signals(onchain) {
     else { out.regime = 'STRONG_BEAR'; out.regime_color = 'var(--red)'; }
   }
   return out;
+}
+
+// ===================== M30: MACRO LIQUIDITY OVERLAY (Global M2) =====================
+// Global M2 expansion → liquidity flows to risk assets including crypto
+// We don't blend directly into M22 — instead we MULTIPLY a "regime confidence" factor
+function m30_macro_overlay(onchain) {
+  if (!onchain?.m2_global_history || onchain.m2_global_history.length < 30) return null;
+  const history = onchain.m2_global_history;
+  const current = history[history.length - 1];
+  const prev30 = history[history.length - 30];
+  const prev90 = history.length >= 90 ? history[history.length - 90] : history[0];
+  const yoyChange = ((current / prev90) - 1) * 100 * 4; // approximate YoY from 90d
+  const recent30dChange = ((current / prev30) - 1) * 100;
+  // Trend slope
+  const xs = history.slice(-90).map((_, i) => i);
+  const ys = history.slice(-90);
+  const mx = QF.mean(xs), my = QF.mean(ys);
+  let num = 0, den = 0;
+  for (let i = 0; i < xs.length; i++) { num += (xs[i]-mx)*(ys[i]-my); den += (xs[i]-mx)**2; }
+  const slope = den > 0 ? num / den : 0;
+  // Regime classification
+  let regime, multiplier, color;
+  if (yoyChange > 5) { regime = 'STRONG_EXPANSION'; multiplier = 1.15; color = 'var(--green)'; }
+  else if (yoyChange > 2) { regime = 'EXPANSION'; multiplier = 1.08; color = '#84cc16'; }
+  else if (yoyChange > -1) { regime = 'NEUTRAL'; multiplier = 1.00; color = 'var(--yellow)'; }
+  else if (yoyChange > -3) { regime = 'CONTRACTION'; multiplier = 0.92; color = 'var(--orange)'; }
+  else { regime = 'STRONG_CONTRACTION'; multiplier = 0.85; color = 'var(--red)'; }
+  return {
+    current, yoy_change_pct: yoyChange, recent_30d_change_pct: recent30dChange,
+    trend_slope: slope, trend_direction: slope > 0 ? 'rising' : 'falling',
+    regime, multiplier, color, sample_size: history.length,
+  };
+}
+
+// ===================== M31: TOP TRADER SENTIMENT =====================
+// Top trader (Binance/Bybit large account) L/S ratio — contrarian signal
+// When top traders heavily long (>1.5) → contrarian short risk
+// When top traders heavily short (<0.7) → contrarian long opportunity
+function m31_top_trader(onchain) {
+  if (!onchain) return null;
+  const acct = onchain.top_trader_account;
+  const pos = onchain.top_trader_position;
+  if (typeof acct !== 'number' && typeof pos !== 'number') return null;
+  const out = {};
+  if (typeof acct === 'number' && isFinite(acct)) {
+    // Account L/S ratio
+    let regime, pBull, color;
+    if (acct < 0.7) { regime = 'TOPS_HEAVY_SHORT'; pBull = 0.75; color = 'var(--green)'; }   // contrarian long
+    else if (acct < 0.9) { regime = 'TOPS_LEAN_SHORT'; pBull = 0.62; color = '#84cc16'; }
+    else if (acct < 1.1) { regime = 'BALANCED'; pBull = 0.50; color = 'var(--yellow)'; }
+    else if (acct < 1.5) { regime = 'TOPS_LEAN_LONG'; pBull = 0.40; color = 'var(--orange)'; }
+    else { regime = 'TOPS_CROWDED_LONG'; pBull = 0.25; color = 'var(--red)'; }              // contrarian short risk
+    out.account = {value: acct, regime, pBull, color};
+  }
+  if (typeof pos === 'number' && isFinite(pos)) {
+    // Position L/S (weighted by size, more meaningful)
+    let regime, pBull, color;
+    if (pos < 0.7) { regime = 'BIG_SHORT_BIAS'; pBull = 0.78; color = 'var(--green)'; }
+    else if (pos < 0.9) { regime = 'SHORT_LEAN'; pBull = 0.62; color = '#84cc16'; }
+    else if (pos < 1.1) { regime = 'BALANCED'; pBull = 0.50; color = 'var(--yellow)'; }
+    else if (pos < 1.5) { regime = 'LONG_LEAN'; pBull = 0.38; color = 'var(--orange)'; }
+    else { regime = 'BIG_LONG_BIAS'; pBull = 0.20; color = 'var(--red)'; }
+    out.position = {value: pos, regime, pBull, color};
+  }
+  // Combined contrarian signal
+  const signals = [];
+  if (out.account) signals.push(out.account.pBull);
+  if (out.position) signals.push(out.position.pBull * 1.2); // position weighted higher
+  if (signals.length > 0) {
+    out.combined_pBull = signals.reduce((s,v)=>s+v,0) / signals.length;
+    // Divergence check: if account and position diverge → smart money rotation
+    if (out.account && out.position && Math.abs(out.account.pBull - out.position.pBull) > 0.20) {
+      out.divergence = 'SIZE_VS_COUNT_DIVERGE';
+      out.note = 'Number of accounts long ≠ size of long positions → whale-vs-retail divergence';
+    }
+  }
+  return out.combined_pBull != null ? out : null;
 }
 
 // ===================== M29: BACKTEST M23 CASCADE (C1) =====================
@@ -2198,6 +2342,8 @@ function render() {
   let quantumHTML = renderUnifiedActionCompact(M)
     + renderQuantumHeader(M)
     + renderOnChainSignals(M)
+    + renderMacroOverlay(M)
+    + renderTopTrader(M)
     + renderCorrelationRegime(M)
     + renderQuantumPlaybook(M)
     + renderRiskMetrics(M)
@@ -3767,7 +3913,7 @@ function renderQuantumHeader(M) {
     </div>
     <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:rgba(0,0,0,0.2);padding:0.75rem 1rem;border-radius:8px;border-left:3px solid ${r.color}">
       <b>Công thức Bayesian:</b> P(bull|F&G) ∝ P(F&G|bull) × P(bull) — với likelihood Gaussian: bull ~ N(65,13), bear ~ N(28,11). F&G hiện tại <b>${state.market.fg_cg}</b> → likelihood phù hợp với <b>${r.pBull_fg >= 0.5 ? 'BULL' : 'BEAR'}</b> regime. Momentum 30d (${(state.market.ret_30d||0).toFixed(2)}%) điều chỉnh ${r.momentum_adj > 0 ? '+' : ''}${(r.momentum_adj*100).toFixed(0)}pp.
-      ${r.uses_onchain ? `<br><br><b>🔗 On-chain blend (60% market + 40% on-chain)</b>: market alone ${(r.pBull_market*100).toFixed(1)}% · on-chain ${(r.pBull_onchain*100).toFixed(1)}% → final <b style="color:${r.color}">${(r.pBull_final*100).toFixed(1)}%</b>.` : '<br><br>⚠️ Chưa có on-chain data — đang dùng pure F&G+200WMA Bayesian. Fetch BGeometrics để upgrade accuracy.'}
+      ${r.sources && r.sources.length > 1 ? `<br><br><b>🔀 Multi-source fusion</b>: ${r.sources.map(s => `${s.label} ${(s.p*100).toFixed(0)}%·w${s.w}`).join(' + ')} ${r.uses_macro ? `× macro ${r.macro_multiplier.toFixed(2)}` : ''} → <b style="color:${r.color}">${(r.pBull_final*100).toFixed(1)}%</b>` : '<br><br>⚠️ Chưa có on-chain/sentiment data — đang dùng pure F&G+200WMA Bayesian.'}
     </div>
   </div>`;
 }
@@ -4174,12 +4320,15 @@ function renderOnChainSignals(M) {
     return `<div class="section-title">⛓ Tín Hiệu On-Chain</div>
     <div class="card"><div class="danger-bar">🚨 Không parse được on-chain data — BGeometrics API có thể đã thay đổi schema hoặc token sai. Kiểm tra console.</div></div>`;
   }
-  // Per-metric tiles
+  // Per-metric tiles (7 on-chain metrics)
   const metricNames = {
-    mvrv: {name: 'MVRV', formula: 'Market Value / Realized Value', interp: '<1 capit · 1-1.5 bargain · 1.5-2.4 fair · 2.4-3.7 elevated · >3.7 top'},
-    sopr: {name: 'SOPR', formula: 'Spent Output Profit Ratio', interp: '<0.95 panic · 1-1.03 neutral · 1.03-1.06 profit · >1.06 euphoric'},
-    nupl: {name: 'NUPL', formula: 'Net Unrealized PnL', interp: '<0 capit · 0-0.25 hope · 0.25-0.5 optimism · 0.5-0.75 belief · >0.75 euphoria'},
-    aviv: {name: 'AVIV', formula: 'Active/Vaulted Investor Value', interp: '<0.5 strong hands · 1-1.5 weak hands · >1.5 topping'},
+    mvrv: {name: 'MVRV', formula: 'Market Value / Realized Value', interp: '<1 capit · 1.5-2.4 fair · >3.7 top'},
+    mvrv_zscore: {name: 'MVRV Z-Score', formula: 'Normalized MVRV (cycle indicator)', interp: '<0 deep value · 2-4 fair · >7 bubble'},
+    sopr: {name: 'SOPR', formula: 'Spent Output Profit Ratio', interp: '<0.95 panic · 1-1.03 neutral · >1.06 euphoric'},
+    nupl: {name: 'NUPL', formula: 'Net Unrealized PnL', interp: '<0 capit · 0-0.25 hope · >0.75 euphoria'},
+    aviv: {name: 'AVIV', formula: 'Active/Vaulted Investor Value', interp: '<0.5 strong hands · >1.5 topping'},
+    puell_multiple: {name: 'Puell Multiple', formula: 'Miner revenue / 365d MA', interp: '<0.5 capit · 1-2 normal · >4 top'},
+    reserve_risk: {name: 'Reserve Risk', formula: 'LTH confidence vs price', interp: '<0.002 bottom · 0.005-0.02 neutral · >0.06 top'},
   };
   let metricRows = '';
   for (const [k, info] of Object.entries(metricNames)) {
@@ -4188,9 +4337,11 @@ function renderOnChainSignals(M) {
       metricRows += `<tr><td><b>${info.name}</b></td><td>—</td><td colspan="3" style="color:var(--muted);font-size:0.78rem">${info.formula} — ${info.interp}</td></tr>`;
       continue;
     }
+    // Format value: reserve_risk needs 5 decimals, mvrv_zscore 2, others 3
+    const decimals = k === 'reserve_risk' ? 5 : (k === 'mvrv_zscore' ? 2 : 3);
     metricRows += `<tr>
       <td><b>${info.name}</b><div style="font-size:0.7rem;color:var(--muted)">${info.formula}</div></td>
-      <td style="font-family:var(--mono);font-weight:700">${m.value.toFixed(3)}</td>
+      <td style="font-family:var(--mono);font-weight:700">${m.value.toFixed(decimals)}</td>
       <td style="color:${m.color};font-weight:700">${m.regime.replace(/_/g,' ')}</td>
       <td style="color:${m.color};font-family:var(--mono)">${(m.pBull*100).toFixed(0)}%</td>
       <td style="font-size:0.72rem;color:var(--muted)">w=${m.weight} · ${info.interp}</td>
@@ -4220,6 +4371,71 @@ function renderOnChainSignals(M) {
     </div>
     <div style="margin-top:0.5rem;font-size:0.7rem;color:var(--muted)">
       Source: BGeometrics free tier · cache 12h · rate limit 15 req/day. Token: <code style="background:var(--bg2);padding:0.1rem 0.3rem;border-radius:3px">${getBGToken().slice(0,4)}...${getBGToken().slice(-2)}</code>
+    </div>
+  </div>`;
+}
+
+// ===================== M30 Macro Overlay UI (Global M2) =====================
+function renderMacroOverlay(M) {
+  const m = M.m30;
+  if (!m) return '';
+  const yoyC = m.yoy_change_pct >= 3 ? 'var(--green)' : m.yoy_change_pct >= 0 ? 'var(--yellow)' : 'var(--red)';
+  return `<div class="section-title">🌐 Macro Liquidity Overlay · Global M2</div>
+  <div class="card" style="border-left:4px solid ${m.color}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:0.875rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;color:${m.color}">${m.regime.replace(/_/g, ' ')}</div>
+        <div style="font-size:0.8rem;color:var(--text2);margin-top:0.25rem">Global M2 ${m.trend_direction === 'rising' ? '📈 đang tăng' : '📉 đang giảm'} · multiplier ${m.multiplier.toFixed(2)}× lên M22 regime</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase">M2 YoY</div>
+        <div style="font-family:var(--mono);font-size:2rem;font-weight:700;color:${yoyC}">${m.yoy_change_pct >= 0 ? '+' : ''}${m.yoy_change_pct.toFixed(2)}%</div>
+        <div style="font-size:0.7rem;color:var(--muted)">${m.recent_30d_change_pct >= 0 ? '+' : ''}${m.recent_30d_change_pct.toFixed(2)}% 30d</div>
+      </div>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:rgba(0,0,0,0.2);padding:0.6rem 0.9rem;border-radius:8px;border-left:3px solid ${m.color}">
+      <b>Cơ chế</b>: Global M2 mở rộng → liquidity flows vào risk assets gồm crypto. M2 YoY > 5% = strong expansion (multiplier 1.15×) · &lt; -3% = contraction (0.85×). M22 regime được điều chỉnh ±5pp tối đa.
+    </div>
+  </div>`;
+}
+
+// ===================== M31 Top Trader Sentiment UI =====================
+function renderTopTrader(M) {
+  const t = M.m31;
+  if (!t) return '';
+  const combinedC = t.combined_pBull >= 0.65 ? 'var(--green)' : t.combined_pBull >= 0.50 ? 'var(--yellow)' : 'var(--red)';
+  let rows = '';
+  if (t.account) {
+    rows += `<tr>
+      <td><b>Account L/S Ratio</b><div style="font-size:0.7rem;color:var(--muted)">Số lượng tài khoản long vs short</div></td>
+      <td style="font-family:var(--mono);font-weight:700">${t.account.value.toFixed(3)}</td>
+      <td style="color:${t.account.color};font-weight:700">${t.account.regime.replace(/_/g, ' ')}</td>
+      <td style="color:${t.account.color};font-family:var(--mono)">${(t.account.pBull*100).toFixed(0)}%</td>
+    </tr>`;
+  }
+  if (t.position) {
+    rows += `<tr>
+      <td><b>Position L/S Ratio</b><div style="font-size:0.7rem;color:var(--muted)">Quy mô vị thế long vs short (weighted)</div></td>
+      <td style="font-family:var(--mono);font-weight:700">${t.position.value.toFixed(3)}</td>
+      <td style="color:${t.position.color};font-weight:700">${t.position.regime.replace(/_/g, ' ')}</td>
+      <td style="color:${t.position.color};font-family:var(--mono)">${(t.position.pBull*100).toFixed(0)}%</td>
+    </tr>`;
+  }
+  return `<div class="section-title">🧑‍💼 Top Trader Sentiment · Contrarian Signal</div>
+  <div class="card" style="border-left:4px solid ${combinedC}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:0.875rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;color:${combinedC}">Combined P(bull) ${(t.combined_pBull*100).toFixed(1)}%</div>
+        <div style="font-size:0.8rem;color:var(--text2);margin-top:0.25rem">Top trader (Binance/Bybit large accounts) sentiment. <b>Contrarian</b>: tops crowded long → bearish for us.</div>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Metric</th><th>Value</th><th>Regime</th><th>P(bull)</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${t.divergence ? `<div class="warning-bar">⚠️ <b>${t.divergence}</b>: ${t.note}</div>` : ''}
+    <div style="margin-top:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.5;background:rgba(0,0,0,0.2);padding:0.6rem 0.9rem;border-radius:8px;border-left:3px solid ${combinedC}">
+      ℹ️ <b>Logic contrarian</b>: Top trader đông long (>1.5) thường là dấu hiệu "smart money" đã vào → market gần đỉnh. Top trader đông short (&lt;0.7) → cơ hội long. Khi Account vs Position divergence → whale ngược chiều retail.
     </div>
   </div>`;
 }
@@ -4711,35 +4927,68 @@ async function fetchBGOne(endpoint) {
   }
 }
 
-// Cache all metrics for 12h to respect 15 req/day free tier
+// Cache all metrics 24h to respect 15 req/day free tier
+// 10 endpoints × 1 fetch/day = 10 req/day, leaves 5 spare for cache-bust / retries
 async function fetchBGeometricsOnChainCached() {
   const cached = localStorage.getItem('bgOnChainCache');
   if (cached) {
     try {
       const { ts, data } = JSON.parse(cached);
-      if (Date.now() - ts < 12*3600*1000) {
+      if (Date.now() - ts < 24*3600*1000) {
         console.log('[BG] using cached on-chain data (', Math.floor((Date.now()-ts)/60000), 'min old)');
         return data;
       }
     } catch {}
   }
-  // Fetch 4 essential metrics in parallel (4 req → well within 10/hr, 15/day)
-  console.log('[BG] fetching fresh on-chain data (4 metrics)');
-  const [mvrvRaw, soprRaw, nuplRaw, avivRaw] = await Promise.all([
+  console.log('[BG] fetching fresh on-chain data (10 metrics)');
+  // Fetch all 10 in parallel — well within 10 req/hour limit
+  const [
+    mvrvRaw, soprRaw, nuplRaw, avivRaw,
+    mvrvZRaw, puellRaw, reserveRaw,
+    m2GlobalRaw,
+    topTraderAcctRaw, topTraderPosRaw,
+  ] = await Promise.all([
     fetchBGOne('mvrv'),
     fetchBGOne('sopr'),
     fetchBGOne('nupl'),
     fetchBGOne('aviv'),
+    fetchBGOne('mvrv-zscore'),
+    fetchBGOne('puell-multiple'),
+    fetchBGOne('reserve-risk'),
+    fetchBGOne('m2global'),
+    fetchBGOne('top-trader-account-1h'),
+    fetchBGOne('top-trader-position-1h'),
   ]);
   const data = {
+    // On-chain core
     mvrv: parseBGLatest(mvrvRaw),
     sopr: parseBGLatest(soprRaw),
     nupl: parseBGLatest(nuplRaw),
     aviv: parseBGLatest(avivRaw),
+    mvrv_zscore: parseBGLatest(mvrvZRaw),
+    puell_multiple: parseBGLatest(puellRaw),
+    reserve_risk: parseBGLatest(reserveRaw),
+    // Macro
+    m2_global: parseBGLatest(m2GlobalRaw),
+    m2_global_history: extractBGHistory(m2GlobalRaw, 90), // need history for trend
+    // Sentiment (hourly granularity)
+    top_trader_account: parseBGLatest(topTraderAcctRaw),
+    top_trader_position: parseBGLatest(topTraderPosRaw),
     fetched_at: Date.now(),
   };
   try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), data })); } catch {}
   return data;
+}
+
+// Extract last N values from a BG time-series response (for trend analysis)
+function extractBGHistory(data, n) {
+  if (!data) return null;
+  let arr = Array.isArray(data) ? data : (data.values || data.data || data.history || data.result);
+  if (!Array.isArray(arr)) return null;
+  return arr.slice(-n).map(item => {
+    const v = item.v ?? item.value ?? item.c ?? item.close ?? item.y;
+    return typeof v === 'number' && isFinite(v) ? v : parseFloat(v);
+  }).filter(v => isFinite(v));
 }
 
 function getCreds() {
