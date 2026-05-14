@@ -5095,21 +5095,29 @@ async function fetchBGeometricsOnChainCached() {
     fetchBGOne('top-trader-account-1h'),
     fetchBGOne('top-trader-position-1h'),
   ]);
+  // Debug: log raw shapes when parse fails so user can pinpoint issue
+  const _debugParse = (raw, hint) => {
+    const v = parseBGLatest(raw, hint);
+    if (v == null && raw != null) {
+      const shape = Array.isArray(raw)
+        ? `Array[${raw.length}] · sample[0]: ${JSON.stringify(raw[0])?.slice(0,200)}`
+        : (typeof raw === 'object' ? `Object keys: [${Object.keys(raw).join(',')}] · ${JSON.stringify(raw).slice(0,200)}` : `${typeof raw}: ${String(raw).slice(0,200)}`);
+      console.warn(`[BG] parse ${hint} returned null. Raw shape: ${shape}`);
+    }
+    return v;
+  };
   const data = {
-    // On-chain core — pass metric name as hint (BG uses field key = metric name lowercase)
-    mvrv: parseBGLatest(mvrvRaw, 'mvrv'),
-    sopr: parseBGLatest(soprRaw, 'sopr'),
-    nupl: parseBGLatest(nuplRaw, 'nupl'),
-    aviv: parseBGLatest(avivRaw, 'aviv'),
-    mvrv_zscore: parseBGLatest(mvrvZRaw, 'mvrvZscore'),
-    puell_multiple: parseBGLatest(puellRaw, 'puellMultiple'),
-    reserve_risk: parseBGLatest(reserveRaw, 'reserveRisk'),
-    // Macro
-    m2_global: parseBGLatest(m2GlobalRaw, 'm2global'),
+    mvrv: _debugParse(mvrvRaw, 'mvrv'),
+    sopr: _debugParse(soprRaw, 'sopr'),
+    nupl: _debugParse(nuplRaw, 'nupl'),
+    aviv: _debugParse(avivRaw, 'aviv'),
+    mvrv_zscore: _debugParse(mvrvZRaw, 'mvrvZscore'),
+    puell_multiple: _debugParse(puellRaw, 'puellMultiple'),
+    reserve_risk: _debugParse(reserveRaw, 'reserveRisk'),
+    m2_global: _debugParse(m2GlobalRaw, 'm2global'),
     m2_global_history: extractBGHistory(m2GlobalRaw, 90, 'm2global'),
-    // Sentiment (hourly granularity)
-    top_trader_account: parseBGLatest(topTraderAcctRaw, 'topTraderAccount'),
-    top_trader_position: parseBGLatest(topTraderPosRaw, 'topTraderPosition'),
+    top_trader_account: _debugParse(topTraderAcctRaw, 'topTraderAccount'),
+    top_trader_position: _debugParse(topTraderPosRaw, 'topTraderPosition'),
     fetched_at: Date.now(),
   };
   try { localStorage.setItem('bgOnChainCache', JSON.stringify({ ts: Date.now(), version: BG_CACHE_VERSION, data })); } catch {}
