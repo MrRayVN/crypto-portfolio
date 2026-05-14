@@ -2058,6 +2058,11 @@ function m28_funding_forecast(market, coinalyze) {
   else if (out.squeeze_score >= 25) out.grade = 'NO_EDGE';
   else out.grade = 'OVERHEATED_LONGS';
 
+  // Validate all numeric output fields — render templates rely on .toFixed
+  const NUM_FIELDS = ['mean','std','current','min','max','median','slope_per_event','slope_per_day','ar1_rho','ar1_alpha','forecast_24h','forecast_72h','squeeze_score'];
+  for (const k of NUM_FIELDS) {
+    if (typeof out[k] !== 'number' || !isFinite(out[k])) out[k] = 0;
+  }
   return out;
 }
 
@@ -4568,8 +4573,8 @@ function renderFundingForecast(M) {
       = <b style="color:${gradeColor}">${f.squeeze_score}/100</b>
     </div>
     ${f.predicted_now !== undefined ? `<div style="margin-top:0.875rem;font-size:0.78rem;color:var(--text2)">
-      📊 <b>Cross-source check</b>: Coinalyze predicted ${f.predicted_now.toFixed(4)}% vs Binance current ${f.current.toFixed(4)}% = divergence ${f.divergence.toFixed(4)}pp.
-      ${f.pred_accuracy_mae !== null ? `Historical accuracy MAE ${f.pred_accuracy_mae.toFixed(4)}pp.` : ''}
+      📊 <b>Cross-source check</b>: Coinalyze predicted ${(f.predicted_now ?? 0).toFixed(4)}% vs Binance current ${(f.current ?? 0).toFixed(4)}% = divergence ${(f.divergence ?? 0).toFixed(4)}pp.
+      ${typeof f.pred_accuracy_mae === 'number' && isFinite(f.pred_accuracy_mae) ? `Historical accuracy MAE ${f.pred_accuracy_mae.toFixed(4)}pp.` : ''}
     </div>` : ''}
     <div class="${f.squeeze_score >= 60 ? 'safety-bar' : f.squeeze_score >= 40 ? 'warning-bar' : 'danger-bar'}" style="margin-top:0.875rem">
       ${f.squeeze_score >= 75 ? '🎯 <b>PRIME SQUEEZE</b>: Setup tốt nhất — M23 P7 sẽ trigger nếu các gate khác mở.' :
