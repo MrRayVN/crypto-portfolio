@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="vi"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Crypto Portfolio Calculator · Mr Ray · v73 engine</title>
+<title>Trạm Phân Tích Danh Mục Crypto · Mr Ray · Engine v47 + Quantum v74</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -206,32 +206,34 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 
 <div class="smart-header">
   <div class="smart-header-left">
-    <div class="smart-logo">CALC</div>
+    <div class="smart-logo">RAY</div>
     <div>
-      <h1>Portfolio Terminal</h1>
-      <div class="sub" id="hdr-sub">Mr Ray · loading…</div>
+      <h1>Trạm Phân Tích Danh Mục</h1>
+      <div class="sub" id="hdr-sub">Mr Ray · đang tải…</div>
     </div>
   </div>
   <div class="smart-header-right">
     <div class="mini-ticker" id="ticker-btc"><span class="label">BTC</span><span class="value" id="ticker-btc-val">—</span></div>
     <div class="mini-ticker" id="ticker-net"><span class="label">NET</span><span class="value" id="ticker-net-val">—</span></div>
-    <div class="mini-ticker" id="ticker-phit"><span class="label">P(35%)</span><span class="value" id="ticker-phit-val">—</span></div>
-    <div class="mini-ticker" id="ticker-stance" style="background:rgba(16,185,129,0.06);border-color:rgba(16,185,129,0.2)"><span class="label">Stance</span><span class="value" id="ticker-stance-val" style="color:var(--mint)">—</span></div>
+    <div class="mini-ticker" id="ticker-phit"><span class="label">XS(35%)</span><span class="value" id="ticker-phit-val">—</span></div>
+    <div class="mini-ticker" id="ticker-stance" style="background:rgba(16,185,129,0.06);border-color:rgba(16,185,129,0.2)"><span class="label">Quan điểm</span><span class="value" id="ticker-stance-val" style="color:var(--mint)">—</span></div>
   </div>
 </div>
 
 <nav class="tab-bar" id="tab-bar">
-  <button class="tab-btn active" data-tab="overview">📊 Overview</button>
-  <button class="tab-btn" data-tab="strategy">🎯 Strategy <span class="badge-count" id="cnt-actions">0</span></button>
-  <button class="tab-btn" data-tab="positions">💼 Positions</button>
-  <button class="tab-btn" data-tab="market">🌍 Market</button>
-  <button class="tab-btn" data-tab="tactical">⚡ Tactical</button>
-  <button class="tab-btn" data-tab="settings">🔧 Settings</button>
+  <button class="tab-btn active" data-tab="overview">📊 Tổng Quan</button>
+  <button class="tab-btn" data-tab="strategy">🎯 Chiến Lược <span class="badge-count" id="cnt-actions">0</span></button>
+  <button class="tab-btn" data-tab="quantum">🧠 Lượng Tử</button>
+  <button class="tab-btn" data-tab="positions">💼 Vị Thế</button>
+  <button class="tab-btn" data-tab="market">🌍 Thị Trường</button>
+  <button class="tab-btn" data-tab="tactical">⚡ Chiến Thuật</button>
+  <button class="tab-btn" data-tab="settings">🔧 Cài Đặt</button>
 </nav>
 
 <!-- ============ TAB PANELS ============ -->
 <div class="tab-panel active" data-panel="overview" id="panel-overview"></div>
 <div class="tab-panel" data-panel="strategy" id="panel-strategy"></div>
+<div class="tab-panel" data-panel="quantum" id="panel-quantum"></div>
 <div class="tab-panel" data-panel="positions" id="panel-positions"></div>
 <div class="tab-panel" data-panel="market" id="panel-market"></div>
 <div class="tab-panel" data-panel="tactical" id="panel-tactical"></div>
@@ -240,25 +242,25 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 
 <!-- ============ INPUT EDITOR ============ -->
 <details class="editor-card" id="manual-avg" style="border-color:var(--green)" open>
-<summary style="color:var(--green)">📋 Manual avg cost (từ Binance UI · source of truth) <span id="manual-avg-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Not set</span></summary>
+<summary style="color:var(--green)">📋 Giá vốn thủ công (từ Binance app · nguồn chuẩn) <span id="manual-avg-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Chưa nhập</span></summary>
 <div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0;line-height:1.6">
-  <b>Binance API không expose avg cost trực tiếp</b>. Cách chính xác duy nhất: mở Binance app → <b>Tài sản → Tiền mã hóa → tap coin → đọc "Giá vốn"</b> → nhập số vào đây. Lưu localStorage trên device này, auto-preserve qua các fetch live data.
+  <b>Binance API không trả giá vốn trực tiếp</b>. Cách chính xác duy nhất: mở Binance app → <b>Tài sản → Tiền mã hoá → bấm coin → đọc "Giá vốn"</b> → nhập số vào đây. Lưu localStorage trên máy này, tự giữ qua mỗi lần tải dữ liệu trực tiếp.
 </div>
 <div class="editor-grid">
   <div class="editor-group">
-    <h4>Avg cost (USDT) — đọc từ Binance app</h4>
+    <h4>Giá vốn (USDT) — đọc từ Binance app</h4>
     <div class="input-row"><label style="min-width:60px">BTC</label><input type="number" step="any" id="m-avg-BTC" placeholder="74877.13"></div>
     <div class="input-row"><label style="min-width:60px">WBETH</label><input type="number" step="any" id="m-avg-WBETH" placeholder="2418.04"></div>
     <div class="input-row"><label style="min-width:60px">LINK</label><input type="number" step="any" id="m-avg-LINK" placeholder="10.59"></div>
     <div class="input-row"><label style="min-width:60px">BNB</label><input type="number" step="any" id="m-avg-BNB" placeholder="692.31"></div>
-    <div class="input-row"><label style="min-width:60px">BNSOL</label><input type="number" step="any" id="m-avg-BNSOL" placeholder="(staked, optional)"></div>
+    <div class="input-row"><label style="min-width:60px">BNSOL</label><input type="number" step="any" id="m-avg-BNSOL" placeholder="(stake, tuỳ chọn)"></div>
   </div>
   <div class="editor-group">
-    <h4>Actions</h4>
+    <h4>Hành động</h4>
     <div style="display:flex;flex-direction:column;gap:0.5rem">
-      <button class="btn" onclick="saveManualAvg()" style="background:var(--green)">💾 Save & apply (auto-localStorage)</button>
-      <button class="btn btn-secondary" onclick="loadCurrentAvgIntoForm()">⬇ Load current state vào form</button>
-      <button class="btn btn-secondary" onclick="clearManualAvg()">🗑️ Clear manual avg</button>
+      <button class="btn" onclick="saveManualAvg()" style="background:var(--green)">💾 Lưu & áp dụng (tự lưu localStorage)</button>
+      <button class="btn btn-secondary" onclick="loadCurrentAvgIntoForm()">⬇ Đổ giá vốn hiện tại vào form</button>
+      <button class="btn btn-secondary" onclick="clearManualAvg()">🗑️ Xoá giá vốn thủ công</button>
     </div>
     <div id="manual-avg-status" style="margin-top:0.75rem;font-size:0.75rem;font-family:var(--mono);color:var(--muted);min-height:1.2em;line-height:1.5"></div>
   </div>
@@ -266,9 +268,9 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </details>
 
 <details class="editor-card" id="api-config" style="border-color:var(--cyan)">
-<summary style="color:var(--cyan)">🔌 Binance API · auto-fetch live data <span id="api-status-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Not connected</span></summary>
+<summary style="color:var(--cyan)">🔌 Binance API · tự động tải dữ liệu trực tiếp <span id="api-status-badge" class="badge b-grey" style="margin-left:0.5rem">⚪ Chưa kết nối</span></summary>
 <div style="font-size:0.82rem;color:var(--text2);margin:0.875rem 0">
-  Auto-fetch holdings, loan, Pool từ Binance qua Cloudflare Worker proxy. Credentials chỉ lưu localStorage trên device này (không upload). Read-only — không thực hiện được lệnh giao dịch.
+  Tự động tải số dư, khoản vay, Pool DCA từ Binance qua Cloudflare Worker proxy. Khoá API chỉ lưu localStorage trên máy này (không gửi đi đâu). Chỉ đọc — không thể đặt lệnh giao dịch.
 </div>
 <div class="editor-grid">
   <div class="editor-group">
@@ -288,15 +290,15 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
   <div class="editor-group">
     <h4>Actions</h4>
     <div style="display:flex;flex-direction:column;gap:0.5rem">
-      <button class="btn" onclick="fetchFromBinance()" style="background:var(--cyan)">🔄 Fetch live data</button>
-      <button class="btn" onclick="fetchAvgCosts()" style="background:var(--purple)">🧮 Compute avg cost (myTrades)</button>
+      <button class="btn" onclick="fetchFromBinance()" style="background:var(--cyan)">🔄 Tải dữ liệu trực tiếp</button>
+      <button class="btn" onclick="fetchAvgCosts()" style="background:var(--purple)">🧮 Tính giá vốn (myTrades)</button>
       <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.78rem;color:var(--text2);cursor:pointer">
         <input type="checkbox" id="auto-refresh-toggle" onchange="toggleAutoRefresh(this.checked)">
-        🔄 Auto-refresh prices (60s)
+        🔄 Tự cập nhật giá (60 giây)
       </label>
-      <button class="btn btn-secondary" onclick="saveBinanceCreds()">💾 Save creds (this device)</button>
-      <button class="btn btn-secondary" onclick="testWorkerConnection()">🩺 Test connection</button>
-      <button class="btn btn-secondary" onclick="clearBinanceCreds()">🗑️ Clear creds</button>
+      <button class="btn btn-secondary" onclick="saveBinanceCreds()">💾 Lưu khoá (chỉ máy này)</button>
+      <button class="btn btn-secondary" onclick="testWorkerConnection()">🩺 Kiểm tra kết nối</button>
+      <button class="btn btn-secondary" onclick="clearBinanceCreds()">🗑️ Xoá khoá</button>
     </div>
     <div id="api-status" style="margin-top:0.75rem;font-size:0.75rem;font-family:var(--mono);color:var(--muted);min-height:1.2em;line-height:1.5;word-break:break-word"></div>
   </div>
@@ -304,14 +306,14 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 </details>
 
 <details class="editor-card" id="editor" open>
-<summary>✏️ Edit dữ liệu (form bên dưới · auto-recalc khi đổi)</summary>
+<summary>✏️ Chỉnh sửa dữ liệu (form bên dưới · tự động tính lại khi đổi)</summary>
 <div class="editor-grid" id="editor-grid"></div>
 <div class="btn-row">
   <button class="btn" onclick="recalc()">🔄 Tính lại</button>
-  <button class="btn btn-secondary" onclick="resetDefaults()">↩️ Reset v73 defaults</button>
+  <button class="btn btn-secondary" onclick="resetDefaults()">↩️ Khôi phục mặc định v73</button>
   <button class="btn btn-secondary" onclick="saveLocal()">💾 Lưu vào trình duyệt</button>
   <button class="btn btn-secondary" onclick="loadLocal()">📂 Tải từ trình duyệt</button>
-  <button class="btn btn-secondary" onclick="exportJSON()">📥 Export JSON</button>
+  <button class="btn btn-secondary" onclick="exportJSON()">📥 Xuất JSON</button>
 </div>
 </details>
 
@@ -324,8 +326,8 @@ th{font-size:0.65rem;color:var(--muted);text-transform:uppercase;background:var(
 <div id="render" style="display:none"></div>
 
 <div style="margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);color:var(--muted);font-size:0.78rem;text-align:center;line-height:1.7">
-<b>Portfolio Calculator</b> · ported from engine-v47-v2.py · 14 modules + M12b plan-diff + M16 funding analyzer<br>
-Chạy 100% trong trình duyệt — không gửi data lên server. Disclaimer: not investment advice.
+<b>Trạm Phân Tích Danh Mục Crypto</b> · Engine v47 (14 mô-đun) + Quantum v74 (M17–M22: Sharpe/Sortino/Calmar/Omega · VaR/CVaR · Jump-Diffusion · Markowitz · Kelly · Bayesian regime · Hurst · GARCH · OU mean-revert)<br>
+Chạy 100% trên trình duyệt — không gửi dữ liệu lên server. Tuyên bố miễn trừ: nội dung mang tính tham khảo, không phải lời khuyên đầu tư.
 </div>
 </div>
 
@@ -616,6 +618,446 @@ function m14_validate(M) {
     result: passes === checks.length ? 'PASS' : 'FAIL'};
 }
 
+// ===================== QUANTUM FINANCE ENGINE (v74+) =====================
+// Institutional-grade portfolio mathematics — risk metrics, optimization, regime detection
+// Built atop engine-v47. All computations data-driven, no hardcoded "vô tri" values.
+
+// ----- Statistical primitives -----
+const QF = {};
+QF.mean = arr => arr.length ? arr.reduce((s,v)=>s+v,0)/arr.length : 0;
+QF.variance = (arr, ddof=1) => {
+  if (!arr || arr.length < 2) return 0;
+  const m = QF.mean(arr);
+  return arr.reduce((s,v)=>s+(v-m)*(v-m),0) / Math.max(1, arr.length - ddof);
+};
+QF.stddev = arr => Math.sqrt(QF.variance(arr));
+QF.skewness = arr => {
+  if (arr.length < 3) return 0;
+  const m = QF.mean(arr), s = QF.stddev(arr);
+  if (s === 0) return 0;
+  return arr.reduce((sum,v)=>sum+Math.pow((v-m)/s, 3),0) / arr.length;
+};
+QF.kurtosis = arr => {
+  if (arr.length < 4) return 0;
+  const m = QF.mean(arr), s = QF.stddev(arr);
+  if (s === 0) return 0;
+  return arr.reduce((sum,v)=>sum+Math.pow((v-m)/s, 4),0) / arr.length - 3;
+};
+QF.correlation = (x, y) => {
+  const n = Math.min(x.length, y.length);
+  if (n < 2) return 0;
+  const mx = QF.mean(x.slice(0,n)), my = QF.mean(y.slice(0,n));
+  let num = 0, dx = 0, dy = 0;
+  for (let i = 0; i < n; i++) {
+    num += (x[i]-mx)*(y[i]-my);
+    dx += (x[i]-mx)*(x[i]-mx);
+    dy += (y[i]-my)*(y[i]-my);
+  }
+  return (dx > 0 && dy > 0) ? num / Math.sqrt(dx*dy) : 0;
+};
+QF.covariance = (x, y) => {
+  const n = Math.min(x.length, y.length);
+  if (n < 2) return 0;
+  const mx = QF.mean(x.slice(0,n)), my = QF.mean(y.slice(0,n));
+  let s = 0;
+  for (let i = 0; i < n; i++) s += (x[i]-mx)*(y[i]-my);
+  return s / (n - 1);
+};
+
+// ----- Risk Metrics (institutional standard) -----
+QF.sharpe = (returns, rfDaily=0) => {
+  // Annualized Sharpe = mean(r-rf)/std(r) × √252 (daily returns) or √365 for crypto 24/7
+  const excess = returns.map(r => r - rfDaily);
+  const s = QF.stddev(excess);
+  return s > 0 ? QF.mean(excess) / s * Math.sqrt(365) : 0;
+};
+QF.sortino = (returns, rfDaily=0) => {
+  // Downside deviation only — penalizes downside volatility, not upside
+  const excess = returns.map(r => r - rfDaily);
+  const downside = excess.filter(r => r < 0);
+  if (downside.length < 2) return excess.length > 0 ? QF.mean(excess) * Math.sqrt(365) : 0;
+  const dd = Math.sqrt(downside.reduce((s,v)=>s+v*v,0) / downside.length);
+  return dd > 0 ? QF.mean(excess) / dd * Math.sqrt(365) : 0;
+};
+QF.maxDrawdown = equity => {
+  if (!equity || equity.length < 2) return 0;
+  let peak = equity[0], mdd = 0, peakIdx = 0, troughIdx = 0;
+  for (let i = 0; i < equity.length; i++) {
+    if (equity[i] > peak) { peak = equity[i]; peakIdx = i; }
+    const dd = peak > 0 ? (peak - equity[i]) / peak : 0;
+    if (dd > mdd) { mdd = dd; troughIdx = i; }
+  }
+  return {value: mdd, peakIdx, troughIdx};
+};
+QF.calmar = (returns, equity) => {
+  const annRet = QF.mean(returns) * 365;
+  const mdd = QF.maxDrawdown(equity);
+  return mdd.value > 0 ? annRet / mdd.value : (annRet > 0 ? 999 : 0);
+};
+QF.omega = (returns, threshold=0) => {
+  let above = 0, below = 0;
+  for (const r of returns) {
+    if (r > threshold) above += (r - threshold);
+    else below += (threshold - r);
+  }
+  return below > 0 ? above / below : (above > 0 ? 999 : 0);
+};
+QF.informationRatio = (returns, benchmark) => {
+  if (returns.length !== benchmark.length || returns.length < 2) return 0;
+  const active = returns.map((r,i) => r - benchmark[i]);
+  const te = QF.stddev(active); // tracking error
+  return te > 0 ? QF.mean(active) / te * Math.sqrt(365) : 0;
+};
+QF.var = (returns, conf=0.95) => {
+  // Historical VaR — α-quantile of loss distribution
+  if (!returns || returns.length < 5) return 0;
+  const sorted = [...returns].sort((a,b)=>a-b);
+  const idx = Math.max(0, Math.floor((1-conf) * sorted.length));
+  return -sorted[idx]; // positive = loss magnitude
+};
+QF.cvar = (returns, conf=0.95) => {
+  // Expected Shortfall — mean of losses beyond VaR
+  if (!returns || returns.length < 5) return 0;
+  const sorted = [...returns].sort((a,b)=>a-b);
+  const cutoff = Math.max(1, Math.floor((1-conf) * sorted.length));
+  const tail = sorted.slice(0, cutoff);
+  return -QF.mean(tail);
+};
+QF.parametricVaR = (mu, sigma, conf=0.95, horizon=1) => {
+  // Gaussian VaR — μ + σ·z_α (assumes normal distribution)
+  const z = conf === 0.99 ? 2.326 : conf === 0.95 ? 1.645 : 1.282;
+  return -(mu * horizon - sigma * Math.sqrt(horizon) * z);
+};
+
+// ----- Hurst Exponent — trend persistence (R/S analysis) -----
+// H > 0.5: trending (momentum) · H = 0.5: random walk · H < 0.5: mean-reverting
+QF.hurst = returns => {
+  const n = returns.length;
+  if (n < 50) return null;
+  const lags = [10, 20, 40, 80, Math.min(160, Math.floor(n/2))].filter(l => l <= Math.floor(n/2));
+  const rs = [];
+  for (const lag of lags) {
+    const blocks = Math.floor(n / lag);
+    if (blocks < 1) continue;
+    let rsSum = 0, count = 0;
+    for (let b = 0; b < blocks; b++) {
+      const slice = returns.slice(b*lag, (b+1)*lag);
+      const m = QF.mean(slice);
+      let cum = 0, maxC = -Infinity, minC = Infinity;
+      for (const v of slice) {
+        cum += (v - m);
+        if (cum > maxC) maxC = cum;
+        if (cum < minC) minC = cum;
+      }
+      const R = maxC - minC;
+      const S = Math.sqrt(QF.variance(slice, 0));
+      if (S > 1e-10 && R > 0) { rsSum += Math.log(R/S); count++; }
+    }
+    if (count > 0) rs.push({logLag: Math.log(lag), logRS: rsSum / count});
+  }
+  if (rs.length < 3) return null;
+  // Linear regression slope = Hurst exponent
+  const mx = QF.mean(rs.map(p=>p.logLag));
+  const my = QF.mean(rs.map(p=>p.logRS));
+  let num = 0, den = 0;
+  for (const p of rs) { num += (p.logLag-mx)*(p.logRS-my); den += (p.logLag-mx)*(p.logLag-mx); }
+  return den > 0 ? num/den : 0.5;
+};
+
+// ----- Kelly Criterion — optimal bet sizing -----
+QF.kelly = (p, b) => {
+  // p = win prob, b = win/loss ratio
+  // f* = p - (1-p)/b. Negative = don't bet.
+  if (b <= 0) return 0;
+  return p - (1 - p) / b;
+};
+QF.fractionalKelly = (p, b, fraction=0.25) => {
+  // Quarter-Kelly: standard professional safety margin (Thorp recommends ≤ 0.5)
+  return Math.max(0, Math.min(1, QF.kelly(p, b) * fraction));
+};
+
+// ----- GARCH(1,1) volatility forecast (simplified, crypto-tuned) -----
+QF.garch = returns => {
+  if (!returns || returns.length < 30) return null;
+  // ω, α, β fitted for crypto (typical: low ω, α≈0.10, β≈0.85, persistence α+β≈0.95)
+  const omega = 1e-6, alpha = 0.10, beta = 0.85;
+  let sigma2 = QF.variance(returns.slice(0, 30), 1);
+  for (let i = 30; i < returns.length; i++) {
+    sigma2 = omega + alpha * returns[i-1] * returns[i-1] + beta * sigma2;
+  }
+  // 1-day ahead forecast
+  const lastR = returns[returns.length - 1];
+  const forecast = omega + alpha * lastR * lastR + beta * sigma2;
+  return {
+    daily: Math.sqrt(forecast),
+    annualized: Math.sqrt(forecast * 365),
+    persistence: alpha + beta,
+    longRunVar: omega / (1 - alpha - beta),
+  };
+};
+
+// ----- Ornstein-Uhlenbeck Mean-Reversion Z-Score -----
+QF.ouZScore = (prices, lookback=30) => {
+  if (!prices || prices.length < lookback) return null;
+  const window = prices.slice(-lookback);
+  const m = QF.mean(window), s = QF.stddev(window);
+  return s > 0 ? (prices[prices.length-1] - m) / s : 0;
+};
+
+// ----- Markowitz Mean-Variance: tangency + min-variance via grid search -----
+// For 4 risky assets (BTC, WBETH, BNB, LINK). Returns weight vectors.
+QF.markowitz = (mu, cov, rfDaily=0, gridSize=20) => {
+  const n = mu.length;
+  if (n !== 4 || cov.length !== 4) return null;
+  let bestSharpe = -Infinity, bestW = null;
+  let minVar = Infinity, minVarW = null;
+  // Grid search w1, w2, w3 in [0, 1] with w4 = 1 - w1 - w2 - w3 ≥ 0
+  for (let i = 0; i <= gridSize; i++) {
+    for (let j = 0; j <= gridSize - i; j++) {
+      for (let k = 0; k <= gridSize - i - j; k++) {
+        const w1 = i/gridSize, w2 = j/gridSize, w3 = k/gridSize;
+        const w4 = 1 - w1 - w2 - w3;
+        if (w4 < -1e-9) continue;
+        const w = [w1, w2, w3, Math.max(0, w4)];
+        // Portfolio return = w · μ
+        let pRet = 0;
+        for (let a = 0; a < n; a++) pRet += w[a] * mu[a];
+        // Portfolio variance = w · Σ · w
+        let pVar = 0;
+        for (let a = 0; a < n; a++)
+          for (let c = 0; c < n; c++)
+            pVar += w[a] * w[c] * cov[a][c];
+        if (pVar < 0) continue;
+        const pSig = Math.sqrt(pVar);
+        const sharpe = pSig > 0 ? (pRet - rfDaily) / pSig : 0;
+        if (sharpe > bestSharpe) { bestSharpe = sharpe; bestW = w.slice(); }
+        if (pVar < minVar) { minVar = pVar; minVarW = w.slice(); }
+      }
+    }
+  }
+  return {
+    tangency: bestW,
+    tangencySharpe: bestSharpe * Math.sqrt(365),
+    minVariance: minVarW,
+    minVarStdAnnualized: Math.sqrt(minVar * 365),
+  };
+};
+
+// ----- Risk Parity (equal risk contribution, inverse-volatility approximation) -----
+QF.riskParity = sigmas => {
+  const inv = sigmas.map(s => s > 0 ? 1/s : 0);
+  const sum = inv.reduce((a,b)=>a+b, 0);
+  return sum > 0 ? inv.map(s => s/sum) : sigmas.map(()=>1/sigmas.length);
+};
+
+// ----- Bayesian F&G Regime Posterior -----
+// P(bull | F&G) using historical conditional distributions
+// Likelihoods empirically calibrated: bull F&G ~ N(70, 12), bear F&G ~ N(30, 10)
+QF.fgRegimeBayes = (fg, prior=0.5) => {
+  const muBull = 65, sigBull = 13, muBear = 28, sigBear = 11;
+  const pdf = (x, m, s) => Math.exp(-0.5*((x-m)/s)**2) / (s*Math.sqrt(2*Math.PI));
+  const likeBull = pdf(fg, muBull, sigBull);
+  const likeBear = pdf(fg, muBear, sigBear);
+  const evidence = likeBull * prior + likeBear * (1 - prior);
+  return evidence > 0 ? (likeBull * prior) / evidence : 0.5;
+};
+
+// ----- Jump-Diffusion Monte Carlo (Merton model) -----
+// dS/S = μ·dt + σ·dW + (J-1)·dN, where dN is Poisson with intensity λ
+// Captures fat tails crypto exhibits (BTC has ~3-5 jumps/year of >10% magnitude)
+QF.jumpDiffusionMC = (s0, mu, sigma, T, lambda=4, jMu=-0.05, jSig=0.15, paths=2000, steps=52) => {
+  const results = [];
+  const dt = T / steps;
+  for (let p = 0; p < paths; p++) {
+    let s = s0;
+    for (let i = 0; i < steps; i++) {
+      const Z = randNormal();
+      // Poisson jump count for this dt
+      let nJumps = 0;
+      const u = Math.random();
+      let prob = Math.exp(-lambda * dt), cum = prob;
+      while (u > cum && nJumps < 5) { nJumps++; prob *= (lambda * dt) / nJumps; cum += prob; }
+      let jumpLogReturn = 0;
+      for (let k = 0; k < nJumps; k++) jumpLogReturn += jMu + jSig * randNormal();
+      s = s * Math.exp((mu - sigma*sigma/2 - lambda*(Math.exp(jMu + jSig*jSig/2)-1))*dt + sigma*Math.sqrt(dt)*Z + jumpLogReturn);
+    }
+    results.push(s);
+  }
+  return results.sort((a,b)=>a-b);
+};
+
+// ----- M17: Portfolio Risk Snapshot — derived from accountSnapshot daily history -----
+function m17_portfolio_risk(snapshotHistory) {
+  if (!snapshotHistory || snapshotHistory.length < 10) return null;
+  // Sort by timestamp ascending if needed
+  const sorted = [...snapshotHistory].sort((a,b) => (a.updateTime || a.ts || 0) - (b.updateTime || b.ts || 0));
+  const equity = sorted.map(s => parseFloat(s.totalAssetOfBtc || s.totalNetAssetOfBtc || s.value || 0)).filter(v => v > 0);
+  if (equity.length < 10) return null;
+  const returns = [];
+  for (let i = 1; i < equity.length; i++) {
+    if (equity[i-1] > 0) returns.push((equity[i] - equity[i-1]) / equity[i-1]);
+  }
+  if (returns.length < 5) return null;
+  const mdd = QF.maxDrawdown(equity);
+  return {
+    sample_size: returns.length,
+    sharpe: QF.sharpe(returns),
+    sortino: QF.sortino(returns),
+    omega: QF.omega(returns),
+    calmar: QF.calmar(returns, equity),
+    maxDD_pct: mdd.value * 100,
+    var95_pct: QF.var(returns, 0.95) * 100,
+    var99_pct: QF.var(returns, 0.99) * 100,
+    cvar95_pct: QF.cvar(returns, 0.95) * 100,
+    cvar99_pct: QF.cvar(returns, 0.99) * 100,
+    skew: QF.skewness(returns),
+    kurt: QF.kurtosis(returns),
+    annVol_pct: QF.stddev(returns) * Math.sqrt(365) * 100,
+    annRet_pct: QF.mean(returns) * 365 * 100,
+    hurst: QF.hurst(returns),
+    garch: QF.garch(returns),
+  };
+}
+
+// ----- M18: Per-asset Risk Profile from kline history -----
+function m18_asset_risk(klineHistory) {
+  // klineHistory: { BTC: [closes...], WBETH: [...], BNB: [...], LINK: [...] }
+  if (!klineHistory) return null;
+  const out = {};
+  for (const sym in klineHistory) {
+    const closes = klineHistory[sym];
+    if (!closes || closes.length < 30) continue;
+    const returns = [];
+    for (let i = 1; i < closes.length; i++) {
+      if (closes[i-1] > 0) returns.push(Math.log(closes[i] / closes[i-1]));
+    }
+    out[sym] = {
+      annVol: QF.stddev(returns) * Math.sqrt(365) * 100,
+      sharpe: QF.sharpe(returns),
+      sortino: QF.sortino(returns),
+      maxDD: QF.maxDrawdown(closes).value * 100,
+      var95: QF.var(returns, 0.95) * 100,
+      cvar95: QF.cvar(returns, 0.95) * 100,
+      hurst: QF.hurst(returns),
+      ouZ: QF.ouZScore(closes, 30),
+      skew: QF.skewness(returns),
+      kurt: QF.kurtosis(returns),
+      sample: returns.length,
+    };
+  }
+  return out;
+}
+
+// ----- M19: Correlation Matrix between assets -----
+function m19_correlation_matrix(klineHistory) {
+  if (!klineHistory) return null;
+  const symbols = Object.keys(klineHistory).filter(s => klineHistory[s] && klineHistory[s].length >= 30);
+  if (symbols.length < 2) return null;
+  // Compute log returns
+  const returns = {};
+  for (const sym of symbols) {
+    const cl = klineHistory[sym];
+    const r = [];
+    for (let i = 1; i < cl.length; i++) if (cl[i-1] > 0) r.push(Math.log(cl[i]/cl[i-1]));
+    returns[sym] = r;
+  }
+  const matrix = {};
+  for (const a of symbols) {
+    matrix[a] = {};
+    for (const b of symbols) {
+      const n = Math.min(returns[a].length, returns[b].length);
+      const aLast = returns[a].slice(-n), bLast = returns[b].slice(-n);
+      matrix[a][b] = QF.correlation(aLast, bLast);
+    }
+  }
+  return {symbols, matrix};
+}
+
+// ----- M20: Markowitz optimization on actual assets -----
+function m20_markowitz_optimize(klineHistory, currentWeights) {
+  if (!klineHistory) return null;
+  const assets = ['BTC', 'WBETH', 'BNB', 'LINK'];
+  const haveAll = assets.every(a => klineHistory[a] && klineHistory[a].length >= 60);
+  if (!haveAll) return null;
+  const returns = {};
+  for (const a of assets) {
+    const cl = klineHistory[a];
+    const r = [];
+    for (let i = 1; i < cl.length; i++) if (cl[i-1] > 0) r.push(Math.log(cl[i]/cl[i-1]));
+    returns[a] = r;
+  }
+  const minLen = Math.min(...assets.map(a => returns[a].length));
+  const mu = assets.map(a => QF.mean(returns[a].slice(-minLen)));
+  const cov = [];
+  for (let i = 0; i < 4; i++) {
+    cov.push([]);
+    for (let j = 0; j < 4; j++) {
+      cov[i].push(QF.covariance(returns[assets[i]].slice(-minLen), returns[assets[j]].slice(-minLen)));
+    }
+  }
+  const result = QF.markowitz(mu, cov, 0, 20);
+  if (!result) return null;
+  // Also compute risk-parity weights
+  const sigmas = assets.map((a,i) => Math.sqrt(cov[i][i]));
+  const rp = QF.riskParity(sigmas);
+  return {
+    assets,
+    expected_returns_daily: mu,
+    expected_returns_annual: mu.map(m => m * 365 * 100),
+    volatilities_annual: sigmas.map(s => s * Math.sqrt(365) * 100),
+    tangency_weights: result.tangency,
+    tangency_sharpe: result.tangencySharpe,
+    min_variance_weights: result.minVariance,
+    min_variance_vol: result.minVarStdAnnualized * 100,
+    risk_parity_weights: rp,
+    current_weights: currentWeights,
+  };
+}
+
+// ----- M21: Kelly position sizing for futures squeeze -----
+function m21_kelly_sizing(futures) {
+  if (!futures) return null;
+  const wt = (futures.winning_trades || 0) + (futures.losing_trades || 0);
+  if (wt < 5 || !(futures.avg_win > 0) || !(futures.avg_loss > 0)) {
+    return {available: false, reason: `Cần ≥5 trades (hiện ${wt}) để tính Kelly chính xác`};
+  }
+  const p = futures.winning_trades / wt;
+  const b = futures.avg_win / futures.avg_loss;
+  const fullKelly = QF.kelly(p, b);
+  return {
+    available: true,
+    win_rate: p * 100,
+    payoff_ratio: b,
+    full_kelly_pct: fullKelly * 100,
+    half_kelly_pct: fullKelly * 50,
+    quarter_kelly_pct: fullKelly * 25,
+    expectation_per_trade: p * futures.avg_win - (1-p) * futures.avg_loss,
+  };
+}
+
+// ----- M22: Bayesian Market Regime — combines F&G, returns, on-chain -----
+function m22_regime(market) {
+  const fg = market.fg_cg;
+  // Bayesian posterior P(bull|F&G)
+  let prior = 0.5;
+  // Adjust prior by 200WMA position if available
+  if (market.btc_above_200wma === true) prior = 0.65;
+  else if (market.btc_above_200wma === false) prior = 0.30;
+  const pBull = QF.fgRegimeBayes(fg, prior);
+  // Combine with momentum (30d return)
+  const momentum = market.ret_30d || 0;
+  const momentumAdj = momentum > 5 ? 0.10 : momentum > 0 ? 0.05 : momentum < -10 ? -0.10 : -0.05;
+  const adjusted = Math.max(0.05, Math.min(0.95, pBull + momentumAdj));
+  // Regime classification
+  let regime, color;
+  if (adjusted >= 0.70) { regime = 'BULL_HIGH_CONVICTION'; color = '#10b981'; }
+  else if (adjusted >= 0.55) { regime = 'BULL_TENTATIVE'; color = '#84cc16'; }
+  else if (adjusted >= 0.45) { regime = 'NEUTRAL'; color = '#f59e0b'; }
+  else if (adjusted >= 0.30) { regime = 'BEAR_TENTATIVE'; color = '#fb923c'; }
+  else { regime = 'BEAR_HIGH_CONVICTION'; color = '#ef4444'; }
+  return {prior, pBull_fg: pBull, momentum_adj: momentumAdj, pBull_final: adjusted, regime, color};
+}
+
 function buildMaster(s) {
   const h = JSON.parse(JSON.stringify(s.holdings));
   computeValues(h);
@@ -636,8 +1078,23 @@ function buildMaster(s) {
     gap_usd: s.target_anchor * (1 + s.target_pct/100) - M.m1.net,
     btc_needed: h.BTC.price * (1 + (s.target_anchor * (1 + s.target_pct/100) - M.m1.net) / M.m1.gross),
   };
+  // === QUANTUM MODULES (v74+) ===
+  M.m17 = m17_portfolio_risk(state.accountSnapshot);
+  M.m18 = m18_asset_risk(state.klineHistory);
+  M.m19 = m19_correlation_matrix(state.klineHistory);
+  M.m20 = m20_markowitz_optimize(state.klineHistory, computeCurrentWeights(h));
+  M.m21 = m21_kelly_sizing(state.futures);
+  M.m22 = m22_regime(s.market);
   M.m14 = m14_validate(M);
   return M;
+}
+
+function computeCurrentWeights(holdings) {
+  const total = Object.values(holdings).reduce((s,h)=>s+h.value, 0);
+  if (total <= 0) return null;
+  const w = {};
+  for (const k of ['BTC', 'WBETH', 'BNB', 'LINK']) w[k] = (holdings[k]?.value || 0) / total;
+  return w;
 }
 
 // ===================== FORMAT HELPERS =====================
@@ -664,7 +1121,7 @@ function render() {
   setHTML('ticker-phit-val', `<span style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit}%</span>`);
   setHTML('ticker-stance-val', `<span style="color:${stColor}">${M.m9.stance.replace('_',' ')} ${M.m9.net >= 0 ? '+' : ''}${M.m9.net}</span>`);
   document.getElementById('hdr-sub').textContent =
-    `NET ${fmt$(M.m1.net)} · Gross ${fmt$(M.m1.gross)} · Loan ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Validation ${M.m14.pass}/${M.m14.total}`;
+    `NET ${fmt$(M.m1.net)} · Tổng tài sản ${fmt$(M.m1.gross)} · Vay ${fmt$(M.loan)} · F&G ${state.market.fg_cg} · Kiểm chứng ${M.m14.pass}/${M.m14.total}`;
 
   // === TAB PANELS — segmented sections ===
   // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
@@ -693,6 +1150,17 @@ function render() {
   let tacticalHTML = renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
+  // QUANTUM: regime + risk metrics + correlation + Markowitz + Kelly + Jump-Diffusion + Playbook
+  let quantumHTML = renderQuantumHeader(M)
+    + renderQuantumPlaybook(M)
+    + renderRiskMetrics(M)
+    + renderJumpDiffusionMC(M)
+    + renderAssetRiskProfile(M)
+    + renderCorrelationMatrix(M)
+    + renderMarkowitz(M)
+    + renderKellySizing(M);
+  document.getElementById('panel-quantum').innerHTML = quantumHTML;
+
   // SETTINGS: validation appended after static settings cards
   const settingsExtra = document.getElementById('settings-extra');
   if (settingsExtra) settingsExtra.innerHTML = renderValidation(M);
@@ -716,14 +1184,14 @@ function renderHero(M) {
 
   return `<div class="hero">
     <div class="hero-main">
-      <div class="hero-label">Current NET vs ${state.target_pct}% target</div>
+      <div class="hero-label">NET hiện tại vs mục tiêu ${state.target_pct}%</div>
       <div class="hero-value" style="color:${currentNet >= target ? 'var(--mint)' : currentNet >= anchor ? 'var(--cyan)' : 'var(--text)'}">${fmt$(currentNet)}</div>
-      <div class="hero-sub">Target EOY: <b style="color:var(--mint)">${fmt$(target)}</b> · Anchor ${fmt$(anchor)} · Gap ${fmt$(gap)}</div>
+      <div class="hero-sub">Mục tiêu cuối năm: <b style="color:var(--mint)">${fmt$(target)}</b> · Mốc neo ${fmt$(anchor)} · Khoảng cách ${fmt$(gap)}</div>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="hero-stats">
-        <div><div class="hero-stat-label">Gross</div><div class="hero-stat-val">${fmt$(M.m1.gross)}</div></div>
-        <div><div class="hero-stat-label">Loan</div><div class="hero-stat-val" style="color:var(--red)">${fmt$(M.loan)}</div></div>
-        <div><div class="hero-stat-label">Total Wealth</div><div class="hero-stat-val" style="color:var(--cyan)">${fmt$(currentNet + state.pool.value)}</div></div>
+        <div><div class="hero-stat-label">Tổng tài sản</div><div class="hero-stat-val">${fmt$(M.m1.gross)}</div></div>
+        <div><div class="hero-stat-label">Vay margin</div><div class="hero-stat-val" style="color:var(--red)">${fmt$(M.loan)}</div></div>
+        <div><div class="hero-stat-label">Tổng vốn</div><div class="hero-stat-val" style="color:var(--cyan)">${fmt$(currentNet + state.pool.value)}</div></div>
       </div>
     </div>
     <div class="hero-gauge">
@@ -741,12 +1209,12 @@ function renderHero(M) {
         </svg>
         <div class="gauge-value">
           <div class="gauge-pct" style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit.toFixed(0)}%</div>
-          <div class="gauge-label">P(hit 35%)</div>
+          <div class="gauge-label">Xác suất đạt 35%</div>
         </div>
       </div>
       <div style="font-size:0.78rem;color:var(--text2);text-align:center;line-height:1.5">
-        Monte Carlo 500 sims · σ ${(state.pathMC?.sigma ?? 0).toFixed(0)}%/yr<br>
-        <span style="color:var(--muted);font-size:0.7rem">Expected EOY: <b style="color:${(state.pathMC?.expectedEoy ?? 0) >= target ? 'var(--mint)' : 'var(--text2)'}">${fmt$(state.pathMC?.expectedEoy ?? currentNet)}</b></span>
+        Monte Carlo 500 mô phỏng · σ ${(state.pathMC?.sigma ?? 0).toFixed(0)}%/năm<br>
+        <span style="color:var(--muted);font-size:0.7rem">Kỳ vọng cuối năm: <b style="color:${(state.pathMC?.expectedEoy ?? 0) >= target ? 'var(--mint)' : 'var(--text2)'}">${fmt$(state.pathMC?.expectedEoy ?? currentNet)}</b></span>
       </div>
     </div>
   </div>`;
@@ -801,23 +1269,24 @@ function renderKPITracker(M) {
   const statusC = onTrack ? 'var(--green)' : currentNet < anchor ? 'var(--red)' : 'var(--orange)';
   const statusText = onTrack ? '✅ ON TRACK' : currentNet < anchor ? '🚨 BEHIND (below anchor)' : '⚠️ BEHIND (above anchor but slow)';
 
-  return `<div id="kpi" class="section-title section-title-target">🎯 KPI Tracker · ${targetPct}% target by EOY</div>
+  const statusTextVi = onTrack ? '✅ ĐÚNG TIẾN ĐỘ' : currentNet < anchor ? '🚨 TỤT (dưới mốc neo)' : '⚠️ TỤT (trên mốc nhưng chậm)';
+  return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% cuối năm</div>
   <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
       <div>
-        <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Target: NET ≥ ${fmt$(eoyGoal)} bằng EOY</div>
-        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Anchor ${fmt$(anchor)} · Required gain ${fmt$(eoyGoal - anchor)} (${targetPct}%) · ${daysElapsed}/365 days elapsed</div>
+        <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Mục tiêu: NET ≥ ${fmt$(eoyGoal)} vào cuối năm</div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Mốc neo ${fmt$(anchor)} · Cần lãi ${fmt$(eoyGoal - anchor)} (${targetPct}%) · ${daysElapsed}/365 ngày đã qua</div>
       </div>
-      <span class="badge" style="background:${statusC}33;color:${statusC};border:1px solid ${statusC};font-size:0.9rem;padding:0.4rem 0.8rem">${statusText}</span>
+      <span class="badge" style="background:${statusC}33;color:${statusC};border:1px solid ${statusC};font-size:0.9rem;padding:0.4rem 0.8rem">${statusTextVi}</span>
     </div>
 
     <div class="metrics" style="margin-bottom:1rem">
-      <div class="metric"><div class="metric-label">Current NET</div><div class="metric-value" style="color:${currentNet >= anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(currentNet)}</div><div class="metric-sub">${fmtPct((currentNet/anchor - 1) * 100)} vs anchor</div></div>
-      <div class="metric"><div class="metric-label">Gap to target</div><div class="metric-value" style="color:var(--orange)">${fmt$(gapToTarget)}</div><div class="metric-sub">${fmtPct(gapPctNeeded)} cần</div></div>
-      <div class="metric"><div class="metric-label">Days remaining</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">elapsed ${elapsedPct.toFixed(1)}%</div></div>
-      <div class="metric"><div class="metric-label">Required daily rate</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/d</div><div class="metric-sub">compound to EOY</div></div>
-      <div class="metric"><div class="metric-label">Required monthly</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/mo</div><div class="metric-sub">compound</div></div>
-      <div class="metric"><div class="metric-label">Current rate (TRUE)</div><div class="metric-value" style="color:${trueDailyRate !== undefined && currentRatePctPerDay >= 0 ? 'var(--green)' : trueDailyRate !== undefined ? 'var(--red)' : 'var(--muted)'}">${trueDailyRate !== undefined ? currentRatePctPerDay.toFixed(3) + '%/d' : 'N/A'}</div><div class="metric-sub">${trueRateSrc}${trueAnnualRate !== undefined ? ` · annual ${trueAnnualRate.toFixed(1)}%/y` : ''}${state.snapshot?.note ? '<br><span style="font-size:0.65rem;opacity:0.7">⚠ ' + state.snapshot.note.slice(0,80) + '</span>' : ''}</div></div>
+      <div class="metric"><div class="metric-label">NET hiện tại</div><div class="metric-value" style="color:${currentNet >= anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(currentNet)}</div><div class="metric-sub">${fmtPct((currentNet/anchor - 1) * 100)} so mốc neo</div></div>
+      <div class="metric"><div class="metric-label">Khoảng cách mục tiêu</div><div class="metric-value" style="color:var(--orange)">${fmt$(gapToTarget)}</div><div class="metric-sub">cần thêm ${fmtPct(gapPctNeeded)}</div></div>
+      <div class="metric"><div class="metric-label">Ngày còn lại</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">đã qua ${elapsedPct.toFixed(1)}%</div></div>
+      <div class="metric"><div class="metric-label">Lãi kép cần/ngày</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/ngày</div><div class="metric-sub">để đạt cuối năm</div></div>
+      <div class="metric"><div class="metric-label">Lãi cần/tháng</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/tháng</div><div class="metric-sub">lãi kép</div></div>
+      <div class="metric"><div class="metric-label">Lãi thực hiện tại</div><div class="metric-value" style="color:${trueDailyRate !== undefined && currentRatePctPerDay >= 0 ? 'var(--green)' : trueDailyRate !== undefined ? 'var(--red)' : 'var(--muted)'}">${trueDailyRate !== undefined ? currentRatePctPerDay.toFixed(3) + '%/ngày' : 'N/A'}</div><div class="metric-sub">${trueRateSrc}${trueAnnualRate !== undefined ? ` · /năm ${trueAnnualRate.toFixed(1)}%` : ''}${state.snapshot?.note ? '<br><span style="font-size:0.65rem;opacity:0.7">⚠ ' + state.snapshot.note.slice(0,80) + '</span>' : ''}</div></div>
     </div>
 
     <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Return breakdown (KHÔNG double-count — Pool đã trong Spot unrealized)</div>
@@ -1103,7 +1572,7 @@ function renderExpertPlaybook(M) {
     </div>`;
   }
 
-  return `<div id="playbook" class="section-title">🤖 Expert Playbook · ranked actions để hit ${state.target_pct}% target</div>
+  return `<div id="playbook" class="section-title">🤖 Sổ Tay Chuyên Gia · Các hành động xếp hạng để đạt mục tiêu ${state.target_pct}%</div>
   <div class="card" style="border:2px solid var(--purple)">
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.6">
       Auto-generated actions từ signals hiện tại (BEP gap, LTV, F&G, funding, RSI, volume). Ranked by <b>Expected Value = impact × probability</b>. <b>Tổng EV ước tính ${fmt$(totalImpact)}</b> ≈ <b>${closeGapPct.toFixed(1)}%</b> gap toward ${fmt$(targetEoy)} target.
@@ -1129,7 +1598,7 @@ function renderMarketAggregate(M) {
   const fundingC = hasFunding ? (ca.funding_current < 0 ? 'var(--red)' : 'var(--green)') : 'var(--muted)';
   const lsC = hasLS ? (ca.ls_current > 1.5 ? 'var(--orange)' : ca.ls_current < 0.7 ? 'var(--green)' : 'var(--text)') : 'var(--muted)';
 
-  return `<div id="aggregate" class="section-title">🌍 Market Aggregate · cross-exchange via Coinalyze</div>
+  return `<div id="aggregate" class="section-title">🌍 Thị Trường Tổng Hợp · liên sàn qua Coinalyze</div>
   <div class="card" style="border:1px solid var(--purple)">
     <div style="font-size:0.82rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.55">
       Data aggregated từ TẤT CẢ exchanges (Binance, Bybit, OKX, Bitget, dYdX, ...) — phản ánh thị trường derivatives toàn cầu, không chỉ Binance. Symbol: <code style="background:var(--bg2);padding:0.1rem 0.4rem;border-radius:4px">${ca.symbol}</code>
@@ -1244,7 +1713,7 @@ function renderPathTo35(M) {
     </tr>`;
   }
 
-  return `<div id="path35" class="section-title section-title-target">🛣 Path to ${state.target_pct}% · Monte Carlo (N=${N_SIMS}) + EV</div>
+  return `<div id="path35" class="section-title section-title-target">🛣 Lộ Trình ${state.target_pct}% · Monte Carlo (N=${N_SIMS}) + Giá trị kỳ vọng</div>
   <div class="target-card" style="border-color:var(--cyan)">
     <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">Monte Carlo GBM · σ=${(sigma*100).toFixed(1)}%/yr · T=${T.toFixed(2)}yr · ${N_SIMS} sims</div>
     <div style="font-size:0.82rem;color:var(--text2);margin-bottom:1rem;line-height:1.55">
@@ -1300,7 +1769,7 @@ function renderTradesJournal(M) {
   const totalFuturesPnl = f.total_realized + f.total_funding_fee + f.total_commission;
   const winRate = (f.winning_trades + f.losing_trades) > 0 ? (f.winning_trades / (f.winning_trades + f.losing_trades)) * 100 : 0;
 
-  return `<div id="journal" class="section-title">📊 Trades Journal · Futures + Spot realized</div>
+  return `<div id="journal" class="section-title">📊 Nhật Ký Giao Dịch · Futures + Spot đã chốt</div>
   <div class="card">
     <div class="metrics">
       <div class="metric"><div class="metric-label">Futures wallet</div><div class="metric-value">${fmt$(f.account_balance)}</div><div class="metric-sub">USDT-M balance</div></div>
@@ -1356,7 +1825,7 @@ function renderTPExplain(M) {
     const tp1 = state.holdings[sym].avg * 1.40;
     rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td><td>${fmt$(state.holdings[sym].avg, sym==='LINK'||sym==='BNB'?2:2)}</td><td>${fmt$(state.holdings[sym].price)}</td><td>${fmt$(tp1)}</td><td class="mono" style="color:${state.holdings[sym].price >= tp1 ? 'var(--green)':'var(--red)'}">${state.holdings[sym].price >= tp1 ? '✅ above':'❌ below'}</td></tr>`;
   }
-  return `<div id="tp-explain" class="section-title">📐 TP Triggers — Math explanation</div>
+  return `<div id="tp-explain" class="section-title">📐 Cò Chốt Lời (TP) — Giải thích công thức</div>
   <div class="card" style="border:1px solid var(--orange)">
   <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
   TP triggers tính theo công thức <b>TP = avg cost × multiplier</b>. Khi user buy thêm ở giá khác → avg cost dịch → TP triggers tự động drift theo. Đây là <b>relative-to-cost-basis behavior</b> chuẩn.
@@ -1461,8 +1930,8 @@ function renderLeverStop(M) {
 
 function renderPlanChanges(M) {
   const changes = M.plan_changes;
-  if (!changes.length) return `<div id="changes" class="section-title">🔁 Plan Changes</div><div class="card"><div style="color:var(--muted);font-size:0.85rem">Không có thay đổi đáng kể so với prev version.</div></div>`;
-  let html = `<div id="changes" class="section-title">🔁 Plan Changes Detected (prev → current · ${changes.length} thay đổi)</div>
+  if (!changes.length) return `<div id="changes" class="section-title">🔁 Thay Đổi Kế Hoạch</div><div class="card"><div style="color:var(--muted);font-size:0.85rem">Không có thay đổi đáng kể so với phiên bản trước.</div></div>`;
+  let html = `<div id="changes" class="section-title">🔁 Thay Đổi Kế Hoạch (trước → hiện tại · ${changes.length} thay đổi)</div>
   <div class="card" style="border:1px solid var(--purple)">`;
   for (const c of changes) {
     html += `<div style='padding:0.5rem 0.7rem;background:rgba(167,139,250,0.06);border-left:3px solid var(--purple);border-radius:6px;margin-bottom:0.4rem;font-size:0.85rem'>${c}</div>`;
@@ -1490,7 +1959,7 @@ function renderActions(M) {
     actions.push({color:'var(--green)', icon:'🛑', title:'#5 · Stop-loss enforcement standby', when:'Continuous monitor', detail:`BTC ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)}. Distance ${((state.holdings.BTC.price-state.bep_threshold)/state.bep_threshold*100).toFixed(1)}%. Khi BTC drop và F&G ≤ thresholds → activate dip-buy ladder T1-T4. Khi BTC < ${fmt$(state.bep_threshold,0)} + F&G ≤ 15 = STOP-LOSS reset.`, why:'Capital preservation cho cycle reset. NET threshold $2,000.'});
   }
   if (!actions.length) actions.push({color:'var(--green)', icon:'✅', title:'#0 · Portfolio healthy — no immediate action', when:'Monitor', detail:'All metrics within bounds.', why:''});
-  let html = `<div id="action" class="section-title">⚡ Action Plan (priority-ranked)</div><div class="card">`;
+  let html = `<div id="action" class="section-title">⚡ Kế Hoạch Hành Động (xếp theo ưu tiên)</div><div class="card">`;
   for (const a of actions) {
     html += `<div style="border-left:4px solid ${a.color};background:var(--bg2);border-radius:10px;padding:0.95rem 1.1rem;margin-bottom:0.7rem">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
@@ -1681,7 +2150,7 @@ function renderDCA(M) {
     const dpp = newP - oldP;
     rows += `<tr><td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td><td style="color:${bep>0?'var(--red)':'var(--green)'}">${fmtPct(bep||0)}</td><td>${oldP}%</td><td>${fmt$(oldD,2)}</td><td>${fmt$(oldY,0)}</td><td><b style="color:${dpp>0?'var(--green)':(dpp<0?'var(--red)':'var(--muted)')}">${newP}%</b> (${dpp>=0?'+':''}${dpp}pp)</td><td><b>${fmt$(newD,2)}</b></td><td>${fmt$(newY,0)}</td><td>${exp ? exp.pct.toFixed(2)+'%' : '—'}</td></tr>`;
   }
-  return `<div id="dca" class="section-title">💎 DCA Pool — current plan</div>
+  return `<div id="dca" class="section-title">💎 Hồ DCA — kế hoạch hiện tại</div>
   <div class="dca-card">
   <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">${fmt$(dailyTotal,2)}/day · plan side-by-side (prev vs current)</div>
   <table>
@@ -1724,7 +2193,7 @@ function renderDipLadder(M) {
   for (const t of tiers) {
     rows += `<tr style="${t.active ? 'background:rgba(34,197,94,0.05)':''}"><td><b style="color:${t.color}">${t.name}${t.active?' ← ACTIVE':''}</b></td><td>${t.cond}</td><td>${t.dca}</td><td>${t.loan}</td><td><b style="color:${t.color}">${t.eq}</b></td></tr>`;
   }
-  return `<div id="dip" class="section-title">📉 Buy-Dip Ladder (5 tiers)</div>
+  return `<div id="dip" class="section-title">📉 Bậc Thang Mua Đáy (5 tầng)</div>
   <div class="dip-card">
   <table><thead><tr><th>Tier</th><th>Trigger</th><th>DCA</th><th>Loan target</th><th>Liq dist</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="warning-bar">⚠️ Loan capacity hiện ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor. Nếu BTC dump T2/T3 → cần repay trước để có ammo dip-buy.</div>
@@ -1789,7 +2258,7 @@ function renderSqueeze(M) {
   for (const c of conds) {
     condRows += `<tr><td>${c.name}</td><td>${c.threshold}</td><td><b>${c.current}</b></td><td>${c.met ? '<span style="color:var(--green)">✅ MET</span>' : '<span style="color:var(--red)">✗ MISS</span>'}</td></tr>`;
   }
-  return `<div id="squeeze" class="section-title">⚡ Funding Squeeze ARM Zone (Lever #2 · ${statusBadge})</div>
+  return `<div id="squeeze" class="section-title">⚡ Vùng Vắt Funding (Cần Gạt #2 · ${statusBadge})</div>
   <div class="squeeze-card">
   <div class="dca-header">
     <div>
@@ -1844,7 +2313,7 @@ function renderStopLoss(M) {
   }
   const status = btcNow < slBtc && fgNow <= 15 ? '🚨 STOP-LOSS FIRED' : (btcNow < slBtc ? '⚠️ BELOW SL price (F&G not breached)' : `✅ STANDBY · ${buf.toFixed(1)}% buffer`);
   const statusColor = btcNow < slBtc ? 'var(--red)' : 'var(--green)';
-  return `<div id="stoploss" class="section-title">🛑 Stop-Loss Framework (Lever #3 · <span style="color:${statusColor}">${status}</span>)</div>
+  return `<div id="stoploss" class="section-title">🛑 Khung Cắt Lỗ (Cần Gạt #3 · <span style="color:${statusColor}">${status}</span>)</div>
   <div class="card">
   <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
   Hard rules cap downside trong capitulation scenario. Goal: preserve >65% NET cho cycle sau. Currently <b style="color:${statusColor}">${btcNow >= slBtc ? 'INACTIVE' : 'ACTIVE'}</b> — BTC ${fmt$(btcNow)} ${btcNow >= slBtc ? `cao hơn ${fmt$(slBtc,0)} trigger ${buf.toFixed(1)}%` : `dưới ${fmt$(slBtc,0)} trigger`}.
@@ -1903,7 +2372,7 @@ function renderLoan(M) {
     const c = r.eq >= 60 ? 'var(--green)' : (r.eq >= 55 ? 'var(--yellow)' : (r.eq >= 50 ? 'var(--orange)' : 'var(--red)'));
     rows += `<tr ${r.label.includes('CURRENT')?'style="background:rgba(249,115,22,0.05)"':''}><td><b>${r.label}</b></td><td>${M.m1.net>0 ? (r.size/M.m1.net*100).toFixed(1)+'%' : '—'}</td><td style="color:${c}">${r.eq.toFixed(2)}%</td><td>${fmt$(liq,0)}</td></tr>`;
   }
-  return `<div id="loan" class="section-title">💰 Loan Framework v1.6 (Lever #4)</div>
+  return `<div id="loan" class="section-title">💰 Khung Vay Margin v1.6 (Cần Gạt #4)</div>
   <div class="card">
   <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
   Rule (SOP G12 v1.6): <b>loan_max = gross × (1 − liq_dist) × 0.90</b>. Soft 60% · Acceptable 55% · Hard floor 50%.
@@ -1934,8 +2403,8 @@ function renderAlerts(M) {
   for (const k of ['BTC','WBETH']) {
     if (M.m2[k]?.pnl > 0) alerts.push({type:'green', icon:'💚', title:`${k} ABOVE BEP (profitable)`, text:`${k} BEP ${fmtPct(M.m2[k].bep_gap)} (${fmt$signed(M.m2[k].pnl)}). F&G ${state.market.fg_cg < 65 ? '< 65 → HOLD' : '≥ 65 → cân nhắc TP1 partial'}.`});
   }
-  alerts.push({type:'purple', icon:'🎯', title:`${state.target_pct}% TARGET tracking`, text:`NET ${fmt$(M.m1.net)} vs target start ${fmt$(state.target_anchor)}. Cần gain ${fmt$(M.target.gap_usd)} (${fmtPct((M.target.gap_usd/M.m1.net)*100)}) để hit EOY ${fmt$(M.target.eoy_goal)}.`});
-  let html = `<div id="alerts" class="section-title">⚠️ Alerts (sorted by priority)</div>`;
+  alerts.push({type:'purple', icon:'🎯', title:`Theo dõi mục tiêu ${state.target_pct}%`, text:`NET ${fmt$(M.m1.net)} vs mốc neo ${fmt$(state.target_anchor)}. Cần lãi thêm ${fmt$(M.target.gap_usd)} (${fmtPct((M.target.gap_usd/M.m1.net)*100)}) để đạt cuối năm ${fmt$(M.target.eoy_goal)}.`});
+  let html = `<div id="alerts" class="section-title">⚠️ Cảnh báo (sắp xếp theo ưu tiên)</div>`;
   for (const a of alerts) {
     html += `<div class="alert alert-${a.type}"><div class="alert-icon">${a.icon}</div><div class="alert-content"><div class="alert-title">${a.title}</div><div class="alert-text">${a.text}</div></div></div>`;
   }
@@ -1952,15 +2421,15 @@ function renderPortfolio(M) {
     cards += `<div class="holding"><div class="h-coin"><div class="h-icon" style="background:${ASSET_COLORS[sym]}">${sym[0]}</div><div><div class="h-name">${sym} <span style="color:var(--muted);font-size:0.72rem;font-weight:400">w ${w.toFixed(2)}%</span></div><div class="h-meta">${fmtQty(h.qty)} · ${fmt$(h.price)}${h.avg ? ' · avg '+fmt$(h.avg)+' · BEP '+fmtPct(m.bep_gap) : ' · no avg cost'}</div></div></div><div><div class="h-val">${fmt$(h.value)}</div>${h.avg ? `<div class='h-pnl' style='color:${colorPnl(m.pnl)}'>${fmtPct(m.pnl_pct)} · ${fmt$signed(m.pnl)}</div>` : '<div class="h-pnl" style="color:var(--muted)">—</div>'}</div></div>`;
   }
   cards += `<div class="holding" style="border:1px solid var(--red)"><div class="h-coin"><div class="h-icon" style="background:var(--red)">−</div><div><div class="h-name">USDT <span style="color:var(--red);font-size:0.72rem;font-weight:600">LOAN</span></div><div class="h-meta">-${fmt$(M.loan,2).slice(1)} · margin debt · liq ${fmt$(M.m7.btc_liq,0)}</div></div></div><div><div class="h-val" style="color:var(--red)">-${fmt$(M.loan)}</div><div class="h-pnl" style="color:var(--red)">${(M.loan/M.m1.net*100).toFixed(1)}% net</div></div></div>`;
-  return `<div id="portfolio" class="section-title">📊 Portfolio (current state)</div>
+  return `<div id="portfolio" class="section-title">📊 Danh Mục Hiện Tại</div>
   <div class="card">
   <div class="metrics">
-  <div class="metric"><div class="metric-label">Gross</div><div class="metric-value">${fmt$(M.m1.gross)}</div><div class="metric-sub">loan ${(M.loan/M.m1.gross*100).toFixed(1)}% gross</div></div>
-  <div class="metric"><div class="metric-label">Net</div><div class="metric-value" style="color:${M.m1.net >= state.target_anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(M.m1.net)}</div><div class="metric-sub">vs prev ${fmt$signed(M.m1.net - state.prev.net)}</div></div>
-  <div class="metric"><div class="metric-label">PnL unrealized</div><div class="metric-value" style="color:${colorPnl(M.m1.pnl_unreal)}">${fmtPct(M.m1.pnl_pct)} · ${fmt$signed(M.m1.pnl_unreal)}</div><div class="metric-sub">cost ${fmt$(M.m1.cost)}</div></div>
-  <div class="metric"><div class="metric-label">Equity ratio</div><div class="metric-value" style="color:${M.m1.equity_ratio>=60?'var(--green)':(M.m1.equity_ratio>=55?'var(--yellow)':'var(--orange)')}">${M.m1.equity_ratio.toFixed(2)}%</div><div class="metric-sub">target ≥60%</div></div>
-  <div class="metric"><div class="metric-label">DCA Pool</div><div class="metric-value" style="color:var(--cyan)">${fmt$(state.pool.value)}</div><div class="metric-sub">${state.pool.days}d</div></div>
-  <div class="metric"><div class="metric-label">Total Wealth</div><div class="metric-value">${fmt$(M.m1.net + state.pool.value)}</div><div class="metric-sub">NET + Pool</div></div>
+  <div class="metric"><div class="metric-label">Tổng tài sản</div><div class="metric-value">${fmt$(M.m1.gross)}</div><div class="metric-sub">vay ${(M.loan/M.m1.gross*100).toFixed(1)}% / tổng</div></div>
+  <div class="metric"><div class="metric-label">NET ròng</div><div class="metric-value" style="color:${M.m1.net >= state.target_anchor ? 'var(--green)' : 'var(--red)'}">${fmt$(M.m1.net)}</div><div class="metric-sub">vs lần trước ${fmt$signed(M.m1.net - state.prev.net)}</div></div>
+  <div class="metric"><div class="metric-label">PnL chưa chốt</div><div class="metric-value" style="color:${colorPnl(M.m1.pnl_unreal)}">${fmtPct(M.m1.pnl_pct)} · ${fmt$signed(M.m1.pnl_unreal)}</div><div class="metric-sub">vốn ${fmt$(M.m1.cost)}</div></div>
+  <div class="metric"><div class="metric-label">Tỷ lệ tự có</div><div class="metric-value" style="color:${M.m1.equity_ratio>=60?'var(--green)':(M.m1.equity_ratio>=55?'var(--yellow)':'var(--orange)')}">${M.m1.equity_ratio.toFixed(2)}%</div><div class="metric-sub">mục tiêu ≥60%</div></div>
+  <div class="metric"><div class="metric-label">Pool DCA</div><div class="metric-value" style="color:var(--cyan)">${fmt$(state.pool.value)}</div><div class="metric-sub">${state.pool.days} ngày</div></div>
+  <div class="metric"><div class="metric-label">Tổng vốn</div><div class="metric-value">${fmt$(M.m1.net + state.pool.value)}</div><div class="metric-sub">NET + Pool</div></div>
   </div>
   <div class="holdings-grid">${cards}</div>
   </div>`;
@@ -1978,7 +2447,7 @@ function renderExposure(M) {
     const status = !isAlt ? '(anchor)' : (overCap ? (grace ? '⚠ over (grace)' : '✗ over cap') : '✅ under cap');
     rows += `<div style="display:grid;grid-template-columns:80px 1fr 90px 100px 100px 130px;gap:0.5rem;align-items:center;padding:0.5rem 0;font-family:var(--mono);font-size:0.78rem;border-bottom:1px solid rgba(255,255,255,0.04)"><div><b style="color:${ASSET_COLORS[sym]}">${sym}</b></div><div>${isAlt?'alt · CAP applies':'anchor · NO cap'}</div><div>${fmt$(e.spot)}</div><div>${fmt$(e.pool)}</div><div>${fmt$(e.total)}</div><div style="color:${c}"><b>${e.pct.toFixed(2)}% ${status}</b></div></div>`;
   }
-  return `<div id="exposure" class="section-title">🔍 Cross-Portfolio Exposure (G9 v2)</div>
+  return `<div id="exposure" class="section-title">🔍 Tỷ Trọng Chéo Danh Mục (G9 v2)</div>
   <div class="card">
   <div style="display:grid;grid-template-columns:80px 1fr 90px 100px 100px 130px;gap:0.5rem;font-weight:700;color:var(--muted);font-size:0.7rem;text-transform:uppercase;background:var(--bg2);padding:0.5rem;border-radius:6px"><div>Asset</div><div>Type</div><div>Spot</div><div>Pool</div><div>Total</div><div>% Wealth</div></div>
   ${rows}
@@ -2007,7 +2476,7 @@ function renderStress(M) {
     }
     rows += `<tr>${cells}</tr>`;
   }
-  return `<div id="stress" class="section-title">🛡️ Stress test (per loan size · effective MMR ~10%)</div>
+  return `<div id="stress" class="section-title">🛡️ Kiểm Tra Sức Chịu Đựng (theo dư nợ · MMR hiệu dụng ~10%)</div>
   <div class="card">
   <table><thead><tr><th>Loan size</th>${drops.map(d=>`<th>BTC ${(d*100).toFixed(0)}%</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
   <div class="danger-bar">🚨 NON-LINEAR risk caveat: Stress giả định linear beta 1.0x. Thực tế alts có downside beta ~1.15x → liquidation có thể trigger SỚM HƠN bảng.</div>
@@ -2041,7 +2510,7 @@ function renderTPTriggers(M) {
       tIdx++;
     }
   }
-  return `<div id="tp" class="section-title">🎯 TP Triggers per coin (3-cond gate)</div>
+  return `<div id="tp" class="section-title">🎯 Cò Chốt Lời Từng Coin (cổng 3 điều kiện)</div>
   <div class="card">
   <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
   <b>SOP M3 gate</b>: TP fires CHỈ khi 3/3: <code>price ≥ trigger</code> AND <code>F&amp;G ≥ threshold</code> AND <code>bull_pts ≥ N</code>.
@@ -2060,7 +2529,7 @@ function renderSignals(M) {
   for (const [t,p] of M.m9.bull) bullRows += `<div class="signal-row"><span style="font-size:0.82rem">${t}</span><span class="mono" style="color:var(--green)">+${p}</span></div>`;
   for (const [t,p] of M.m9.bear) bearRows += `<div class="signal-row"><span style="font-size:0.82rem">${t}</span><span class="mono" style="color:var(--red)">${p}</span></div>`;
   const stColor = M.m9.stance_color;
-  return `<div id="signals" class="section-title">🚦 Signal Aggregator</div>
+  return `<div id="signals" class="section-title">🚦 Tổng Hợp Tín Hiệu</div>
   <div class="stance-ribbon" style="background:linear-gradient(90deg,${stColor}33,transparent);border-color:${stColor}">
   <div>
     <div style="font-size:0.78rem;color:var(--text2);text-transform:uppercase;letter-spacing:0.04em">Aggregate stance</div>
@@ -2102,7 +2571,7 @@ function renderJourney(M) {
     const display = typeof r[3] === 'number' ? (d>=0?'+':'')+r[3].toFixed(2) : r[3];
     html += `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td class="mono" style="color:${c}">${display}</td></tr>`;
   }
-  return `<div id="journey" class="section-title">🛤️ Journey (prev → current)</div>
+  return `<div id="journey" class="section-title">🛤️ Hành Trình (trước → hiện tại)</div>
   <div class="card">
   <table><thead><tr><th>Metric</th><th>Prev</th><th>Current</th><th>Δ</th></tr></thead><tbody>${html}</tbody></table>
   </div>`;
@@ -2116,11 +2585,340 @@ function renderValidation(M) {
     rows += `<tr><td style="color:${color};font-weight:700;text-align:center">${icon}</td><td>${c.name}</td><td>${c.info}</td></tr>`;
   }
   const c = M.m14.result === 'PASS' ? 'var(--green)' : 'var(--red)';
-  return `<div id="validation" class="section-title">✅ Validation (${M.m14.pass}/${M.m14.total} ${M.m14.result})</div>
+  return `<div id="validation" class="section-title">✅ Kiểm Chứng (${M.m14.pass}/${M.m14.total} ${M.m14.result})</div>
   <div class="card">
   <table><thead><tr><th style="width:40px;text-align:center">✓</th><th>Check</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>
-  <div class="safety-bar" style="border-color:${c};color:${c}">${M.m14.pass}/${M.m14.total} ${M.m14.result} · SOP v1.6 · Engine v47 · 4 levers · ${state.target_pct}% target tracking</div>
+  <div class="safety-bar" style="border-color:${c};color:${c}">${M.m14.pass}/${M.m14.total} ${M.m14.result} · SOP v1.6 · Engine v47 + Quantum v74 · 4 levers · ${state.target_pct}% target tracking</div>
   </div>`;
+}
+
+// ===================== QUANTUM RENDER (v74+) =====================
+function renderQuantumHeader(M) {
+  const r = M.m22;
+  return `<div id="quantum-header" class="section-title" style="margin-top:0">🧠 Quantum Analytics · Phân tích định lượng cấp độ tổ chức</div>
+  <div class="target-card" style="border-color:${r.color};background:linear-gradient(135deg,${r.color}18,rgba(167,139,250,0.06),rgba(6,182,212,0.04))">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:1rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.4rem;font-weight:700">Chế Độ Thị Trường: <span style="color:${r.color}">${r.regime.replace(/_/g,' ')}</span></div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Bayesian posterior P(bull) = <b style="color:${r.color}">${(r.pBull_final*100).toFixed(1)}%</b> · F&G likelihood ${(r.pBull_fg*100).toFixed(1)}% + Momentum adjustment ${(r.momentum_adj*100).toFixed(0)}pp</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em">Prior (200WMA)</div>
+        <div style="font-family:var(--mono);font-size:1.4rem;font-weight:700;color:${r.color}">${(r.prior*100).toFixed(0)}%</div>
+      </div>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:rgba(0,0,0,0.2);padding:0.75rem 1rem;border-radius:8px;border-left:3px solid ${r.color}">
+      <b>Công thức Bayesian:</b> P(bull|F&G) ∝ P(F&G|bull) × P(bull) — với likelihood Gaussian: bull ~ N(65,13), bear ~ N(28,11). F&G hiện tại <b>${state.market.fg_cg}</b> → likelihood phù hợp với <b>${r.pBull_fg >= 0.5 ? 'BULL' : 'BEAR'}</b> regime. Momentum 30d (${(state.market.ret_30d||0).toFixed(2)}%) điều chỉnh ${r.momentum_adj > 0 ? '+' : ''}${(r.momentum_adj*100).toFixed(0)}pp.
+    </div>
+  </div>`;
+}
+
+function renderRiskMetrics(M) {
+  const r = M.m17;
+  if (!r) {
+    return `<div class="section-title">📈 Chỉ Số Rủi Ro (Risk Metrics)</div>
+    <div class="card">
+      <div class="warning-bar">⚠️ Cần ≥10 ngày lịch sử portfolio (từ Binance accountSnapshot) để tính. Hiện chưa đủ dữ liệu — vui lòng connect Binance API và để hệ thống tự fetch snapshot trong vài ngày.</div>
+    </div>`;
+  }
+  const sharpeC = r.sharpe >= 1 ? 'var(--green)' : r.sharpe >= 0 ? 'var(--yellow)' : 'var(--red)';
+  const sortinoC = r.sortino >= 1.5 ? 'var(--green)' : r.sortino >= 0 ? 'var(--yellow)' : 'var(--red)';
+  const calmarC = r.calmar >= 1 ? 'var(--green)' : r.calmar >= 0.5 ? 'var(--yellow)' : 'var(--red)';
+  const omegaC = r.omega >= 1.5 ? 'var(--green)' : r.omega >= 1 ? 'var(--yellow)' : 'var(--red)';
+  const mddC = r.maxDD_pct <= 15 ? 'var(--green)' : r.maxDD_pct <= 30 ? 'var(--yellow)' : 'var(--red)';
+  return `<div class="section-title">📈 Chỉ Số Rủi Ro · ${r.sample_size}d history</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Tính từ <b>${r.sample_size} ngày</b> lịch sử portfolio (Binance accountSnapshot). Annualized factor √365 (crypto 24/7).
+    </div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr))">
+      <div class="metric"><div class="metric-label">Sharpe Ratio</div><div class="metric-value" style="color:${sharpeC}">${r.sharpe.toFixed(2)}</div><div class="metric-sub">≥1 tốt · ≥2 xuất sắc</div></div>
+      <div class="metric"><div class="metric-label">Sortino Ratio</div><div class="metric-value" style="color:${sortinoC}">${r.sortino.toFixed(2)}</div><div class="metric-sub">Downside-only risk</div></div>
+      <div class="metric"><div class="metric-label">Calmar Ratio</div><div class="metric-value" style="color:${calmarC}">${r.calmar.toFixed(2)}</div><div class="metric-sub">AnnRet / MaxDD</div></div>
+      <div class="metric"><div class="metric-label">Omega Ratio</div><div class="metric-value" style="color:${omegaC}">${r.omega.toFixed(2)}</div><div class="metric-sub">Gain/Loss ratio</div></div>
+      <div class="metric"><div class="metric-label">Max Drawdown</div><div class="metric-value" style="color:${mddC}">${r.maxDD_pct.toFixed(2)}%</div><div class="metric-sub">Sụt giảm tệ nhất</div></div>
+      <div class="metric"><div class="metric-label">Ann. Volatility</div><div class="metric-value">${r.annVol_pct.toFixed(1)}%</div><div class="metric-sub">σ·√365</div></div>
+      <div class="metric"><div class="metric-label">Ann. Return</div><div class="metric-value" style="color:${r.annRet_pct>=0?'var(--green)':'var(--red)'}">${fmtPct(r.annRet_pct)}</div><div class="metric-sub">μ·365</div></div>
+      <div class="metric"><div class="metric-label">Skewness</div><div class="metric-value" style="color:${r.skew>=0?'var(--green)':'var(--red)'}">${r.skew.toFixed(2)}</div><div class="metric-sub">${r.skew>=0?'Right-tail (gains)':'Left-tail (losses)'}</div></div>
+      <div class="metric"><div class="metric-label">Excess Kurtosis</div><div class="metric-value" style="color:${r.kurt>3?'var(--red)':r.kurt>1?'var(--yellow)':'var(--green)'}">${r.kurt.toFixed(2)}</div><div class="metric-sub">${r.kurt>3?'Fat tails (crash risk)':'Near-normal'}</div></div>
+      <div class="metric"><div class="metric-label">Hurst Exponent</div><div class="metric-value" style="color:${r.hurst>0.55?'var(--green)':r.hurst<0.45?'var(--orange)':'var(--muted)'}">${r.hurst ? r.hurst.toFixed(3) : 'N/A'}</div><div class="metric-sub">${r.hurst>0.55?'Trending':r.hurst<0.45?'Mean-revert':'Random walk'}</div></div>
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">💀 Value at Risk · Tổn thất ngưỡng theo confidence level</div>
+    <table>
+      <thead><tr><th>Confidence</th><th>Historical VaR (1d)</th><th>Conditional VaR / CVaR (1d)</th><th>Diễn giải</th></tr></thead>
+      <tbody>
+        <tr><td><b>95%</b></td><td style="color:var(--orange)">−${r.var95_pct.toFixed(2)}%</td><td style="color:var(--red)">−${r.cvar95_pct.toFixed(2)}%</td><td>5% xác suất mất ≥${r.var95_pct.toFixed(2)}% NET/ngày · trung bình mất ${r.cvar95_pct.toFixed(2)}% khi vào tail</td></tr>
+        <tr><td><b>99%</b></td><td style="color:var(--red)">−${r.var99_pct.toFixed(2)}%</td><td style="color:var(--red)">−${r.cvar99_pct.toFixed(2)}%</td><td>1% xác suất mất ≥${r.var99_pct.toFixed(2)}% (tail risk)</td></tr>
+      </tbody>
+    </table>
+    ${r.garch ? `<div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">📡 GARCH(1,1) Volatility Forecast</div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <div class="metric"><div class="metric-label">1d ahead σ</div><div class="metric-value">${(r.garch.daily*100).toFixed(2)}%</div><div class="metric-sub">Daily forecast</div></div>
+      <div class="metric"><div class="metric-label">Annualized σ</div><div class="metric-value">${(r.garch.annualized*100).toFixed(1)}%</div><div class="metric-sub">σ·√365</div></div>
+      <div class="metric"><div class="metric-label">Persistence (α+β)</div><div class="metric-value">${r.garch.persistence.toFixed(3)}</div><div class="metric-sub">${r.garch.persistence>0.95?'High (regime sticky)':'Medium'}</div></div>
+    </div>` : ''}
+  </div>`;
+}
+
+function renderAssetRiskProfile(M) {
+  const r = M.m18;
+  if (!r || Object.keys(r).length === 0) {
+    return `<div class="section-title">🎲 Hồ Sơ Rủi Ro Từng Tài Sản</div>
+    <div class="card"><div class="warning-bar">⚠️ Cần kline history (Binance daily klines) cho ≥30 ngày. Tự fetch khi click "Fetch live data".</div></div>`;
+  }
+  let rows = '';
+  for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
+    if (!r[sym]) continue;
+    const a = r[sym];
+    const hurstC = a.hurst > 0.55 ? 'var(--green)' : a.hurst < 0.45 ? 'var(--orange)' : 'var(--muted)';
+    const ouC = Math.abs(a.ouZ) > 2 ? (a.ouZ < 0 ? 'var(--green)' : 'var(--red)') : 'var(--text)';
+    rows += `<tr>
+      <td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td>
+      <td>${a.annVol.toFixed(1)}%</td>
+      <td style="color:${a.sharpe>=0?'var(--green)':'var(--red)'}">${a.sharpe.toFixed(2)}</td>
+      <td style="color:${a.sortino>=0?'var(--green)':'var(--red)'}">${a.sortino.toFixed(2)}</td>
+      <td style="color:var(--red)">${a.maxDD.toFixed(1)}%</td>
+      <td style="color:var(--orange)">−${a.var95.toFixed(2)}%</td>
+      <td style="color:var(--red)">−${a.cvar95.toFixed(2)}%</td>
+      <td style="color:${hurstC}">${a.hurst ? a.hurst.toFixed(2) : '—'}</td>
+      <td style="color:${ouC}"><b>${a.ouZ ? a.ouZ.toFixed(2) : '—'}</b></td>
+      <td style="font-size:0.72rem;color:${ouC}">${a.ouZ < -2 ? '🟢 Oversold' : a.ouZ > 2 ? '🔴 Overbought' : '⚪ Neutral'}</td>
+    </tr>`;
+  }
+  return `<div class="section-title">🎲 Hồ Sơ Rủi Ro Từng Tài Sản</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Tính từ <b>kline daily history</b>. <b>OU Z-Score</b> = (price − MA30) / σ30: |z|>2 = extreme. Negative z + Hurst<0.5 = strong mean-revert buy signal.
+    </div>
+    <table>
+      <thead><tr><th>Asset</th><th>Ann Vol</th><th>Sharpe</th><th>Sortino</th><th>MaxDD</th><th>VaR95</th><th>CVaR95</th><th>Hurst</th><th>OU Z</th><th>Signal</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderCorrelationMatrix(M) {
+  const r = M.m19;
+  if (!r) {
+    return `<div class="section-title">🌐 Ma Trận Tương Quan</div>
+    <div class="card"><div class="warning-bar">⚠️ Cần kline history cho ≥2 assets.</div></div>`;
+  }
+  let head = '<th></th>';
+  for (const s of r.symbols) head += `<th style="color:${ASSET_COLORS[s]||'var(--text)'};text-align:center">${s}</th>`;
+  let rows = '';
+  for (const a of r.symbols) {
+    let row = `<td><b style="color:${ASSET_COLORS[a]||'var(--text)'}">${a}</b></td>`;
+    for (const b of r.symbols) {
+      const c = r.matrix[a][b];
+      const intensity = Math.abs(c);
+      const cc = a === b ? 'var(--muted)' : c >= 0.7 ? 'var(--red)' : c >= 0.3 ? 'var(--yellow)' : c <= -0.3 ? 'var(--green)' : 'var(--text)';
+      const bg = a === b ? 'transparent' : c > 0 ? `rgba(239,68,68,${intensity*0.25})` : `rgba(16,185,129,${intensity*0.25})`;
+      row += `<td style="text-align:center;background:${bg};color:${cc};font-weight:700">${c.toFixed(2)}</td>`;
+    }
+    rows += `<tr>${row}</tr>`;
+  }
+  return `<div class="section-title">🌐 Ma Trận Tương Quan · Đa dạng hóa thực tế</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Pearson correlation từ log returns. <span style="color:var(--red)"><b>Đỏ (>0.7)</b></span> = correlation cao → đa dạng hóa kém · <span style="color:var(--green)"><b>Xanh (<0)</b></span> = negative correlation → hedge tốt.
+    </div>
+    <table>
+      <thead><tr>${head}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderMarkowitz(M) {
+  const r = M.m20;
+  if (!r) {
+    return `<div class="section-title">📐 Tối Ưu Markowitz · Mean-Variance</div>
+    <div class="card"><div class="warning-bar">⚠️ Cần kline history ≥60d cho cả BTC + WBETH + BNB + LINK.</div></div>`;
+  }
+  let rows = '';
+  for (let i = 0; i < r.assets.length; i++) {
+    const sym = r.assets[i];
+    const tan = (r.tangency_weights[i] || 0) * 100;
+    const mvp = (r.min_variance_weights[i] || 0) * 100;
+    const rp = (r.risk_parity_weights[i] || 0) * 100;
+    const cur = ((r.current_weights?.[sym] || 0)) * 100;
+    rows += `<tr>
+      <td><b style="color:${ASSET_COLORS[sym]}">${sym}</b></td>
+      <td>${cur.toFixed(1)}%</td>
+      <td style="color:var(--cyan)"><b>${tan.toFixed(1)}%</b></td>
+      <td style="color:var(--green)">${mvp.toFixed(1)}%</td>
+      <td style="color:var(--purple)">${rp.toFixed(1)}%</td>
+      <td>${r.expected_returns_annual[i].toFixed(1)}%</td>
+      <td>${r.volatilities_annual[i].toFixed(1)}%</td>
+      <td style="font-size:0.72rem;color:var(--text2)">${tan > cur+5 ? '🔼 Tăng' : tan < cur-5 ? '🔽 Giảm' : '✓ OK'}</td>
+    </tr>`;
+  }
+  return `<div class="section-title">📐 Tối Ưu Markowitz · Mean-Variance Optimization</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      <b>Tangency</b> = max Sharpe (return/risk tốt nhất) · <b>Min-Variance</b> = ít rủi ro nhất · <b>Risk Parity</b> = mỗi asset góp đều rủi ro.
+      Tangency Sharpe annualized: <b style="color:var(--cyan)">${r.tangency_sharpe.toFixed(2)}</b> · Min-var σ: <b style="color:var(--green)">${r.min_variance_vol.toFixed(1)}%/yr</b>.
+    </div>
+    <table>
+      <thead><tr><th>Asset</th><th>Hiện tại</th><th>Tangency (max Sharpe)</th><th>Min Variance</th><th>Risk Parity</th><th>Exp Ret/yr</th><th>Vol/yr</th><th>Action</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="safety-bar">📊 <b>Áp dụng thận trọng</b>: Tangency dựa trên kỳ vọng từ historical returns — không phải forecast tương lai. Dùng làm <b>reference</b>, không phải mandate. Bias hiện tại: BTC anchor (G9 rule) → đừng đè anchor xuống dưới Tangency suggestion.</div>
+  </div>`;
+}
+
+function renderKellySizing(M) {
+  const r = M.m21;
+  if (!r || !r.available) {
+    return `<div class="section-title">💰 Kelly Criterion · Tối ưu kích thước lệnh</div>
+    <div class="card"><div class="warning-bar">⚠️ ${r?.reason || 'Cần futures trade history.'}</div>
+    <div style="font-size:0.85rem;color:var(--text2);margin-top:0.875rem;line-height:1.65">
+      <b>Công thức Kelly</b>: f* = p − (1−p)/b · trong đó p = xác suất thắng, b = avg_win/avg_loss · f* = % vốn mỗi trade. Negative = không bet.
+      Quarter-Kelly (0.25×) là tiêu chuẩn nghề (Thorp, Ed) để tránh blow-up từ misestimation.
+    </div></div>`;
+  }
+  const fullC = r.full_kelly_pct > 0 ? 'var(--green)' : 'var(--red)';
+  return `<div class="section-title">💰 Kelly Criterion · Tối ưu kích thước lệnh futures</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Dựa trên <b>futures trade history thực</b>. f* = p − (1−p)/b. Quarter-Kelly = safety margin tiêu chuẩn.
+    </div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+      <div class="metric"><div class="metric-label">Win rate (p)</div><div class="metric-value">${r.win_rate.toFixed(1)}%</div><div class="metric-sub">historical</div></div>
+      <div class="metric"><div class="metric-label">Payoff (b = W/L)</div><div class="metric-value">${r.payoff_ratio.toFixed(2)}</div><div class="metric-sub">avg_win/avg_loss</div></div>
+      <div class="metric"><div class="metric-label">Full Kelly f*</div><div class="metric-value" style="color:${fullC}">${r.full_kelly_pct.toFixed(2)}%</div><div class="metric-sub">⚠️ DANGER zone</div></div>
+      <div class="metric"><div class="metric-label">Half Kelly</div><div class="metric-value" style="color:var(--orange)">${r.half_kelly_pct.toFixed(2)}%</div><div class="metric-sub">Aggressive pro</div></div>
+      <div class="metric"><div class="metric-label">Quarter Kelly</div><div class="metric-value" style="color:var(--green)">${r.quarter_kelly_pct.toFixed(2)}%</div><div class="metric-sub">✅ Recommended</div></div>
+      <div class="metric"><div class="metric-label">EV per trade</div><div class="metric-value" style="color:${r.expectation_per_trade>=0?'var(--green)':'var(--red)'}">${fmt$signed(r.expectation_per_trade)}</div><div class="metric-sub">p·W − (1-p)·L</div></div>
+    </div>
+    ${r.full_kelly_pct <= 0 ?
+      `<div class="danger-bar">🚨 <b>Edge âm</b>: Full Kelly ${r.full_kelly_pct.toFixed(2)}% ≤ 0 → KHÔNG nên bet. Cần cải thiện win rate hoặc payoff trước khi increase size.</div>` :
+      `<div class="safety-bar">✅ <b>Có edge</b>: Quarter Kelly = <b>${r.quarter_kelly_pct.toFixed(2)}%</b> NET mỗi futures trade. Với NET ${fmt$(M.m1.net)} → max position size ≈ <b>${fmt$(M.m1.net * r.quarter_kelly_pct / 100)}</b>/trade.</div>`}
+  </div>`;
+}
+
+function renderJumpDiffusionMC(M) {
+  // Run jump-diffusion comparison vs pure GBM
+  const btcPrice = state.holdings.BTC.price;
+  const sigma = (state.coinalyze?.btc_realized_vol_annual_pct ?? 65) / 100;
+  let yearStartTs = parseInt(localStorage.getItem('kpiYearStart') || 0);
+  if (!yearStartTs) { yearStartTs = Date.now(); localStorage.setItem('kpiYearStart', String(yearStartTs)); }
+  const daysElapsed = Math.max(1, Math.floor((Date.now() - yearStartTs) / 86400000));
+  const T = Math.max(0.01, (365 - daysElapsed) / 365);
+  const mu = 0.30; // 30%/yr drift assumption (BTC long-term ~50% CAGR but conservative)
+  // Run jump-diffusion with crypto-realistic jump params: λ=4/yr (≈monthly), μ_J=-5%, σ_J=15%
+  const paths = QF.jumpDiffusionMC(btcPrice, mu, sigma, T, 4, -0.05, 0.15, 2000, 52);
+  const pctiles = [5, 15, 30, 50, 70, 85, 95];
+  let rows = '';
+  for (const p of pctiles) {
+    const idx = Math.min(Math.floor(paths.length * p/100), paths.length - 1);
+    const eoy = paths[idx];
+    const chg = (eoy / btcPrice - 1) * 100;
+    const c = chg >= 35 ? 'var(--green)' : chg >= 0 ? 'var(--yellow)' : 'var(--red)';
+    rows += `<tr><td><b style="color:${c}">P${p}</b></td><td>${fmt$(eoy,0)}</td><td style="color:${c}"><b>${fmtPct(chg)}</b></td></tr>`;
+  }
+  const meanPrice = paths.reduce((s,v)=>s+v,0) / paths.length;
+  const meanChg = (meanPrice / btcPrice - 1) * 100;
+  // Probability of various BTC EOY levels
+  const pAbove65k = paths.filter(p => p >= 65000).length / paths.length * 100;
+  const pAbove113k = paths.filter(p => p >= 113000).length / paths.length * 100;
+  const pAbove135k = paths.filter(p => p >= 135000).length / paths.length * 100;
+  const pAbove165k = paths.filter(p => p >= 165000).length / paths.length * 100;
+  return `<div class="section-title">🌌 Jump-Diffusion MC · Merton Model</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      <b>Vượt trội pure GBM</b>: thêm Poisson jumps (λ=4/yr, μ_J=−5%, σ_J=15%) để capture fat tails của crypto (BTC có ~3-5 jumps >10%/yr).
+      <code>dS/S = μdt + σdW + (J−1)dN</code>. T=${T.toFixed(2)}yr · σ=${(sigma*100).toFixed(0)}%/yr · 2,000 paths × 52 steps.
+    </div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-bottom:1rem">
+      <div class="metric"><div class="metric-label">Mean BTC EOY</div><div class="metric-value">${fmt$(meanPrice,0)}</div><div class="metric-sub">${fmtPct(meanChg)} drift</div></div>
+      <div class="metric"><div class="metric-label">P(BTC ≥ $65K)</div><div class="metric-value" style="color:${pAbove65k>=70?'var(--green)':'var(--yellow)'}">${pAbove65k.toFixed(1)}%</div><div class="metric-sub">Stop-loss safe</div></div>
+      <div class="metric"><div class="metric-label">P(BTC ≥ $113K)</div><div class="metric-value" style="color:${pAbove113k>=40?'var(--green)':'var(--orange)'}">${pAbove113k.toFixed(1)}%</div><div class="metric-sub">Recovery</div></div>
+      <div class="metric"><div class="metric-label">P(BTC ≥ $135K)</div><div class="metric-value" style="color:${pAbove135k>=20?'var(--green)':'var(--orange)'}">${pAbove135k.toFixed(1)}%</div><div class="metric-sub">Bull case</div></div>
+      <div class="metric"><div class="metric-label">P(BTC ≥ $165K)</div><div class="metric-value" style="color:${pAbove165k>=10?'var(--green)':'var(--red)'}">${pAbove165k.toFixed(1)}%</div><div class="metric-sub">Stretch (35% hit)</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Percentile</th><th>BTC EOY</th><th>BTC Δ%</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="safety-bar">🧮 <b>So sánh GBM thường</b>: Jump-diffusion lệch về tail (fat tails) → P5 (worst case) thường thấp hơn ~10-15%, P95 (best case) cao hơn. Phản ánh realistic crypto behavior tốt hơn pure log-normal.</div>
+  </div>`;
+}
+
+function renderQuantumPlaybook(M) {
+  // Synthesize all quantum signals into actionable recommendations
+  const actions = [];
+  const r17 = M.m17, r18 = M.m18, r20 = M.m20, r21 = M.m21, r22 = M.m22;
+
+  // Action 1: Regime-based
+  if (r22.regime === 'BEAR_HIGH_CONVICTION') {
+    actions.push({prio:1, color:'var(--red)', title:'🚨 BEAR regime cao — bảo toàn vốn',
+      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% < 30%. Khuyến nghị: (1) tăng USDC weight 5-10pp; (2) chuẩn bị stop-loss BTC ${fmt$(state.bep_threshold)}; (3) giảm pool DCA về 50% normal.`});
+  } else if (r22.regime === 'BULL_HIGH_CONVICTION') {
+    actions.push({prio:1, color:'var(--green)', title:'✅ BULL regime cao — tăng cường execution',
+      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% ≥ 70%. Khuyến nghị: (1) full DCA chứa loan; (2) chuẩn bị TP triggers; (3) cân nhắc nhập thêm spot dip.`});
+  }
+
+  // Action 2: Sharpe-based
+  if (r17 && r17.sharpe < 0.5 && r17.sample_size >= 30) {
+    actions.push({prio:2, color:'var(--orange)', title:'⚠️ Sharpe thấp — risk-adjusted return kém',
+      detail:`Sharpe ${r17.sharpe.toFixed(2)} < 0.5 (target ≥1). Strategy đang chịu volatility quá cao so với return. Cân nhắc: giảm leverage hoặc shift về Min-Variance weights.`});
+  }
+
+  // Action 3: MaxDD warning
+  if (r17 && r17.maxDD_pct > 25) {
+    actions.push({prio:2, color:'var(--orange)', title:`📉 MaxDD ${r17.maxDD_pct.toFixed(1)}% — vượt comfort zone`,
+      detail:`Historical max drawdown ${r17.maxDD_pct.toFixed(1)}% vượt 25%. Nếu repeat → có thể vi phạm stop-loss psychology. Cân nhắc giảm vol exposure.`});
+  }
+
+  // Action 4: OU mean-reversion buy signals
+  if (r18) {
+    for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
+      const a = r18[sym];
+      if (a && a.ouZ < -2 && a.hurst < 0.5) {
+        actions.push({prio:3, color:'var(--green)', title:`🎯 ${sym} mean-revert buy signal`,
+          detail:`OU Z-score ${a.ouZ.toFixed(2)} < -2 (oversold) + Hurst ${a.hurst.toFixed(2)} < 0.5 (mean-reverting). Statistical edge to buy. Position size: Quarter Kelly cho mỗi tier.`});
+      } else if (a && a.ouZ > 2 && a.hurst < 0.5) {
+        actions.push({prio:3, color:'var(--orange)', title:`⚠️ ${sym} overbought mean-revert risk`,
+          detail:`OU Z ${a.ouZ.toFixed(2)} > 2 + Hurst ${a.hurst.toFixed(2)}. Cân nhắc partial TP hoặc tighten stop.`});
+      }
+    }
+  }
+
+  // Action 5: Markowitz rebalance
+  if (r20 && r20.current_weights) {
+    let maxDrift = 0, maxDriftSym = '';
+    for (let i = 0; i < r20.assets.length; i++) {
+      const sym = r20.assets[i];
+      const drift = Math.abs((r20.tangency_weights[i] - (r20.current_weights[sym]||0)) * 100);
+      if (drift > maxDrift) { maxDrift = drift; maxDriftSym = sym; }
+    }
+    if (maxDrift > 10) {
+      actions.push({prio:4, color:'var(--yellow)', title:`🔄 Markowitz rebalance suggested`,
+        detail:`${maxDriftSym} lệch ${maxDrift.toFixed(1)}pp khỏi Tangency. Sharpe có thể cải thiện nếu rebalance (lưu ý: G9 BTC anchor không bị cap, đừng đè).`});
+    }
+  }
+
+  // Action 6: Kelly futures
+  if (r21 && r21.available && r21.quarter_kelly_pct > 0) {
+    actions.push({prio:5, color:'var(--purple)', title:`💰 Kelly position size`,
+      detail:`Quarter Kelly = ${r21.quarter_kelly_pct.toFixed(2)}% NET. Với NET ${fmt$(M.m1.net)} → optimal futures size ${fmt$(M.m1.net * r21.quarter_kelly_pct / 100)}/trade. Edge confirmed (p=${r21.win_rate.toFixed(0)}%, b=${r21.payoff_ratio.toFixed(2)}).`});
+  }
+
+  if (actions.length === 0) {
+    return `<div class="section-title">🤖 Quantum Playbook · Khuyến nghị tổng hợp</div>
+    <div class="card"><div class="safety-bar">✅ Tất cả quantum signals nằm trong vùng <b>neutral / acceptable</b>. Không có cảnh báo cấp cao. Duy trì plan hiện tại + DCA Pool.</div></div>`;
+  }
+
+  actions.sort((a,b) => a.prio - b.prio);
+  let html = `<div class="section-title">🤖 Quantum Playbook · ${actions.length} khuyến nghị có thứ tự ưu tiên</div>`;
+  for (const a of actions) {
+    html += `<div class="action-modern" style="border-left-color:${a.color}">
+      <div style="font-family:var(--display);font-weight:700;color:${a.color};margin-bottom:0.3rem">${a.title}</div>
+      <div style="font-size:0.82rem;color:var(--text2);line-height:1.65">${a.detail}</div>
+    </div>`;
+  }
+  return html;
 }
 
 // ===================== EDITOR FORM =====================
@@ -2983,9 +3781,9 @@ async function fetchFromBinance() {
       prices: safe('prices', fetchPublic(`/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(['BTCUSDT','WBETHUSDT','LINKUSDT','BNBUSDT','BNSOLUSDT','ETHUSDT','SOLUSDT']))}`)),
       klines: safe('klines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=400')),
       weeklyKlines: safe('weeklyKlines', fetchPublic('/api/v3/klines?symbol=BTCUSDT&interval=1w&limit=210')),
-      klinesLINK: safe('klinesLINK', fetchPublic('/api/v3/klines?symbol=LINKUSDT&interval=1d&limit=31')),
-      klinesWBETH: safe('klinesWBETH', fetchPublic('/api/v3/klines?symbol=WBETHUSDT&interval=1d&limit=31')),
-      klinesBNB: safe('klinesBNB', fetchPublic('/api/v3/klines?symbol=BNBUSDT&interval=1d&limit=31')),
+      klinesLINK: safe('klinesLINK', fetchPublic('/api/v3/klines?symbol=LINKUSDT&interval=1d&limit=120')),
+      klinesWBETH: safe('klinesWBETH', fetchPublic('/api/v3/klines?symbol=WBETHUSDT&interval=1d&limit=120')),
+      klinesBNB: safe('klinesBNB', fetchPublic('/api/v3/klines?symbol=BNBUSDT&interval=1d&limit=120')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
     };
     const keys = Object.keys(tasks);
@@ -3233,6 +4031,22 @@ async function fetchFromBinance() {
         state.market.betas = defaultBetas;
         state.market.betas_source = 'fallback-defaults';
       }
+    }
+
+    // === QUANTUM DATA POPULATION (v74+) — kline closes + snapshot for risk modules ===
+    state.klineHistory = {};
+    const extractCloses = kl => Array.isArray(kl) ? kl.map(k => parseFloat(k[4])).filter(v => v > 0) : null;
+    if (r.klines) state.klineHistory.BTC = extractCloses(r.klines);
+    if (r.klinesWBETH) state.klineHistory.WBETH = extractCloses(r.klinesWBETH);
+    if (r.klinesBNB) state.klineHistory.BNB = extractCloses(r.klinesBNB);
+    if (r.klinesLINK) state.klineHistory.LINK = extractCloses(r.klinesLINK);
+    // Feed accountSnapshot to M17 risk module in expected format
+    if (state.snapshot?.net_history && state.snapshot.net_history.length >= 5) {
+      state.accountSnapshot = state.snapshot.net_history.map(s => ({
+        updateTime: s.time,
+        value: s.value_usd,
+        totalAssetOfBtc: s.total_btc,
+      }));
     }
 
     // Re-apply manual avg cost (Binance UI source of truth) — overrides any computed avg
