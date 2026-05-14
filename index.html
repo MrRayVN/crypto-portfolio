@@ -1363,6 +1363,34 @@ function m23_unified_decision(M, s) {
     }
   }
 
+  // ---- P8.5: USDC IDLE — kiếm yield miễn phí ----
+  const usdcQty = s.holdings.USDC?.qty || 0;
+  const usdcOnEarn = state.income?.usdc_on_earn || 0; // future: detect via earnAccount endpoint
+  const usdcIdle = usdcQty - usdcOnEarn;
+  if (usdcIdle > 200) {
+    const yieldApr = 5.5; // Binance Flexible USDC typical ~5-8%
+    const yieldUsd = usdcIdle * yieldApr / 100;
+    return {
+      priority: 8, severity: 'LOW', icon: '💵', color: '#06b6d4',
+      title: `KÍCH HOẠT USDC YIELD — ${fmt$(usdcIdle)} đang nhàn rỗi`,
+      coin: 'USDC', amount: usdcIdle, deadline: 'HÔM NAY',
+      action_steps: [
+        '1. Binance app → Earn → Simple Earn → Flexible → USDC',
+        `2. Subscribe toàn bộ ${fmt$(usdcIdle)} USDC (rút bất cứ lúc nào, không lock)`,
+        `3. APR hiện tại ~${yieldApr}% → kiếm thêm ~${fmt$(yieldUsd)}/năm (free money)`,
+        `4. Đóng góp ${(yieldUsd/state.target_anchor*100).toFixed(2)}pp vào mục tiêu ${state.target_pct}%`,
+      ],
+      rationale: [
+        `USDC qty ${usdcQty} ($${usdcIdle}) đang ở 0% APR (idle trong spot wallet)`,
+        `Binance Flexible USDC = ${yieldApr}% APR · withdraw bất cứ lúc nào`,
+        `Risk: rất thấp (USDC stablecoin · Binance custody)`,
+        `Contribution: ${fmt$(yieldUsd)}/năm = ${(yieldUsd/state.target_anchor*100).toFixed(2)}pp / ${state.target_pct}% target`,
+      ],
+      blocks: [],
+      sources_fired: ['USDC idle detection', 'Free yield optimization'],
+    };
+  }
+
   // ---- P9: DEFAULT — maintain current plan ----
   return {
     priority: 9, severity: 'INFO', icon: '✅', color: '#10b981',
@@ -1414,8 +1442,156 @@ function buildMaster(s) {
   M.m22 = m22_regime(s.market);
   // === M23 UNIFIED DECISION — must run AFTER all other modules ===
   M.m23 = m23_unified_decision(M, s);
+  // === M24/M25/M26 advanced modules ===
+  M.m24 = m24_pnl_attribution(M, s);
+  M.m25 = m25_correlation_regime(M.m19);
+  // Log M23 decision to feedback loop
+  m26_log_decision(M.m23, {net: M.m1.net, btc: h.BTC.price, fg: s.market.fg_cg});
+  M.m26_log = m26_get_log();
+  // === H6: Adjust Kelly for current realized vol ===
+  if (M.m21 && state.coinalyze?.btc_realized_vol_annual_pct) {
+    const adjFactor = adjustKellyForVol(1, state.coinalyze.btc_realized_vol_annual_pct);
+    M.m21.vol_adjustment = adjFactor;
+    M.m21.vol_baseline_pct = 65;
+    M.m21.vol_current_pct = state.coinalyze.btc_realized_vol_annual_pct;
+    M.m21.adjusted_kelly_pct = M.m21.adjusted_kelly_pct * adjFactor;
+    M.m21.quarter_kelly_pct = M.m21.quarter_kelly_pct * adjFactor;
+    M.m21.half_kelly_pct = M.m21.half_kelly_pct * adjFactor;
+  }
   M.m14 = m14_validate(M);
   return M;
+}
+
+// ===================== M24: PnL ATTRIBUTION (C2) =====================
+// Phân rã total return thành các nguồn: spot α, DCA timing, loan leverage, futures, yield
+function m24_pnl_attribution(M, s) {
+  const anchor = s.target_anchor;
+  if (!anchor || anchor <= 0) return null;
+  const unrealized_spot = M.m1.pnl_unreal;
+  const futuresRealized = s.futures?.total_realized || 0;
+  const futuresFunding = s.futures?.total_funding_fee || 0;
+  const futuresUnrealized = s.futures?.total_unrealized || 0;
+  const futuresCommission = s.futures?.total_commission || 0;
+  const earnRewards = s.income?.earn_flexible_rewards_30d ? s.income.earn_flexible_rewards_30d * 12 : 0;
+  const loanInterest = -(s.income?.loan_interest_paid_30d || 0) * 12;
+  const poolPnl = s.pool?.api_pnl || 0;
+  // Spot α = unrealized PnL - DCA timing component
+  // Approximation: pool contribution is a subset of unrealized (cùng coin), KHÔNG double count
+  // Strategy: total = spot_unrealized (covers all) + futures + yield - costs
+  const total = unrealized_spot + futuresRealized + futuresFunding + futuresUnrealized + futuresCommission + earnRewards + loanInterest;
+  // Pool ROI tracked separately as info
+  const components = [
+    {name: 'Spot unrealized (toàn bộ holdings)', value: unrealized_spot, color: unrealized_spot>=0?'var(--green)':'var(--red)', note: 'qty × (price − avg) cho mọi crypto bao gồm collateral, LD Earn'},
+    {name: 'Futures realized PnL', value: futuresRealized, color: futuresRealized>=0?'var(--green)':'var(--red)', note: 'lệnh đã đóng'},
+    {name: 'Futures unrealized', value: futuresUnrealized, color: futuresUnrealized>=0?'var(--green)':'var(--red)', note: 'vị thế đang mở'},
+    {name: 'Funding fee net', value: futuresFunding, color: futuresFunding>=0?'var(--green)':'var(--red)', note: 'perp funding cumulative'},
+    {name: 'Trading commission', value: futuresCommission, color: 'var(--red)', note: 'phí giao dịch'},
+    {name: 'Earn rewards (annualized × 12)', value: earnRewards, color: 'var(--green)', note: 'từ Flexible Earn yield'},
+    {name: 'Loan interest cost (annualized)', value: loanInterest, color: 'var(--red)', note: 'cost of leverage'},
+  ];
+  // % of anchor for each
+  for (const c of components) c.pct = (c.value / anchor) * 100;
+  return {
+    total, total_pct: (total/anchor) * 100,
+    components,
+    pool_info: {pnl: poolPnl, note: 'Pool PnL đã có trong Spot unrealized, KHÔNG cộng riêng'},
+  };
+}
+
+// ===================== M25: CORRELATION REGIME DETECTION (H5) =====================
+// Crisis time ρ → 1.0 (diversification fail). Detect and signal up-allocate USDC.
+function m25_correlation_regime(m19) {
+  if (!m19 || !m19.matrix) return null;
+  const symbols = m19.symbols.filter(s => s !== 'USDC');
+  if (symbols.length < 2) return null;
+  // Average off-diagonal correlation (excluding USDC)
+  let sum = 0, count = 0;
+  for (let i = 0; i < symbols.length; i++) {
+    for (let j = i+1; j < symbols.length; j++) {
+      sum += m19.matrix[symbols[i]][symbols[j]];
+      count++;
+    }
+  }
+  const avgRho = count > 0 ? sum / count : 0;
+  // Regime classification (institutional thresholds)
+  let regime, color, action;
+  if (avgRho >= 0.85) {
+    regime = 'CORRELATION_CRISIS';
+    color = '#ef4444';
+    action = 'TĂNG USDC alloc 10-15pp · diversification thất bại';
+  } else if (avgRho >= 0.70) {
+    regime = 'HIGH_CORRELATION';
+    color = '#fb923c';
+    action = 'Giảm risk-on coin, theo dõi sát';
+  } else if (avgRho >= 0.50) {
+    regime = 'NORMAL';
+    color = '#f59e0b';
+    action = 'Bình thường, diversification có hiệu quả';
+  } else {
+    regime = 'LOW_CORRELATION';
+    color = '#10b981';
+    action = 'Diversification tốt, có thể tăng vị thế';
+  }
+  return {avgRho, regime, color, action, count, sample_size: symbols.length};
+}
+
+// ===================== H6: VOLATILITY-ADJUSTED KELLY =====================
+// Scale Kelly down when realized vol exceeds long-run baseline
+function adjustKellyForVol(baseKellyPct, realizedVolAnnual, baselineVol = 65) {
+  if (!realizedVolAnnual || realizedVolAnnual <= 0) return baseKellyPct;
+  // If vol > baseline → shrink Kelly (high vol = less confidence in edge)
+  // If vol < baseline → can scale up modestly (capped at 1.2x)
+  const ratio = baselineVol / realizedVolAnnual;
+  const adjustment = Math.min(1.2, Math.max(0.3, ratio));
+  return baseKellyPct * adjustment;
+}
+
+// ===================== M26: DECISION LOG (C5) =====================
+// Append-only log của M23 recommendations + user-confirmed executions
+// Saved to localStorage to build feedback loop over time
+function m26_log_decision(decision, snapshot) {
+  try {
+    const log = JSON.parse(localStorage.getItem('decisionLog') || '[]');
+    const entry = {
+      ts: Date.now(),
+      decision_id: `${decision.priority}_${decision.title.slice(0, 30).replace(/\s+/g, '_')}`,
+      priority: decision.priority,
+      severity: decision.severity,
+      title: decision.title,
+      net_at_time: snapshot.net,
+      btc_at_time: snapshot.btc,
+      fg_at_time: snapshot.fg,
+      executed: null, // user marks later
+      outcome: null,  // computed later from NET delta
+    };
+    // Only log unique decisions (skip if same decision_id was logged in last 6h)
+    const lastSame = log.filter(e => e.decision_id === entry.decision_id).pop();
+    if (!lastSame || (Date.now() - lastSame.ts > 6*3600*1000)) {
+      log.push(entry);
+      if (log.length > 500) log.shift(); // cap at 500 entries
+      localStorage.setItem('decisionLog', JSON.stringify(log));
+    }
+  } catch (e) { console.warn('[M26] log decision failed:', e); }
+}
+
+function m26_get_log() {
+  try {
+    return JSON.parse(localStorage.getItem('decisionLog') || '[]');
+  } catch { return []; }
+}
+
+function m26_mark_executed(decisionId, status) {
+  try {
+    const log = JSON.parse(localStorage.getItem('decisionLog') || '[]');
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (log[i].decision_id === decisionId && log[i].executed === null) {
+        log[i].executed = status;
+        log[i].executed_ts = Date.now();
+        break;
+      }
+    }
+    localStorage.setItem('decisionLog', JSON.stringify(log));
+  } catch (e) { console.warn('[M26] mark executed failed:', e); }
 }
 
 function computeCurrentWeights(holdings) {
@@ -1479,6 +1655,37 @@ function getCycleProgress() {
           targetDate: new Date(yearStart + 365*86400000)};
 }
 
+// ===================== REQUIRED CAGR CALCULATIONS (C3) =====================
+// Tính tốc độ tăng trưởng cần thiết để đạt mục tiêu trong số ngày còn lại
+function computeRequiredCAGR(currentNet, anchor, targetPct) {
+  const cycle = getCycleProgress();
+  const target = anchor * (1 + targetPct/100);
+  const gapUsd = target - currentNet;
+  // Required compound rates to bridge gap in daysRemaining
+  const compoundFactor = currentNet > 0 ? target / currentNet : 1;
+  const reqDaily = currentNet > 0 ? (Math.pow(compoundFactor, 1/cycle.daysRemaining) - 1) * 100 : 0;
+  const reqWeekly = currentNet > 0 ? (Math.pow(compoundFactor, 7/cycle.daysRemaining) - 1) * 100 : 0;
+  const reqMonthly = currentNet > 0 ? (Math.pow(compoundFactor, 30/cycle.daysRemaining) - 1) * 100 : 0;
+  // Required total return (not compound) for remainder
+  const reqTotalPct = currentNet > 0 ? (target / currentNet - 1) * 100 : 0;
+  // Difficulty grade
+  let difficulty, color;
+  if (reqMonthly < 1) { difficulty = 'TRIVIAL'; color = '#10b981'; }
+  else if (reqMonthly < 3) { difficulty = 'DỄ'; color = '#84cc16'; }
+  else if (reqMonthly < 6) { difficulty = 'TRUNG BÌNH'; color = '#f59e0b'; }
+  else if (reqMonthly < 10) { difficulty = 'KHÓ'; color = '#fb923c'; }
+  else if (reqMonthly < 15) { difficulty = 'RẤT KHÓ'; color = '#ef4444'; }
+  else { difficulty = 'CỰC KHÓ (không khả thi an toàn)'; color = '#a78bfa'; }
+  // Equivalent BTC EOY price needed (assume portfolio beta ~0.85)
+  const portBeta = 0.85;
+  const reqBtcChg = reqTotalPct / portBeta;
+  return {
+    target, gapUsd, reqTotalPct, reqDaily, reqWeekly, reqMonthly,
+    difficulty, color, reqBtcChg,
+    cycle,
+  };
+}
+
 // ===================== FORMAT HELPERS =====================
 const fmt$ = (x, dp=2) => '$' + (x ?? 0).toLocaleString('en-US', {minimumFractionDigits:dp, maximumFractionDigits:dp});
 const fmt$signed = (x, dp=2) => (x>=0?'+':'') + '$' + Math.abs(x ?? 0).toLocaleString('en-US', {minimumFractionDigits:dp, maximumFractionDigits:dp});
@@ -1507,20 +1714,20 @@ function render() {
 
   // === TAB PANELS — segmented sections ===
   // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
-  let strategyHTML = renderUnifiedActionCompact(M) + renderPathTo35(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
+  let strategyHTML = renderUnifiedActionCompact(M) + renderPathTo35(M) + renderConditionalScenarios(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
   if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += renderPlanChanges(M);
   document.getElementById('panel-strategy').innerHTML = strategyHTML;
 
-  // OVERVIEW: Unified Action (FIRST, prominent) + Hero + KPI + Portfolio + Alerts
-  let overviewHTML = renderUnifiedAction(M) + renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
+  // OVERVIEW: Required CAGR + Unified Action (FIRST, prominent) + Hero + KPI + Portfolio + Alerts
+  let overviewHTML = renderRequiredCAGR(M) + renderUnifiedAction(M) + renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
   document.getElementById('panel-overview').innerHTML = overviewHTML;
 
   // Also update header tickers with MC data now that it's computed
   const pHitVal = (state.pathMC?.probHit ?? 0).toFixed(0);
   setHTML('ticker-phit-val', `<span style="color:${pHitVal >= 50 ? 'var(--mint)' : pHitVal >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHitVal}%</span>`);
 
-  // POSITIONS: Holdings detail, Pool ROI, Plan Health, DCA Pool, Loan orders, Trades Journal, G9
-  let positionsHTML = renderUnifiedActionCompact(M) + renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
+  // POSITIONS: Holdings detail + PnL Attribution + Pool ROI, Plan Health, DCA Pool, Loan orders, Trades Journal, G9
+  let positionsHTML = renderUnifiedActionCompact(M) + renderPnLAttribution(M) + renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
   document.getElementById('panel-positions').innerHTML = positionsHTML;
 
   // MARKET: Coinalyze aggregate, Signal aggregator, TP triggers, TP math, Journey
@@ -1532,16 +1739,18 @@ function render() {
   let tacticalHTML = renderUnifiedActionCompact(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
-  // QUANTUM: regime + risk metrics + correlation + Markowitz + Kelly + Jump-Diffusion + Playbook
+  // QUANTUM: regime + correlation regime + risk metrics + correlation matrix + Markowitz + Kelly + Jump-Diffusion + Decision Log
   let quantumHTML = renderUnifiedActionCompact(M)
     + renderQuantumHeader(M)
+    + renderCorrelationRegime(M)
     + renderQuantumPlaybook(M)
     + renderRiskMetrics(M)
     + renderJumpDiffusionMC(M)
     + renderAssetRiskProfile(M)
     + renderCorrelationMatrix(M)
     + renderMarkowitz(M)
-    + renderKellySizing(M);
+    + renderKellySizing(M)
+    + renderDecisionLog(M);
   document.getElementById('panel-quantum').innerHTML = quantumHTML;
 
   // SETTINGS: validation appended after static settings cards
@@ -1552,6 +1761,40 @@ function render() {
   const actionsCount = (strategyHTML.match(/border-left:4px solid var\(/g) || []).length;
   const cntEl = document.getElementById('cnt-actions');
   if (cntEl) cntEl.textContent = String(actionsCount);
+}
+
+// === 🎯 C3 REQUIRED CAGR BANNER — luôn hiển thị "anh cần lãi X%/ngày từ hôm nay" ===
+function renderRequiredCAGR(M) {
+  const c = computeRequiredCAGR(M.m1.net, state.target_anchor, state.target_pct);
+  const btcP = state.holdings.BTC.price;
+  const reqBtcEoy = btcP * (1 + c.reqBtcChg/100);
+  const pHit = (state.pathMC?.probHit ?? 0);
+  return `<div style="background:linear-gradient(135deg, ${c.color}15, rgba(167,139,250,0.04));border:2px solid ${c.color};border-radius:14px;padding:1.2rem 1.4rem;margin-bottom:1.25rem;display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:1rem;align-items:center">
+    <div>
+      <div style="font-size:0.7rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;color:${c.color};font-weight:700">⚡ TỐC ĐỘ TĂNG TRƯỞNG CẦN ĐẠT</div>
+      <div style="font-family:var(--display);font-size:1.6rem;font-weight:700;margin-top:0.3rem;color:${c.color}">${c.difficulty}</div>
+      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.2rem">Còn <b>${c.cycle.daysRemaining} ngày</b> · cần lãi tổng <b style="color:${c.color}">+${c.reqTotalPct.toFixed(1)}%</b> · từ ${fmt$(M.m1.net)} → ${fmt$(c.target)}</div>
+    </div>
+    <div style="text-align:center;border-left:1px solid var(--border)">
+      <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">/ ngày</div>
+      <div style="font-family:var(--mono);font-size:1.3rem;font-weight:700;color:${c.color}">${c.reqDaily.toFixed(3)}%</div>
+      <div style="font-size:0.7rem;color:var(--muted)">compound</div>
+    </div>
+    <div style="text-align:center;border-left:1px solid var(--border)">
+      <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">/ tuần</div>
+      <div style="font-family:var(--mono);font-size:1.3rem;font-weight:700;color:${c.color}">${c.reqWeekly.toFixed(2)}%</div>
+      <div style="font-size:0.7rem;color:var(--muted)">compound</div>
+    </div>
+    <div style="text-align:center;border-left:1px solid var(--border)">
+      <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">/ tháng</div>
+      <div style="font-family:var(--mono);font-size:1.3rem;font-weight:700;color:${c.color}">${c.reqMonthly.toFixed(2)}%</div>
+      <div style="font-size:0.7rem;color:var(--muted)">compound</div>
+    </div>
+    <div style="grid-column:1/-1;border-top:1px dashed var(--border2);padding-top:0.8rem;margin-top:0.3rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
+      <div style="font-size:0.78rem;color:var(--text2)">📈 Tương đương BTC EOY cần: <b style="color:${c.color}">${fmt$(reqBtcEoy,0)}</b> (${c.reqBtcChg>=0?'+':''}${c.reqBtcChg.toFixed(1)}% từ ${fmt$(btcP,0)} với β danh mục ~0.85)</div>
+      <div style="font-size:0.78rem">P(hit) Monte Carlo: <b style="color:${pHit>=50?'var(--green)':pHit>=30?'var(--yellow)':'var(--red)'}">${pHit.toFixed(1)}%</b></div>
+    </div>
+  </div>`;
 }
 
 // === 🎯 M23 UNIFIED ACTION — hiển thị DUY NHẤT 1 hành động, ưu tiên cao nhất ===
@@ -3245,8 +3488,9 @@ function renderKellySizing(M) {
   <div class="card">
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
       <b>Phương pháp</b>: ${r.method}. Posterior p ~ Beta(2+wins, 2+losses). Payoff b: <i>${r.payoff_source}</i>.
-      <br><b>Shrinkage</b>: ${(r.shrinkage*100).toFixed(0)}% (giảm size khi sample nhỏ — tránh over-bet do ước lượng noise).
-      ${r.uncertain ? '<br><span style="color:var(--yellow);font-size:0.78rem">⚠️ Sample nhỏ — Kelly đã được shrink xuống ' + (r.shrinkage*100).toFixed(0) + '% Full. Tăng độ tin cậy sau khi có ≥5 trades.</span>' : ''}
+      <br><b>Shrinkage sample-size</b>: ${(r.shrinkage*100).toFixed(0)}% (giảm size khi sample nhỏ — tránh over-bet do ước lượng noise).
+      ${r.vol_adjustment !== undefined ? `<br><b>Vol-adjustment (H6)</b>: ${(r.vol_adjustment*100).toFixed(0)}% (vol thực ${r.vol_current_pct.toFixed(0)}%/yr vs baseline ${r.vol_baseline_pct}%/yr — high vol → giảm size)` : ''}
+      ${r.uncertain ? '<br><span style="color:var(--yellow);font-size:0.78rem">⚠️ Sample nhỏ — Kelly đã được shrink. Tăng độ tin cậy sau khi có ≥5 trades.</span>' : ''}
     </div>
     <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
       <div class="metric"><div class="metric-label">Win rate posterior</div><div class="metric-value">${r.p_post_pct.toFixed(1)}%</div><div class="metric-sub">${r.confidence_band}</div></div>
@@ -3396,6 +3640,207 @@ function renderQuantumPlaybook(M) {
     </div>`;
   }
   return html;
+}
+
+// ===================== M24 PnL Attribution UI (C2) =====================
+function renderPnLAttribution(M) {
+  const r = M.m24;
+  if (!r) return '';
+  let rows = '';
+  for (const c of r.components) {
+    if (Math.abs(c.value) < 0.5) continue; // skip negligible
+    const bar = Math.min(100, Math.abs(c.pct) * 3);
+    rows += `<tr>
+      <td><b>${c.name}</b><div style="font-size:0.7rem;color:var(--muted);margin-top:0.15rem">${c.note}</div></td>
+      <td style="color:${c.color};text-align:right"><b>${fmt$signed(c.value)}</b></td>
+      <td style="color:${c.color};text-align:right">${fmtPct(c.pct)}</td>
+      <td style="width:160px">
+        <div style="background:rgba(255,255,255,0.05);height:6px;border-radius:3px;position:relative">
+          <div style="position:absolute;top:0;${c.value>=0?'left':'right'}:50%;height:100%;width:${bar/2}%;background:${c.color};border-radius:3px"></div>
+          <div style="position:absolute;top:0;left:50%;width:1px;height:100%;background:var(--border2)"></div>
+        </div>
+      </td>
+    </tr>`;
+  }
+  return `<div class="section-title">📊 Phân Tích Nguồn Lãi/Lỗ · PnL Attribution</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Phân rã <b>${fmt$signed(r.total)} (${fmtPct(r.total_pct)})</b> total return về 7 nguồn để biết lever nào đóng góp.
+      Mục đích: tối ưu lever yếu, double-down lever mạnh.
+    </div>
+    <table>
+      <thead><tr><th>Nguồn</th><th style="text-align:right">USD</th><th style="text-align:right">% anchor</th><th>Tỷ trọng</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot>
+        <tr style="background:rgba(167,139,250,0.08);font-weight:700">
+          <td>TỔNG</td>
+          <td style="color:${r.total>=0?'var(--green)':'var(--red)'};text-align:right">${fmt$signed(r.total)}</td>
+          <td style="color:${r.total>=0?'var(--green)':'var(--red)'};text-align:right">${fmtPct(r.total_pct)}</td>
+          <td>vs target ${state.target_pct}%</td>
+        </tr>
+      </tfoot>
+    </table>
+    <div style="font-size:0.75rem;color:var(--muted);margin-top:0.875rem;line-height:1.6">
+      ℹ️ <b>Lưu ý</b>: Pool DCA PnL ($${r.pool_info.pnl.toFixed(2)}) ĐÃ nằm trong Spot unrealized (cùng coin, avg cost gộp). ${r.pool_info.note}.
+    </div>
+  </div>`;
+}
+
+// ===================== M25 Correlation Regime UI (H5) =====================
+function renderCorrelationRegime(M) {
+  const r = M.m25;
+  if (!r) return '';
+  return `<div class="section-title">🔗 Chế Độ Tương Quan · Cảnh báo Diversification Fail</div>
+  <div class="card" style="border:2px solid ${r.color}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:0.875rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;color:${r.color}">${r.regime.replace(/_/g, ' ')}</div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.25rem">${r.action}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:0.65rem;color:var(--muted);text-transform:uppercase">Avg correlation</div>
+        <div style="font-family:var(--mono);font-size:2rem;font-weight:700;color:${r.color}">${r.avgRho.toFixed(2)}</div>
+        <div style="font-size:0.7rem;color:var(--muted)">${r.count} pair-wise</div>
+      </div>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text2);line-height:1.6;background:rgba(0,0,0,0.2);padding:0.75rem 1rem;border-radius:8px;border-left:3px solid ${r.color}">
+      <b>Ngưỡng</b>: ρ ≥ 0.85 = Crisis (USDC up) · 0.70-0.85 = Cao · 0.50-0.70 = Bình thường · &lt; 0.50 = Đa dạng hóa tốt.
+      Trong crisis, BTC/ETH/alts thường cùng dump → diversification thất bại → USDC là hedge duy nhất.
+    </div>
+  </div>`;
+}
+
+// ===================== M26 Decision Log UI (C5) =====================
+function renderDecisionLog(M) {
+  const log = M.m26_log || [];
+  if (log.length === 0) return '';
+  // Show last 10 decisions
+  const recent = log.slice(-10).reverse();
+  let rows = '';
+  for (const e of recent) {
+    const dt = new Date(e.ts).toLocaleString('vi-VN');
+    const sev = e.severity === 'CRITICAL' ? 'var(--red)' : e.severity === 'HIGH' ? 'var(--orange)' : e.severity === 'MEDIUM' ? 'var(--yellow)' : 'var(--text2)';
+    const execMark = e.executed === true ? '<span style="color:var(--green)">✅ Đã làm</span>'
+                   : e.executed === false ? '<span style="color:var(--red)">❌ Bỏ qua</span>'
+                   : `<button onclick="markExecuted('${e.decision_id}', true)" style="background:none;border:1px solid var(--green);color:var(--green);padding:0.15rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.7rem;margin-right:0.25rem">✓</button>
+                      <button onclick="markExecuted('${e.decision_id}', false)" style="background:none;border:1px solid var(--red);color:var(--red);padding:0.15rem 0.4rem;border-radius:4px;cursor:pointer;font-size:0.7rem">✗</button>`;
+    rows += `<tr>
+      <td style="font-size:0.72rem;color:var(--muted)">${dt}</td>
+      <td><span style="color:${sev};font-weight:700">P${e.priority}</span> ${e.title}</td>
+      <td>${fmt$(e.net_at_time)}</td>
+      <td>${fmt$(e.btc_at_time,0)}</td>
+      <td>${e.fg_at_time}</td>
+      <td>${execMark}</td>
+    </tr>`;
+  }
+  // Compute execution stats
+  const decided = log.filter(e => e.executed !== null);
+  const executed = log.filter(e => e.executed === true).length;
+  const skipped = log.filter(e => e.executed === false).length;
+  const execRate = decided.length > 0 ? (executed / decided.length * 100).toFixed(0) : '—';
+  return `<div class="section-title">📋 Nhật Ký Quyết Định · Feedback Loop</div>
+  <div class="card">
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+      <div class="metric" style="flex:1;min-width:140px"><div class="metric-label">Tổng log</div><div class="metric-value">${log.length}</div></div>
+      <div class="metric" style="flex:1;min-width:140px"><div class="metric-label">Đã đánh dấu</div><div class="metric-value">${decided.length}</div></div>
+      <div class="metric" style="flex:1;min-width:140px"><div class="metric-label">Tỷ lệ thực hiện</div><div class="metric-value" style="color:var(--cyan)">${execRate}${execRate==='—'?'':'%'}</div><div class="metric-sub">${executed}✓ / ${skipped}✗</div></div>
+    </div>
+    <div style="font-size:0.78rem;color:var(--text2);margin-bottom:0.875rem;line-height:1.6">
+      Mỗi lần M23 trigger 1 hành động → log lại. Đánh dấu ✓ (đã làm) hoặc ✗ (bỏ qua). Sau vài tuần sẽ phân tích được: hành động nào hay bị skip → cải thiện cascade.
+    </div>
+    <table>
+      <thead><tr><th>Thời gian</th><th>Hành động</th><th>NET</th><th>BTC</th><th>F&G</th><th>Trạng thái</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+// Bind markExecuted to window for onclick
+window.markExecuted = function(decisionId, status) {
+  m26_mark_executed(decisionId, status);
+  render();
+};
+
+// ===================== C4: CONDITIONAL SCENARIO SIMULATOR =====================
+// "If you take action A1, P(hit) becomes Y%"
+function renderConditionalScenarios(M) {
+  const currentNet = M.m1.net;
+  const target = state.target_anchor * (1 + state.target_pct/100);
+  const btcPrice = state.holdings.BTC.price;
+  const sigma = (state.coinalyze?.btc_realized_vol_annual_pct ?? 65) / 100;
+  const cycle = getCycleProgress();
+  const T = cycle.daysRemaining / 365;
+  const yieldApr = state.income?.yield_apr_estimate ?? 0;
+  const intAnnual = (state.income?.loan_interest_paid_30d ?? 0) * 12;
+  const yieldAnnual = (currentNet + state.pool.value) * yieldApr / 100;
+  const squeezeEV = computeSqueezeEV(state.futures);
+  const betas = state.market.betas || {BTC:1, WBETH:1, BNB:1, LINK:1.4, BNSOL:1.2, USDC:0};
+  const usdcQty = state.holdings.USDC?.qty || 0;
+
+  // Run MC simulation with action modifier
+  function simulate(actionModifier) {
+    const N = 500;
+    let hits = 0;
+    let evSum = 0;
+    for (let i = 0; i < N; i++) {
+      const eoyBtc = btcPrice * Math.exp((-sigma*sigma/2)*T + sigma*Math.sqrt(T)*randNormal());
+      const btcChg = eoyBtc / btcPrice - 1;
+      let spotDelta = 0;
+      for (const [sym, h] of Object.entries(state.holdings)) {
+        const b = betas[sym] !== undefined ? betas[sym] : 1;
+        spotDelta += h.qty * (h.price*(1+btcChg*b) - h.price);
+      }
+      const slSave = eoyBtc < state.bep_threshold ? Math.abs(Math.min(0, spotDelta))*0.30 : 0;
+      let totalRet = spotDelta + slSave + yieldAnnual - intAnnual + squeezeEV*(eoyBtc>80000?1:0.3);
+      // Apply action modifier (returns delta to totalRet)
+      totalRet += actionModifier(eoyBtc, btcChg, spotDelta);
+      if (currentNet + totalRet >= target) hits++;
+      evSum += totalRet;
+    }
+    return {pHit: hits/N*100, ev: evSum/N};
+  }
+
+  const baseline = simulate(() => 0);
+  // Define 6 candidate actions
+  const actions = [
+    {name: 'BASELINE (không hành động)', detail: 'Giữ nguyên kế hoạch hiện tại', modifier: () => 0},
+    {name: 'Enable USDC yield 5.5%', detail: `${fmt$(usdcQty)} USDC × 5.5% × ${T.toFixed(2)}yr`, modifier: () => usdcQty * 0.055 * T},
+    {name: 'DCA thêm $500/tháng', detail: `Bỏ thêm $${(500*12*T).toFixed(0)} vào portfolio`, modifier: (eoy, chg) => 500 * 12 * T * (1 + chg * 0.5)},
+    {name: 'Vay thêm $1000 mua BTC', detail: `Loan +$1000, mua BTC, trả lãi 9%/yr`, modifier: (eoy, chg) => 1000 * chg - 1000 * 0.09 * T},
+    {name: 'Squeeze long 3x/tháng', detail: `3 trades/tháng × Quarter Kelly × T`, modifier: () => squeezeEV * 2.5 * T},
+    {name: 'Stop-loss BTC giảm xuống $60k', detail: `Stop-loss thấp hơn → ít save nhưng giữ vị thế`, modifier: (eoy, chg, sd) => eoy < 60000 ? Math.abs(Math.min(0,sd))*0.30 : (eoy < state.bep_threshold ? -Math.abs(Math.min(0,sd))*0.30 : 0)},
+  ];
+
+  let rows = '';
+  for (const a of actions) {
+    const sim = simulate(a.modifier);
+    const dP = sim.pHit - baseline.pHit;
+    const dEV = sim.ev - baseline.ev;
+    const sign = dP >= 0 ? '+' : '';
+    const dpC = dP >= 5 ? 'var(--green)' : dP >= 0 ? 'var(--yellow)' : 'var(--red)';
+    rows += `<tr ${a.name.startsWith('BASELINE') ? 'style="background:rgba(255,255,255,0.03);font-weight:700"' : ''}>
+      <td><b>${a.name}</b></td>
+      <td style="font-size:0.78rem;color:var(--text2)">${a.detail}</td>
+      <td>${sim.pHit.toFixed(1)}%</td>
+      <td style="color:${dpC}"><b>${sign}${dP.toFixed(1)}pp</b></td>
+      <td style="color:${dEV>=0?'var(--green)':'var(--red)'}">${fmt$signed(dEV)}</td>
+    </tr>`;
+  }
+
+  return `<div class="section-title">🎲 Mô Phỏng Có Điều Kiện · Mỗi Hành Động Ảnh Hưởng Thế Nào</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Chạy lại Monte Carlo 500 sims với từng hành động giả định → xem <b>P(hit) thay đổi bao nhiêu</b>.
+      Giúp ra quyết định: hành động nào đáng làm nhất?
+    </div>
+    <table>
+      <thead><tr><th>Hành động</th><th>Chi tiết</th><th>P(hit) sau action</th><th>Δ vs baseline</th><th>Δ EV</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="safety-bar" style="margin-top:0.875rem">
+      💡 <b>Cách dùng</b>: Hành động có Δ >+5pp là <span style="color:var(--green)">đáng làm</span> · 0 đến +5pp = <span style="color:var(--yellow)">cận biên</span> · &lt;0pp = <span style="color:var(--red)">phản tác dụng</span>. M23 P-cascade ưu tiên hành động có Δ cao nhất + an toàn.
+    </div>
+  </div>`;
 }
 
 // ===================== EDITOR FORM =====================
