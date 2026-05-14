@@ -1308,30 +1308,32 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P7: FUNDING SQUEEZE (cross-exchange agg funding < negative threshold) ----
-  if (state.coinalyze?.funding_current !== undefined && state.coinalyze.funding_current < -0.005
-      && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
+  // ---- P7: FUNDING SQUEEZE — now uses M28 forecast for higher precision ----
+  const m28 = M.m28;
+  const squeezeReady = m28?.available && m28.squeeze_score >= 60;
+  if (squeezeReady && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
     const sqAmount = M.m21?.quarter_kelly_pct > 0
       ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
     return {
       priority: 6, severity: 'MEDIUM', icon: '⚡', color: '#a78bfa',
-      title: `SQUEEZE LONG BTC — VỊ THẾ ${fmt$(sqAmount)} (Kelly sized)`,
+      title: `SQUEEZE LONG BTC — VỊ THẾ ${fmt$(sqAmount)} (M28 score ${m28.squeeze_score}/100)`,
       coin: 'BTC', amount: sqAmount, deadline: 'TRONG 24 GIỜ',
       action_steps: [
         `1. Binance Futures → BTCUSDT Perp → Long 5x leverage`,
-        `2. Size: ${fmt$(sqAmount)} (${M.m21?.available ? 'Quarter Kelly từ history' : '2% NET fallback'})`,
-        `3. Funding entry: ${(state.coinalyze.funding_current*100).toFixed(4)}% (shorts trả phí cho longs)`,
-        `4. Exit: funding về dương hoặc TP +3%, SL −1.5%`,
+        `2. Size: ${fmt$(sqAmount)} (${M.m21 ? 'Quarter Kelly Bayesian + vol-adj' : '2% NET fallback'})`,
+        `3. Funding hiện: ${m28.current.toFixed(4)}% · forecast 24h: ${m28.forecast_24h.toFixed(4)}% · 72h: ${m28.forecast_72h.toFixed(4)}%`,
+        `4. Trend ${m28.slope_per_day.toFixed(5)}/ngày (${m28.slope_per_day < 0 ? 'đang giảm, setup tiếp diễn' : 'đang tăng'}) · AR(1) ρ=${m28.ar1_rho.toFixed(2)}`,
+        `5. Exit: funding về dương hoặc TP +3%, SL −1.5%. Theo dõi M28 score, exit nếu rớt dưới 50`,
       ],
       rationale: [
-        `Cross-exchange agg funding ${(state.coinalyze.funding_current*100).toFixed(4)}% < −0.5% (shorts crowded)`,
-        `F&G ${fg} > 35 (không extreme fear)`,
-        `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 45%`,
-        `Equity ratio ${M.m1.equity_ratio.toFixed(1)}% > 60% (đủ buffer)`,
-        M.m21 ? `Bayesian Kelly: p=${M.m21.p_post_pct.toFixed(0)}% (${M.m21.method}), b=${M.m21.payoff_ratio.toFixed(2)}, shrinkage ${(M.m21.shrinkage*100).toFixed(0)}%` : 'Kelly chưa có data → conservative 2%',
+        `M28 Funding Forecast score: ${m28.squeeze_score}/100 (grade ${m28.grade.replace(/_/g,' ')})`,
+        `Funding 7d window: min ${m28.min.toFixed(4)}% · max ${m28.max.toFixed(4)}% · median ${m28.median.toFixed(4)}% · σ ${m28.std.toFixed(4)}`,
+        `AR(1) persistence ρ=${m28.ar1_rho.toFixed(2)} (${m28.ar1_rho>0.5?'regime sticky → forecast tin cậy':'regime đổi nhanh → cẩn trọng'})`,
+        `F&G ${fg} > 35 · P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 45% · Equity ${M.m1.equity_ratio.toFixed(1)}% > 60%`,
+        M.m21 ? `Bayesian Kelly: p=${M.m21.p_post_pct.toFixed(0)}% (${M.m21.method}), b=${M.m21.payoff_ratio.toFixed(2)}, shrinkage ${(M.m21.shrinkage*100).toFixed(0)}%${M.m21.vol_adjustment ? ', vol-adj ' + (M.m21.vol_adjustment*100).toFixed(0) + '%' : ''}` : 'Kelly chưa có data → conservative 2%',
       ],
       blocks: [],
-      sources_fired: ['Funding Squeeze ARM (Lever #2)', 'M21 Kelly', 'Coinalyze aggregate'],
+      sources_fired: ['M28 Funding Forecast', 'M21 Bayesian Kelly', 'M22 Regime', 'Coinalyze + Binance funding'],
     };
   }
 
@@ -1440,11 +1442,20 @@ function buildMaster(s) {
   M.m20 = m20_markowitz_optimize(state.klineHistory, curWeights);
   M.m21 = m21_kelly_sizing(state.futures);
   M.m22 = m22_regime(s.market);
-  // === M23 UNIFIED DECISION — must run AFTER all other modules ===
-  M.m23 = m23_unified_decision(M, s);
-  // === M24/M25/M26 advanced modules ===
-  M.m24 = m24_pnl_attribution(M, s);
   M.m25 = m25_correlation_regime(M.m19);
+  M.m28 = m28_funding_forecast(s.market, state.coinalyze);
+  // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28 etc) ===
+  M.m23 = m23_unified_decision(M, s);
+  // === M24/M26 require M23 first ===
+  M.m24 = m24_pnl_attribution(M, s);
+  // === M29 Backtest — expensive, cache by kline length ===
+  const kLen = state.klineHistory?.BTC?.length || 0;
+  if (!state._backtest_cache || state._backtest_cache.kLen !== kLen) {
+    M.m29 = m29_backtest(state.klineHistory, s, {initialNet: s.target_anchor || 3300, dailyDCA: (s.funding_yearly || 3650) / 365});
+    state._backtest_cache = {kLen, result: M.m29};
+  } else {
+    M.m29 = state._backtest_cache.result;
+  }
   // Log M23 decision to feedback loop
   m26_log_decision(M.m23, {net: M.m1.net, btc: h.BTC.price, fg: s.market.fg_cg});
   M.m26_log = m26_get_log();
@@ -1460,6 +1471,337 @@ function buildMaster(s) {
   }
   M.m14 = m14_validate(M);
   return M;
+}
+
+// ===================== M29: BACKTEST M23 CASCADE (C1) =====================
+// Replay M23 priority cascade trên BTC kline lịch sử để validate strategy
+// Simplifications:
+//   - F&G proxy = RSI(14) mapped to F&G scale
+//   - Alt coins approximated via beta-scaled BTC moves
+//   - Pool DCA = $10/day fixed split per plan_alloc
+//   - P7 Squeeze skipped (no historical funding)
+function m29_backtest(klineHistory, state, opts = {}) {
+  const out = {available: false, reason: ''};
+  if (!klineHistory?.BTC || klineHistory.BTC.length < 200) {
+    out.reason = `Cần ≥200 ngày BTC kline (hiện ${klineHistory?.BTC?.length || 0})`;
+    return out;
+  }
+
+  const btcCloses = klineHistory.BTC;
+  const N = btcCloses.length;
+  const horizon = opts.horizon || 365;
+  const initialNet = opts.initialNet || 3300;
+  const initialLoan = opts.initialLoan || 0;
+  const targetPct = state.target_pct || 35;
+  const dailyDCA = opts.dailyDCA || 10;
+  const plan_alloc = state.pool?.plan_alloc || {LINK:47, BNB:35, BTC:11, WBETH:7};
+  const betas = state.market?.betas || {BTC:1, WBETH:1, BNB:1, LINK:1.4, BNSOL:1.2, USDC:0};
+
+  // --- F&G proxy from RSI(14) ---
+  function computeRSI(closes, idx, period = 14) {
+    if (idx < period) return 50;
+    let gains = 0, losses = 0;
+    for (let i = idx - period + 1; i <= idx; i++) {
+      const d = closes[i] - closes[i-1];
+      if (d > 0) gains += d; else losses -= d;
+    }
+    const avgG = gains / period, avgL = losses / period;
+    if (avgL === 0) return 100;
+    const rs = avgG / avgL;
+    return 100 - 100 / (1 + rs);
+  }
+  function rsiToFG(rsi) {
+    if (rsi < 25) return 15;
+    if (rsi < 35) return 28;
+    if (rsi < 45) return 42;
+    if (rsi < 55) return 50;
+    if (rsi < 65) return 60;
+    if (rsi < 75) return 72;
+    return 85;
+  }
+
+  // --- SMA helper ---
+  function sma(closes, idx, period) {
+    if (idx < period - 1) return null;
+    let s = 0;
+    for (let i = idx - period + 1; i <= idx; i++) s += closes[i];
+    return s / period;
+  }
+
+  // --- Run backtest from day 200 onward (need 200d for 200WMA) ---
+  const startIdx = 200;
+  const decisions = [];
+  const actionCounts = {};
+  const trajectories = []; // for hit-rate analysis
+
+  // Run rolling 365-day windows
+  const winStarts = [];
+  for (let s = startIdx; s + horizon <= N; s += 30) winStarts.push(s); // every 30 days
+  if (winStarts.length === 0) winStarts.push(startIdx);
+
+  let totalWindows = 0, hitWindows = 0;
+  const equityCurves = [];
+  let allActions = [];
+  const decisionPnL = {}; // {priority: {count, sum_30d_return}}
+
+  for (const winStart of winStarts) {
+    const winEnd = Math.min(winStart + horizon, N - 1);
+    if (winEnd - winStart < 30) continue;
+
+    // Simulate portfolio
+    const refPrice = btcCloses[winStart];
+    let qtyBTC = (initialNet * 0.50) / refPrice; // 50% BTC initial
+    let qtyAlt = (initialNet * 0.30) / refPrice; // alt as BTC-equivalent (simplified)
+    let usdc = initialNet * 0.20;
+    let loan = initialLoan;
+    let cashFromTP = 0;
+    let totalDCA = 0;
+    const dailyEquity = [];
+
+    for (let d = winStart; d <= winEnd; d++) {
+      const btcP = btcCloses[d];
+      const sma20 = sma(btcCloses, d, 20);
+      const sma200w = sma(btcCloses, d, 200);
+      const sma111 = sma(btcCloses, d, 111);
+      const sma350 = sma(btcCloses, d, 350);
+      const rsi = computeRSI(btcCloses, d, 14);
+      const fg = rsiToFG(rsi);
+      const above200w = sma200w ? btcP > sma200w : false;
+      const piCycleTop = (sma111 && sma350) ? (sma111 > sma350 * 2) : false;
+
+      // === m22-like regime via Bayesian on F&G proxy ===
+      const prior = above200w ? 0.65 : 0.30;
+      const muBull = 65, sigBull = 13, muBear = 28, sigBear = 11;
+      const pdf = (x, m, sg) => Math.exp(-0.5*((x-m)/sg)**2) / (sg*Math.sqrt(2*Math.PI));
+      const likeBull = pdf(fg, muBull, sigBull);
+      const likeBear = pdf(fg, muBear, sigBear);
+      const pBull_fg = (likeBull * prior) / (likeBull * prior + likeBear * (1-prior));
+      // Momentum 30d
+      const ret30d = d >= 30 ? (btcP / btcCloses[d-30] - 1) * 100 : 0;
+      const momAdj = ret30d > 5 ? 0.10 : ret30d > 0 ? 0.05 : ret30d < -10 ? -0.10 : -0.05;
+      const pBull_final = Math.max(0.05, Math.min(0.95, pBull_fg + momAdj));
+
+      // === Daily DCA execution ===
+      const dca = dailyDCA;
+      qtyBTC += (dca * plan_alloc.BTC / 100) / btcP;
+      qtyAlt += (dca * (100 - plan_alloc.BTC) / 100) / btcP; // simplified: alts move with BTC × avg-beta
+      totalDCA += dca;
+
+      // Compute current NET
+      const gross = qtyBTC * btcP + qtyAlt * btcP + usdc + cashFromTP;
+      const net = gross - loan;
+      dailyEquity.push(net);
+
+      // === M23 cascade simplified ===
+      let action = 'P9_DEFAULT';
+
+      // P1 Liquidation
+      if (loan > gross * 0.40 * 0.90) {
+        const repay = Math.min(usdc, loan - gross * 0.40 * 0.90);
+        usdc -= repay; loan -= repay;
+        action = 'P1_REPAY';
+      }
+      // P2 Stop-loss
+      else if (btcP < 65000 && fg <= 15) {
+        const sellQty = qtyBTC * 0.30;
+        usdc += sellQty * btcP;
+        qtyBTC -= sellQty;
+        action = 'P2_STOPLOSS';
+      }
+      // P3 TP fired (need avg cost — approximate with running avg)
+      else if (btcP > refPrice * 1.40 && fg >= 65 && pBull_final > 0.55) {
+        const sellQty = qtyBTC * 0.15;
+        cashFromTP += sellQty * btcP * 0.60;
+        usdc += sellQty * btcP * 0.40;
+        qtyBTC -= sellQty;
+        action = 'P3_TP';
+      }
+      // P4 Bear regime
+      else if (pBull_final < 0.30) {
+        // Reduce risk: 10% spot → USDC, no DCA boost
+        if (qtyAlt > 0) {
+          const sellAlt = qtyAlt * 0.10;
+          usdc += sellAlt * btcP;
+          qtyAlt -= sellAlt;
+        }
+        action = 'P4_BEAR';
+      }
+      // P5 Dip buy
+      else if (sma20 && btcP < sma20 * 0.92 && loan < gross * 0.40 * 0.50 && fg < 40 && pBull_final > 0.40) {
+        const buyAmt = Math.min(usdc * 0.30, gross * 0.05);
+        if (buyAmt > 50) {
+          qtyBTC += buyAmt / btcP;
+          usdc -= buyAmt;
+          action = 'P5_DIP_BUY';
+        }
+      }
+      // P8 Bull underwater (tilt to BTC if bull)
+      else if (pBull_final > 0.55) {
+        action = 'P8_BULL_TILT';
+      }
+
+      actionCounts[action] = (actionCounts[action] || 0) + 1;
+      allActions.push({day: d, action, net, btcP, fg, pBull_final});
+
+      // Track decision PnL: NET 30 days later vs now
+      if (action !== 'P9_DEFAULT' && d + 30 <= winEnd) {
+        const future_d = d + 30;
+        const future_btcP = btcCloses[future_d];
+        const future_gross = qtyBTC * future_btcP + qtyAlt * future_btcP + usdc + cashFromTP;
+        const future_net = future_gross - loan;
+        const ret30 = (future_net / net - 1) * 100;
+        if (!decisionPnL[action]) decisionPnL[action] = {count: 0, sum: 0, wins: 0};
+        decisionPnL[action].count++;
+        decisionPnL[action].sum += ret30;
+        if (ret30 > 0) decisionPnL[action].wins++;
+      }
+    }
+
+    const finalNet = dailyEquity[dailyEquity.length - 1];
+    const targetNet = initialNet * (1 + targetPct/100);
+    totalWindows++;
+    if (finalNet >= targetNet) hitWindows++;
+    equityCurves.push({start: winStart, finalNet, hit: finalNet >= targetNet, dailyEquity});
+  }
+
+  const pHit = totalWindows > 0 ? (hitWindows / totalWindows * 100) : 0;
+
+  // Aggregate stats from all equity curves
+  const allReturns = [];
+  for (const ec of equityCurves) {
+    for (let i = 1; i < ec.dailyEquity.length; i++) {
+      const r = (ec.dailyEquity[i] - ec.dailyEquity[i-1]) / ec.dailyEquity[i-1];
+      if (isFinite(r)) allReturns.push(r);
+    }
+  }
+
+  const avgFinal = equityCurves.length > 0
+    ? equityCurves.reduce((s,e) => s + e.finalNet, 0) / equityCurves.length : 0;
+
+  // Decision PnL summary
+  const decisionStats = {};
+  for (const a in decisionPnL) {
+    const d = decisionPnL[a];
+    decisionStats[a] = {
+      count: d.count,
+      avg_30d_return: d.sum / d.count,
+      win_rate: d.wins / d.count * 100,
+    };
+  }
+
+  out.available = true;
+  out.windows = totalWindows;
+  out.hits = hitWindows;
+  out.p_hit = pHit;
+  out.avg_final = avgFinal;
+  out.initial_net = initialNet;
+  out.target_pct = targetPct;
+  out.sharpe = QF.sharpe(allReturns);
+  out.sortino = QF.sortino(allReturns);
+  out.ann_vol_pct = QF.stddev(allReturns) * Math.sqrt(365) * 100;
+  out.ann_ret_pct = QF.mean(allReturns) * 365 * 100;
+  out.action_counts = actionCounts;
+  out.decision_stats = decisionStats;
+  out.sample_days = N;
+  out.equity_curves_count = equityCurves.length;
+  return out;
+}
+
+// ===================== M28: FUNDING RATE FORECAST (H2) =====================
+// Phân tích chuỗi funding history + predicted để forecast squeeze opportunity
+function m28_funding_forecast(market, coinalyze) {
+  const out = {available: false, reason: ''};
+
+  // Binance funding rate history (last 21 events = ~7 days at 3/day)
+  const histBinance = market.funding_history_full;
+  // Coinalyze aggregate predicted funding series
+  const histPred = coinalyze?.pred_funding_full;
+
+  if ((!histBinance || histBinance.length < 7) && (!histPred || histPred.length < 7)) {
+    out.reason = 'Cần ≥7 funding events từ Binance hoặc Coinalyze';
+    return out;
+  }
+
+  out.available = true;
+  const primary = (histBinance && histBinance.length >= 7) ? histBinance : histPred;
+  out.source = (histBinance && histBinance.length >= 7) ? 'binance' : 'coinalyze_pred';
+  out.sample_size = primary.length;
+
+  // ---- Stats ----
+  const m = QF.mean(primary);
+  const std = QF.stddev(primary);
+  out.mean = m;
+  out.std = std;
+  out.current = primary[primary.length - 1];
+  out.min = Math.min(...primary);
+  out.max = Math.max(...primary);
+  out.median = [...primary].sort((a,b)=>a-b)[Math.floor(primary.length/2)];
+
+  // ---- Trend slope (linear regression of recent points) ----
+  const n = primary.length;
+  const xs = primary.map((_, i) => i);
+  const ys = primary;
+  const mx = QF.mean(xs), my = QF.mean(ys);
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (xs[i]-mx)*(ys[i]-my); den += (xs[i]-mx)*(xs[i]-mx); }
+  out.slope_per_event = den > 0 ? num / den : 0;
+  out.slope_per_day = out.slope_per_event * 3; // 3 fundings/day
+
+  // ---- AR(1) persistence: r_t = α + ρ·r_{t-1} + ε ----
+  // High ρ → sticky regime, current state predicts future
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 1; i < n; i++) {
+    sumX += primary[i-1];
+    sumY += primary[i];
+    sumXY += primary[i-1] * primary[i];
+    sumX2 += primary[i-1] * primary[i-1];
+  }
+  const denAR = (n-1) * sumX2 - sumX * sumX;
+  out.ar1_rho = denAR > 0 ? ((n-1)*sumXY - sumX*sumY) / denAR : 0;
+  out.ar1_alpha = (sumY - out.ar1_rho * sumX) / (n - 1);
+
+  // ---- Exponential smoothing forecast (Holt-Winters lite, level only) ----
+  // ŷ_{t+1} = α·y_t + (1-α)·ŷ_t
+  const alpha_smooth = 0.4;
+  let level = primary[0];
+  for (let i = 1; i < n; i++) level = alpha_smooth * primary[i] + (1 - alpha_smooth) * level;
+  // 24h-ahead = 3 funding events ahead
+  out.forecast_24h = out.ar1_alpha + Math.pow(out.ar1_rho, 3) * (level - out.ar1_alpha);
+  out.forecast_72h = out.ar1_alpha + Math.pow(out.ar1_rho, 9) * (level - out.ar1_alpha);
+
+  // ---- Coinalyze predicted vs actual divergence (if both available) ----
+  if (coinalyze?.predicted_funding !== undefined) {
+    out.predicted_now = coinalyze.predicted_funding;
+    out.divergence = out.predicted_now - out.current;
+    out.pred_accuracy_mae = coinalyze.pred_funding_accuracy_mae;
+  }
+
+  // ---- Squeeze score 0-100 ----
+  // Higher = better setup for long-squeeze (short pays long, profitable to long-perp)
+  let score = 50; // baseline
+  // Current funding deeply negative → shorts crowded (bullish for longs)
+  if (out.current < -0.01) score += 30;
+  else if (out.current < -0.005) score += 20;
+  else if (out.current < 0) score += 10;
+  else if (out.current > 0.02) score -= 30;
+  else if (out.current > 0.01) score -= 15;
+  // Trend down (becoming more negative) → squeeze setup building
+  if (out.slope_per_day < -0.001) score += 15;
+  else if (out.slope_per_day > 0.001) score -= 10;
+  // Forecast confirms continuation
+  if (out.forecast_24h < out.current && out.current < 0) score += 10;
+  // Predicted from Coinalyze even more negative → cross-source confirmation
+  if (out.predicted_now !== undefined && out.predicted_now < out.current && out.predicted_now < 0) score += 10;
+  out.squeeze_score = Math.max(0, Math.min(100, score));
+
+  // ---- Recommendation grade ----
+  if (out.squeeze_score >= 75) out.grade = 'PRIME_SQUEEZE';
+  else if (out.squeeze_score >= 60) out.grade = 'SETUP_BUILDING';
+  else if (out.squeeze_score >= 40) out.grade = 'NEUTRAL';
+  else if (out.squeeze_score >= 25) out.grade = 'NO_EDGE';
+  else out.grade = 'OVERHEATED_LONGS';
+
+  return out;
 }
 
 // ===================== M24: PnL ATTRIBUTION (C2) =====================
@@ -1714,7 +2056,7 @@ function render() {
 
   // === TAB PANELS — segmented sections ===
   // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
-  let strategyHTML = renderUnifiedActionCompact(M) + renderPathTo35(M) + renderConditionalScenarios(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
+  let strategyHTML = renderUnifiedActionCompact(M) + renderBacktest(M) + renderPathTo35(M) + renderConditionalScenarios(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
   if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += renderPlanChanges(M);
   document.getElementById('panel-strategy').innerHTML = strategyHTML;
 
@@ -1735,8 +2077,8 @@ function render() {
   if (state.prev) marketHTML += renderJourney(M);
   document.getElementById('panel-market').innerHTML = marketHTML;
 
-  // TACTICAL: Squeeze, Dip-Ladder, Stop-Loss, Stress test
-  let tacticalHTML = renderUnifiedActionCompact(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
+  // TACTICAL: Funding Forecast (M28) + Squeeze, Dip-Ladder, Stop-Loss, Stress test
+  let tacticalHTML = renderUnifiedActionCompact(M) + renderFundingForecast(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
   // QUANTUM: regime + correlation regime + risk metrics + correlation matrix + Markowitz + Kelly + Jump-Diffusion + Decision Log
@@ -3642,6 +3984,144 @@ function renderQuantumPlaybook(M) {
   return html;
 }
 
+// ===================== M29 Backtest UI (C1) =====================
+function renderBacktest(M) {
+  const b = M.m29;
+  if (!b) return '';
+  if (!b.available) {
+    return `<div class="section-title">🔬 Backtest M23 Cascade</div>
+    <div class="card"><div class="warning-bar">⚠️ ${b.reason}. Click "Tải dữ liệu trực tiếp" để fetch klines.</div></div>`;
+  }
+  const targetNet = b.initial_net * (1 + b.target_pct/100);
+  const pHitColor = b.p_hit >= 50 ? 'var(--green)' : b.p_hit >= 30 ? 'var(--yellow)' : 'var(--red)';
+  // Decision PnL table
+  let decRows = '';
+  const actionNames = {P1_REPAY:'P1 · Trả nợ',P2_STOPLOSS:'P2 · Stop-loss',P3_TP:'P3 · TP',P4_BEAR:'P4 · Bear regime',P5_DIP_BUY:'P5 · Dip buy',P8_BULL_TILT:'P8 · Bull tilt'};
+  const sortedActions = Object.entries(b.decision_stats).sort((a,b) => b[1].count - a[1].count);
+  for (const [act, stat] of sortedActions) {
+    const winC = stat.win_rate >= 60 ? 'var(--green)' : stat.win_rate >= 45 ? 'var(--yellow)' : 'var(--red)';
+    const retC = stat.avg_30d_return >= 0 ? 'var(--green)' : 'var(--red)';
+    decRows += `<tr>
+      <td><b>${actionNames[act] || act}</b></td>
+      <td>${stat.count}</td>
+      <td style="color:${winC}"><b>${stat.win_rate.toFixed(0)}%</b></td>
+      <td style="color:${retC}"><b>${stat.avg_30d_return>=0?'+':''}${stat.avg_30d_return.toFixed(2)}%</b></td>
+    </tr>`;
+  }
+  // Action frequency
+  let actRows = '';
+  for (const a in b.action_counts) {
+    actRows += `<tr><td>${actionNames[a] || a}</td><td>${b.action_counts[a]}</td></tr>`;
+  }
+
+  return `<div class="section-title">🔬 Backtest M23 Cascade · ${b.windows} rolling 365d windows</div>
+  <div class="card" style="border-left:4px solid ${pHitColor}">
+    <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
+      Replay M23 priority cascade trên <b>${b.sample_days} ngày BTC kline</b>. Mỗi window 365d start mỗi 30d apart.
+      Initial NET = ${fmt$(b.initial_net)} · target = ${fmt$(targetNet)} (+${b.target_pct}%) · DCA $${(state.funding_yearly/365).toFixed(2)}/ngày.
+      F&G proxy = RSI(14) mapped to F&G scale. P7 squeeze skipped (no historical funding).
+    </div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(155px,1fr))">
+      <div class="metric"><div class="metric-label">P(hit ${b.target_pct}%)</div><div class="metric-value" style="color:${pHitColor}">${b.p_hit.toFixed(1)}%</div><div class="metric-sub">${b.hits}/${b.windows} windows</div></div>
+      <div class="metric"><div class="metric-label">Avg final NET</div><div class="metric-value">${fmt$(b.avg_final)}</div><div class="metric-sub">avg ${(b.avg_final/b.initial_net*100-100).toFixed(1)}%</div></div>
+      <div class="metric"><div class="metric-label">Sharpe (backtest)</div><div class="metric-value" style="color:${b.sharpe>=1?'var(--green)':'var(--yellow)'}">${b.sharpe.toFixed(2)}</div><div class="metric-sub">annualized</div></div>
+      <div class="metric"><div class="metric-label">Sortino</div><div class="metric-value">${b.sortino.toFixed(2)}</div><div class="metric-sub">downside-adj</div></div>
+      <div class="metric"><div class="metric-label">Ann Return</div><div class="metric-value" style="color:${b.ann_ret_pct>=0?'var(--green)':'var(--red)'}">${fmtPct(b.ann_ret_pct)}</div><div class="metric-sub">simulated</div></div>
+      <div class="metric"><div class="metric-label">Ann Vol</div><div class="metric-value">${b.ann_vol_pct.toFixed(1)}%</div><div class="metric-sub">σ·√365</div></div>
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">📊 Decision PnL · 30-day forward return sau mỗi action</div>
+    <table>
+      <thead><tr><th>Action</th><th>Lần kích hoạt</th><th>Win rate</th><th>Avg 30d return</th></tr></thead>
+      <tbody>${decRows}</tbody>
+    </table>
+    <details style="margin-top:1rem">
+      <summary style="cursor:pointer;font-family:var(--display);font-size:0.85rem;font-weight:600;color:var(--muted);padding:0.5rem">▶ Action frequency (tất cả ${b.sample_days} ngày)</summary>
+      <table style="margin-top:0.5rem">
+        <thead><tr><th>Priority</th><th>Lần fire</th></tr></thead>
+        <tbody>${actRows}</tbody>
+      </table>
+    </details>
+    <div class="${b.p_hit >= 50 ? 'safety-bar' : b.p_hit >= 30 ? 'warning-bar' : 'danger-bar'}" style="margin-top:0.875rem">
+      ${b.p_hit >= 50 ? '✅' : b.p_hit >= 30 ? '⚠️' : '🚨'} <b>Verdict</b>: Backtest cho thấy M23 cascade có P(hit ${b.target_pct}%) = <b>${b.p_hit.toFixed(1)}%</b> trên ${b.windows} historical 365d windows. ${b.p_hit >= 50 ? 'Strategy ổn, tiếp tục thực hiện.' : b.p_hit >= 30 ? 'Strategy cận biên — cần thêm capital hoặc adjust cascade.' : 'Strategy chưa đủ — cần thêm leverage, DCA cao hơn, hoặc giảm target.'}
+      <br><br><b>Caveat</b>: Backtest dùng F&G proxy (RSI), không cover P7 funding squeeze. Real-world P(hit) có thể cao hơn nhờ M28+ M21 boost.
+    </div>
+  </div>`;
+}
+
+// ===================== M28 Funding Rate Forecast UI (H2) =====================
+function renderFundingForecast(M) {
+  const f = M.m28;
+  if (!f) return '';
+  if (!f.available) {
+    return `<div class="section-title">📡 Dự Báo Funding Rate · Squeeze Opportunity</div>
+    <div class="card"><div class="warning-bar">⚠️ ${f.reason}</div></div>`;
+  }
+  // Sparkline SVG
+  const history = M.market?.funding_history_full || state.coinalyze?.pred_funding_full || [];
+  const w = 320, h = 60, pad = 4;
+  let sparkSVG = '';
+  if (history.length >= 2) {
+    const min = Math.min(...history), max = Math.max(...history);
+    const range = max - min || 0.001;
+    const points = history.map((v, i) => {
+      const x = pad + (i / (history.length - 1)) * (w - 2*pad);
+      const y = pad + (1 - (v - min) / range) * (h - 2*pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const zeroY = pad + (1 - (0 - min) / range) * (h - 2*pad);
+    sparkSVG = `<svg width="${w}" height="${h}" style="background:rgba(0,0,0,0.15);border-radius:6px;margin-top:0.5rem">
+      <line x1="0" y1="${zeroY}" x2="${w}" y2="${zeroY}" stroke="rgba(255,255,255,0.2)" stroke-dasharray="2,2"/>
+      <polyline points="${points}" fill="none" stroke="${f.squeeze_score >= 60 ? 'var(--green)' : f.squeeze_score >= 40 ? 'var(--yellow)' : 'var(--red)'}" stroke-width="2"/>
+      <text x="${w-4}" y="${zeroY-2}" text-anchor="end" font-size="9" fill="rgba(255,255,255,0.5)">0%</text>
+    </svg>`;
+  }
+  const gradeColors = {
+    PRIME_SQUEEZE: 'var(--green)',
+    SETUP_BUILDING: '#84cc16',
+    NEUTRAL: 'var(--yellow)',
+    NO_EDGE: 'var(--orange)',
+    OVERHEATED_LONGS: 'var(--red)',
+  };
+  const gradeColor = gradeColors[f.grade] || 'var(--text)';
+  return `<div class="section-title">📡 Dự Báo Funding Rate · Squeeze Score ${f.squeeze_score}/100</div>
+  <div class="card" style="border-left:4px solid ${gradeColor}">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1rem">
+      <div>
+        <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;color:${gradeColor}">${f.grade.replace(/_/g, ' ')}</div>
+        <div style="font-size:0.8rem;color:var(--text2);margin-top:0.3rem">Nguồn: <b>${f.source === 'binance' ? 'Binance funding history' : 'Coinalyze predicted'}</b> · ${f.sample_size} điểm dữ liệu</div>
+      </div>
+      <div>${sparkSVG}</div>
+    </div>
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
+      <div class="metric"><div class="metric-label">Hiện tại</div><div class="metric-value" style="color:${f.current<0?'var(--green)':'var(--red)'}">${f.current.toFixed(4)}%</div><div class="metric-sub">${f.current<0?'shorts trả long':'longs trả short'}</div></div>
+      <div class="metric"><div class="metric-label">Forecast 24h</div><div class="metric-value" style="color:${f.forecast_24h<0?'var(--green)':'var(--red)'}">${f.forecast_24h.toFixed(4)}%</div><div class="metric-sub">AR(1) + smoothing</div></div>
+      <div class="metric"><div class="metric-label">Forecast 72h</div><div class="metric-value" style="color:${f.forecast_72h<0?'var(--green)':'var(--red)'}">${f.forecast_72h.toFixed(4)}%</div><div class="metric-sub">3 ngày tới</div></div>
+      <div class="metric"><div class="metric-label">Trend slope</div><div class="metric-value" style="color:${f.slope_per_day<0?'var(--green)':'var(--orange)'}">${f.slope_per_day>=0?'+':''}${f.slope_per_day.toFixed(5)}/d</div><div class="metric-sub">${f.slope_per_day<0?'giảm dần':'tăng dần'}</div></div>
+      <div class="metric"><div class="metric-label">AR(1) persistence ρ</div><div class="metric-value">${f.ar1_rho.toFixed(2)}</div><div class="metric-sub">${f.ar1_rho>0.5?'regime sticky':'volatile'}</div></div>
+      <div class="metric"><div class="metric-label">Std dev (7d)</div><div class="metric-value">${f.std.toFixed(4)}%</div><div class="metric-sub">funding vol</div></div>
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">📐 Score breakdown (cách tính):</div>
+    <div style="font-size:0.78rem;color:var(--text2);line-height:1.7;background:rgba(0,0,0,0.2);padding:0.75rem 1rem;border-radius:8px">
+      Base 50 · Current ${f.current < -0.01 ? '+30 (deep negative)' : f.current < -0.005 ? '+20 (negative)' : f.current < 0 ? '+10' : f.current > 0.02 ? '−30 (overheated)' : f.current > 0.01 ? '−15' : '0'}
+      · Trend ${f.slope_per_day < -0.001 ? '+15 (đang giảm)' : f.slope_per_day > 0.001 ? '−10' : '0'}
+      · Forecast continuation ${f.forecast_24h < f.current && f.current < 0 ? '+10' : '0'}
+      · Cross-source ${f.predicted_now !== undefined && f.predicted_now < f.current && f.predicted_now < 0 ? '+10' : '0'}
+      = <b style="color:${gradeColor}">${f.squeeze_score}/100</b>
+    </div>
+    ${f.predicted_now !== undefined ? `<div style="margin-top:0.875rem;font-size:0.78rem;color:var(--text2)">
+      📊 <b>Cross-source check</b>: Coinalyze predicted ${f.predicted_now.toFixed(4)}% vs Binance current ${f.current.toFixed(4)}% = divergence ${f.divergence.toFixed(4)}pp.
+      ${f.pred_accuracy_mae !== null ? `Historical accuracy MAE ${f.pred_accuracy_mae.toFixed(4)}pp.` : ''}
+    </div>` : ''}
+    <div class="${f.squeeze_score >= 60 ? 'safety-bar' : f.squeeze_score >= 40 ? 'warning-bar' : 'danger-bar'}" style="margin-top:0.875rem">
+      ${f.squeeze_score >= 75 ? '🎯 <b>PRIME SQUEEZE</b>: Setup tốt nhất — M23 P7 sẽ trigger nếu các gate khác mở.' :
+        f.squeeze_score >= 60 ? '🟢 <b>SETUP BUILDING</b>: Funding decay rõ. M23 P7 sẽ trigger.' :
+        f.squeeze_score >= 40 ? '⚠️ <b>NEUTRAL</b>: Chờ thêm signal.' :
+        f.squeeze_score >= 25 ? '🟠 <b>NO EDGE</b>: Funding không thuận lợi.' :
+        '🚨 <b>OVERHEATED LONGS</b>: Longs đang đông — short setup, không long.'}
+    </div>
+  </div>`;
+}
+
 // ===================== M24 PnL Attribution UI (C2) =====================
 function renderPnLAttribution(M) {
   const r = M.m24;
@@ -4839,6 +5319,10 @@ async function fetchFromBinance() {
 
     // ADAPTIVE THRESHOLDS — funding rate from 7d history
     if (Array.isArray(r.fundingHistory) && r.fundingHistory.length > 0) {
+      // M28: save full time-ordered series (NOT sorted!) for forecast
+      state.market.funding_history_full = r.fundingHistory
+        .sort((a,b) => parseInt(a.fundingTime) - parseInt(b.fundingTime))
+        .map(x => parseFloat(x.fundingRate) * 100);
       const rates = r.fundingHistory.map(x => parseFloat(x.fundingRate) * 100).sort((a, b) => a - b);
       const pct20Index = Math.floor(rates.length * 0.20);
       state.market.funding_threshold_adaptive = rates[pct20Index]; // 20th percentile (more bearish)
@@ -5259,6 +5743,11 @@ async function fetchFromBinance() {
         state.coinalyze.pred_funding_samples = history.length;
         const sumPred = history.reduce((s,h) => s + parseFloat(h.c || h.close || h.v || 0), 0);
         state.coinalyze.pred_funding_avg_7d = (sumPred / history.length) * 100;
+        // M28: save full predicted time-series for forecast (time-ordered)
+        state.coinalyze.pred_funding_full = history
+          .slice()
+          .sort((a,b) => parseInt(a.t || a.time || 0) - parseInt(b.t || b.time || 0))
+          .map(h => parseFloat(h.c || h.close || h.v || 0) * 100);
       }
     }
 
