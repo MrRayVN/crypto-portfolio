@@ -1654,16 +1654,17 @@ function m27_onchain_signals(onchain) {
 }
 
 // ===================== M30: MACRO LIQUIDITY OVERLAY (Global M2) =====================
-// Global M2 expansion → liquidity flows to risk assets including crypto
-// We don't blend directly into M22 — instead we MULTIPLY a "regime confidence" factor
 function m30_macro_overlay(onchain) {
-  if (!onchain?.m2_global_history || onchain.m2_global_history.length < 30) return null;
-  const history = onchain.m2_global_history;
+  if (!onchain?.m2_global_history) return null;
+  const history = onchain.m2_global_history.filter(v => typeof v === 'number' && isFinite(v) && v > 0);
+  if (history.length < 30) return null;
   const current = history[history.length - 1];
   const prev30 = history[history.length - 30];
   const prev90 = history.length >= 90 ? history[history.length - 90] : history[0];
-  const yoyChange = ((current / prev90) - 1) * 100 * 4; // approximate YoY from 90d
+  if (!current || !prev30 || !prev90 || prev30 === 0 || prev90 === 0) return null;
+  const yoyChange = ((current / prev90) - 1) * 100 * 4;
   const recent30dChange = ((current / prev30) - 1) * 100;
+  if (!isFinite(yoyChange) || !isFinite(recent30dChange)) return null;
   // Trend slope
   const xs = history.slice(-90).map((_, i) => i);
   const ys = history.slice(-90);
@@ -1671,7 +1672,6 @@ function m30_macro_overlay(onchain) {
   let num = 0, den = 0;
   for (let i = 0; i < xs.length; i++) { num += (xs[i]-mx)*(ys[i]-my); den += (xs[i]-mx)**2; }
   const slope = den > 0 ? num / den : 0;
-  // Regime classification
   let regime, multiplier, color;
   if (yoyChange > 5) { regime = 'STRONG_EXPANSION'; multiplier = 1.15; color = 'var(--green)'; }
   else if (yoyChange > 2) { regime = 'EXPANSION'; multiplier = 1.08; color = '#84cc16'; }
@@ -2312,47 +2312,83 @@ function render() {
     `<span style="color:${M.m23.color};font-weight:700">${M.m23.icon} ${M.m23.title}</span> · NET ${fmt$(M.m1.net)} · F&G ${state.market.fg_cg} · ${M.m14.pass}/${M.m14.total}`;
 
   // === TAB PANELS — segmented sections ===
+  // Each render wrapped to isolate errors (so one broken module doesn't kill the whole tab)
+  const safeRender = (name, fn) => {
+    try { return fn(M) || ''; }
+    catch (e) {
+      console.error(`[render] ${name} failed:`, e, e.stack);
+      return `<div class="danger-bar" style="margin-bottom:1rem">⚠️ ${name}: ${e.message} — module bị lỗi (xem console F12 để debug). Các module khác vẫn render.</div>`;
+    }
+  };
   // STRATEGY first (renderPathTo35 sets state.pathMC for Hero gauge)
-  let strategyHTML = renderUnifiedActionCompact(M) + renderBacktest(M) + renderPathTo35(M) + renderConditionalScenarios(M) + renderExpertPlaybook(M) + renderActions(M) + renderFunding(M) + renderTarget(M);
-  if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += renderPlanChanges(M);
+  let strategyHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('Backtest', renderBacktest)
+    + safeRender('PathTo35', renderPathTo35)
+    + safeRender('ConditionalScenarios', renderConditionalScenarios)
+    + safeRender('ExpertPlaybook', renderExpertPlaybook)
+    + safeRender('Actions', renderActions)
+    + safeRender('Funding', renderFunding)
+    + safeRender('Target', renderTarget);
+  if (M.plan_changes && M.plan_changes.length > 0) strategyHTML += safeRender('PlanChanges', renderPlanChanges);
   document.getElementById('panel-strategy').innerHTML = strategyHTML;
 
-  // OVERVIEW: Required CAGR + Unified Action (FIRST, prominent) + Hero + KPI + Portfolio + Alerts
-  let overviewHTML = renderRequiredCAGR(M) + renderUnifiedAction(M) + renderHero(M) + renderKPITracker(M) + renderPortfolio(M) + renderAlerts(M);
+  // OVERVIEW: Required CAGR + Unified Action + Hero + KPI + Portfolio + Alerts
+  let overviewHTML = safeRender('RequiredCAGR', renderRequiredCAGR)
+    + safeRender('UnifiedAction', renderUnifiedAction)
+    + safeRender('Hero', renderHero)
+    + safeRender('KPITracker', renderKPITracker)
+    + safeRender('Portfolio', renderPortfolio)
+    + safeRender('Alerts', renderAlerts);
   document.getElementById('panel-overview').innerHTML = overviewHTML;
 
   // Also update header tickers with MC data now that it's computed
   const pHitVal = (state.pathMC?.probHit ?? 0).toFixed(0);
   setHTML('ticker-phit-val', `<span style="color:${pHitVal >= 50 ? 'var(--mint)' : pHitVal >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHitVal}%</span>`);
 
-  // POSITIONS: Holdings detail + PnL Attribution + Pool ROI, Plan Health, DCA Pool, Loan orders, Trades Journal, G9
-  let positionsHTML = renderUnifiedActionCompact(M) + renderPnLAttribution(M) + renderPoolROI(M) + renderPlanEvaluation(M) + renderDCA(M) + renderLoanOrdersPrecise(M) + renderTradesJournal(M) + renderExposure(M);
+  // POSITIONS
+  let positionsHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('PnLAttribution', renderPnLAttribution)
+    + safeRender('PoolROI', renderPoolROI)
+    + safeRender('PlanEvaluation', renderPlanEvaluation)
+    + safeRender('DCA', renderDCA)
+    + safeRender('LoanOrdersPrecise', renderLoanOrdersPrecise)
+    + safeRender('TradesJournal', renderTradesJournal)
+    + safeRender('Exposure', renderExposure);
   document.getElementById('panel-positions').innerHTML = positionsHTML;
 
-  // MARKET: Coinalyze aggregate, Signal aggregator, TP triggers, TP math, Journey
-  let marketHTML = renderUnifiedActionCompact(M) + renderMarketAggregate(M) + renderSignals(M) + renderTPTriggers(M) + renderTPExplain(M);
-  if (state.prev) marketHTML += renderJourney(M);
+  // MARKET
+  let marketHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('MarketAggregate', renderMarketAggregate)
+    + safeRender('Signals', renderSignals)
+    + safeRender('TPTriggers', renderTPTriggers)
+    + safeRender('TPExplain', renderTPExplain);
+  if (state.prev) marketHTML += safeRender('Journey', renderJourney);
   document.getElementById('panel-market').innerHTML = marketHTML;
 
-  // TACTICAL: Funding Forecast (M28) + Squeeze, Dip-Ladder, Stop-Loss, Stress test
-  let tacticalHTML = renderUnifiedActionCompact(M) + renderFundingForecast(M) + renderSqueeze(M) + renderDipLadder(M) + renderStopLoss(M) + renderStress(M);
+  // TACTICAL
+  let tacticalHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('FundingForecast', renderFundingForecast)
+    + safeRender('Squeeze', renderSqueeze)
+    + safeRender('DipLadder', renderDipLadder)
+    + safeRender('StopLoss', renderStopLoss)
+    + safeRender('Stress', renderStress);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
-  // QUANTUM: regime + on-chain + correlation regime + risk metrics + correlation matrix + Markowitz + Kelly + Jump-Diffusion + Decision Log
-  let quantumHTML = renderUnifiedActionCompact(M)
-    + renderQuantumHeader(M)
-    + renderOnChainSignals(M)
-    + renderMacroOverlay(M)
-    + renderTopTrader(M)
-    + renderCorrelationRegime(M)
-    + renderQuantumPlaybook(M)
-    + renderRiskMetrics(M)
-    + renderJumpDiffusionMC(M)
-    + renderAssetRiskProfile(M)
-    + renderCorrelationMatrix(M)
-    + renderMarkowitz(M)
-    + renderKellySizing(M)
-    + renderDecisionLog(M);
+  // QUANTUM
+  let quantumHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('QuantumHeader', renderQuantumHeader)
+    + safeRender('OnChainSignals', renderOnChainSignals)
+    + safeRender('MacroOverlay', renderMacroOverlay)
+    + safeRender('TopTrader', renderTopTrader)
+    + safeRender('CorrelationRegime', renderCorrelationRegime)
+    + safeRender('QuantumPlaybook', renderQuantumPlaybook)
+    + safeRender('RiskMetrics', renderRiskMetrics)
+    + safeRender('JumpDiffusionMC', renderJumpDiffusionMC)
+    + safeRender('AssetRiskProfile', renderAssetRiskProfile)
+    + safeRender('CorrelationMatrix', renderCorrelationMatrix)
+    + safeRender('Markowitz', renderMarkowitz)
+    + safeRender('KellySizing', renderKellySizing)
+    + safeRender('DecisionLog', renderDecisionLog);
   document.getElementById('panel-quantum').innerHTML = quantumHTML;
 
   // SETTINGS: validation appended after static settings cards
@@ -4899,20 +4935,39 @@ function getBGToken() {
 
 // Defensive parse — bgeometrics returns time-series JSON: try v/value/c at last entry
 function parseBGLatest(data) {
-  if (data == null) return null;
-  if (Array.isArray(data) && data.length > 0) {
-    const last = data[data.length - 1];
-    if (last == null) return null;
-    const v = last.v ?? last.value ?? last.c ?? last.close ?? last.y ?? last.unixTs;
-    return typeof v === 'number' && isFinite(v) ? v : (parseFloat(v) || null);
+  try {
+    if (data == null) return null;
+    if (typeof data === 'number' && isFinite(data)) return data;
+    if (Array.isArray(data) && data.length > 0) {
+      // Search backwards for first valid entry
+      for (let i = data.length - 1; i >= Math.max(0, data.length - 5); i--) {
+        const last = data[i];
+        if (last == null) continue;
+        if (typeof last === 'number' && isFinite(last)) return last;
+        if (typeof last !== 'object') {
+          const p = parseFloat(last);
+          if (isFinite(p)) return p;
+          continue;
+        }
+        const v = last.v ?? last.value ?? last.c ?? last.close ?? last.y;
+        if (typeof v === 'number' && isFinite(v)) return v;
+        const p = parseFloat(v);
+        if (isFinite(p)) return p;
+      }
+      return null;
+    }
+    if (typeof data === 'object') {
+      const v = data.value ?? data.v ?? data.last ?? data.latest ?? data.result;
+      if (Array.isArray(v)) return parseBGLatest(v);
+      if (typeof v === 'number' && isFinite(v)) return v;
+      const p = parseFloat(v);
+      return isFinite(p) ? p : null;
+    }
+    return null;
+  } catch (e) {
+    console.warn('[BG] parseBGLatest error:', e.message);
+    return null;
   }
-  if (typeof data === 'object') {
-    const v = data.value ?? data.v ?? data.last ?? data.latest ?? data.result;
-    if (Array.isArray(v)) return parseBGLatest(v);
-    return typeof v === 'number' && isFinite(v) ? v : (parseFloat(v) || null);
-  }
-  if (typeof data === 'number') return data;
-  return null;
 }
 
 async function fetchBGOne(endpoint) {
@@ -4983,12 +5038,15 @@ async function fetchBGeometricsOnChainCached() {
 // Extract last N values from a BG time-series response (for trend analysis)
 function extractBGHistory(data, n) {
   if (!data) return null;
-  let arr = Array.isArray(data) ? data : (data.values || data.data || data.history || data.result);
+  let arr = Array.isArray(data) ? data : (data && (data.values || data.data || data.history || data.result));
   if (!Array.isArray(arr)) return null;
   return arr.slice(-n).map(item => {
+    if (item == null) return NaN;
+    if (typeof item === 'number') return item;
+    if (typeof item !== 'object') return parseFloat(item);
     const v = item.v ?? item.value ?? item.c ?? item.close ?? item.y;
     return typeof v === 'number' && isFinite(v) ? v : parseFloat(v);
-  }).filter(v => isFinite(v));
+  }).filter(v => typeof v === 'number' && isFinite(v));
 }
 
 function getCreds() {
