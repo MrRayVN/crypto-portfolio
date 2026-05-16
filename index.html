@@ -1487,7 +1487,13 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P9: DEFAULT — maintain current plan ----
+  // ---- P9: DEFAULT — maintain current plan (with True PnL context) ----
+  const _pnl = computeTruePnL(M.m1.net);
+  const pnlNote = _pnl.true_pnl >= _pnl.target_pnl
+    ? `🏆 True PnL đã đạt ${(_pnl.true_pnl_pct/_pnl.target_pct).toFixed(2)}× mục tiêu ${_pnl.target_pct}% (${fmtPct(_pnl.true_pnl_pct)} trên capital ${fmt$(_pnl.total_in)}). Tiếp tục bảo vệ thành quả.`
+    : _pnl.true_pnl >= 0
+      ? `True PnL hiện ${fmtPct(_pnl.true_pnl_pct)} · cần thêm ${fmt$(_pnl.pnl_gap)} để đạt ${_pnl.target_pct}%`
+      : `True PnL âm ${fmtPct(_pnl.true_pnl_pct)} · capital đang lỗ, theo dõi sát`;
   return {
     priority: 9, severity: 'INFO', icon: '✅', color: '#10b981',
     title: 'DUY TRÌ KẾ HOẠCH DCA HIỆN TẠI',
@@ -1496,15 +1502,17 @@ function m23_unified_decision(M, s) {
       `1. Tiếp tục Auto-Invest Pool với alloc hiện tại (LINK:${s.pool.plan_alloc.LINK}% · BNB:${s.pool.plan_alloc.BNB}% · BTC:${s.pool.plan_alloc.BTC}% · WBETH:${s.pool.plan_alloc.WBETH}%)`,
       `2. Theo dõi F&G hàng ngày (hiện ${fg}) và BTC price (${fmt$(btcP,0)})`,
       `3. Refresh dashboard mỗi 6-24h để cập nhật signals`,
+      `4. PnL status: ${pnlNote}`,
     ],
     rationale: [
       'Không có signal nào kích hoạt trên ngưỡng',
       `Regime ${M.m22.regime.replace(/_/g, ' ')} (P bull ${(M.m22.pBull_final*100).toFixed(0)}%) — không cần can thiệp`,
       `Loan ${fmt$(M.loan)} dưới soft cap ${fmt$(M.m7.soft)} (${M.m7.liq_dist.toFixed(1)}% liq distance)`,
       `Pool plan health: ${planHealth.aligned ? 'aligned' : `drift ${planHealth.maxDiff.toFixed(1)}pp (chưa đến ngưỡng 15pp)`}`,
+      `Capital flows: Total IN ${fmt$(_pnl.total_in)} · Total OUT ${fmt$(_pnl.total_out)} · True PnL ${fmt$signed(_pnl.true_pnl)} (${fmtPct(_pnl.true_pnl_pct)})`,
     ],
     blocks: [],
-    sources_fired: ['All M1-M22 within neutral bands'],
+    sources_fired: ['All M1-M22 within neutral bands', 'computeTruePnL'],
   };
 }
 
@@ -2508,6 +2516,7 @@ function render() {
 
   // POSITIONS
   let positionsHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
+    + safeRender('CapitalFlows', renderCapitalFlows)
     + safeRender('PnLAttribution', renderPnLAttribution)
     + safeRender('PoolROI', renderPoolROI)
     + safeRender('PlanEvaluation', renderPlanEvaluation)
@@ -4756,6 +4765,115 @@ function renderFundingForecast(M) {
         f.squeeze_score >= 40 ? '⚠️ <b>NEUTRAL</b>: Chờ thêm signal.' :
         f.squeeze_score >= 25 ? '🟠 <b>NO EDGE</b>: Funding không thuận lợi.' :
         '🚨 <b>OVERHEATED LONGS</b>: Longs đang đông — short setup, không long.'}
+    </div>
+  </div>`;
+}
+
+// ===================== CAPITAL FLOWS UI =====================
+// Hiển thị timeline deposits/withdrawals + DCA pace + insights từ C2C JSON
+function renderCapitalFlows(M) {
+  const cf = state.capital_flows_c2c;
+  if (!cf || !cf.orders || cf.orders.length === 0) return '';
+  const pnl = computeTruePnL(M.m1.net);
+  const cycle = getCycleProgress();
+  // DCA pace analysis
+  const monthsElapsed = cycle.daysElapsed / 30.44;
+  const actualDepositPerMonth = cf.total_deposits_usd / Math.max(1, monthsElapsed);
+  const actualDepositPerYear = actualDepositPerMonth * 12;
+  const committedPerYear = state.funding_yearly || 3650;
+  const dcaPaceRatio = committedPerYear > 0 ? (actualDepositPerYear / committedPerYear) : 0;
+  // Withdrawal pace
+  const actualWithdrawPerMonth = cf.total_withdrawals_usd / Math.max(1, monthsElapsed);
+  // Capital recycle ratio (how many times capital has rotated)
+  const capitalRecycleRatio = pnl.total_in > 0 ? (pnl.total_out / pnl.total_in) : 0;
+  // Performance if NO withdrawals (hypothetical hold)
+  const hypotheticalNet = pnl.effective_position;
+  const hypotheticalPnLPct = pnl.total_in > 0 ? (hypotheticalNet - pnl.total_in) / pnl.total_in * 100 : 0;
+
+  // Build last 20 orders table
+  const recent = cf.orders.slice(-20).reverse();
+  let rows = '';
+  let runningBalance = 0;
+  // Compute running balance forward (oldest first), then map to display order
+  const balancesForward = [];
+  let bal = state.target_anchor || 0;
+  for (const o of cf.orders) {
+    if (o.side === 'Buy') bal += o.usdt_amount;
+    else bal -= o.usdt_amount;
+    balancesForward.push(bal);
+  }
+  // Map orders to display rows with their balance after
+  for (let i = cf.orders.length - 1; i >= Math.max(0, cf.orders.length - 20); i--) {
+    const o = cf.orders[i];
+    const balAfter = balancesForward[i];
+    const c = o.side === 'Buy' ? 'var(--green)' : 'var(--orange)';
+    rows += `<tr>
+      <td style="font-size:0.78rem">${o.date.slice(0, 16)}</td>
+      <td style="color:${c};font-weight:700">${o.side === 'Buy' ? '↓ NẠP' : '↑ RÚT'}</td>
+      <td style="font-family:var(--mono);color:${c}">${o.side === 'Buy' ? '+' : '−'}$${o.usdt_amount.toFixed(2)}</td>
+      <td style="font-family:var(--mono);color:var(--muted)">${o.vnd_amount.toLocaleString('vi-VN')} ₫</td>
+      <td style="font-family:var(--mono);color:var(--muted)">${o.price_vnd_per_usdt ? o.price_vnd_per_usdt.toLocaleString('vi-VN') : '—'}</td>
+      <td style="font-family:var(--mono);font-weight:700">$${balAfter.toFixed(2)}</td>
+    </tr>`;
+  }
+
+  const paceColor = dcaPaceRatio >= 0.9 ? 'var(--green)' : dcaPaceRatio >= 0.5 ? 'var(--yellow)' : 'var(--red)';
+  const paceVerdict = dcaPaceRatio >= 0.95 ? 'Đúng pace' : dcaPaceRatio >= 0.5 ? 'Chậm pace' : 'Rất chậm pace';
+
+  return `<div class="section-title">💸 Dòng Tiền · ${cf.deposit_count} nạp + ${cf.withdraw_count} rút từ ${cf.period_start}</div>
+  <div class="card" style="border-left:4px solid var(--cyan)">
+    <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+      <div class="metric">
+        <div class="metric-label">Tổng NẠP (BUY USDT)</div>
+        <div class="metric-value" style="color:var(--green)">${fmt$(cf.total_deposits_usd)}</div>
+        <div class="metric-sub">${cf.deposit_count} lệnh · ${fmt$(actualDepositPerMonth)}/tháng</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Tổng RÚT (SELL USDT)</div>
+        <div class="metric-value" style="color:var(--orange)">${fmt$(cf.total_withdrawals_usd)}</div>
+        <div class="metric-sub">${cf.withdraw_count} lệnh · ${fmt$(actualWithdrawPerMonth)}/tháng</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Net flow</div>
+        <div class="metric-value" style="color:${cf.net_deposit_usd >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(cf.net_deposit_usd)}</div>
+        <div class="metric-sub">${cf.net_deposit_usd >= 0 ? 'Đang nạp ròng' : 'Đang rút ròng (lấy lãi)'}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Capital recycle</div>
+        <div class="metric-value" style="color:var(--cyan)">${capitalRecycleRatio.toFixed(2)}×</div>
+        <div class="metric-sub">đã rút / tổng nạp</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">DCA pace</div>
+        <div class="metric-value" style="color:${paceColor}">${(dcaPaceRatio * 100).toFixed(0)}%</div>
+        <div class="metric-sub">${fmt$(actualDepositPerYear,0)}/năm vs ${fmt$(committedPerYear,0)} commit · ${paceVerdict}</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Hypothetical PnL</div>
+        <div class="metric-value" style="color:${hypotheticalPnLPct >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtPct(hypotheticalPnLPct)}</div>
+        <div class="metric-sub">nếu KHÔNG rút: ${fmt$(hypotheticalNet)}</div>
+      </div>
+    </div>
+
+    <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.75rem 1rem;border-radius:8px;margin-top:1rem;font-size:0.85rem;line-height:1.6">
+      📊 <b>Phân tích PnL chuẩn (sau khi tính cả tiền rút)</b>:
+      <br>• <b>Total IN</b> = anchor ${fmt$(pnl.anchor)} + deposits ${fmt$(pnl.cumulative_deposits)} = <b>${fmt$(pnl.total_in)}</b>
+      <br>• <b>Total OUT</b> (đã rút về VND) = <b style="color:var(--orange)">${fmt$(pnl.total_out)}</b>
+      <br>• <b>Effective position</b> = NET hiện tại ${fmt$(pnl.net_current)} + Total OUT = <b style="color:var(--cyan)">${fmt$(pnl.effective_position)}</b>
+      <br>• <b>True PnL</b> = Effective − Total IN = <b style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.true_pnl)} (${fmtPct(pnl.true_pnl_pct)})</b>
+      <br>• Mục tiêu ${pnl.target_pct}% PnL trên Total IN = ${fmt$(pnl.target_pnl)} ${pnl.true_pnl >= pnl.target_pnl ? `→ <b style="color:var(--green)">✅ ĐÃ ĐẠT ${(pnl.true_pnl_pct/pnl.target_pct).toFixed(2)}× target</b>` : `→ còn cần ${fmt$(pnl.pnl_gap)}`}
+    </div>
+
+    <div style="font-family:var(--display);font-weight:700;margin:1.25rem 0 0.5rem">📅 Lịch sử giao dịch C2C (20 gần nhất)</div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Thời gian</th><th>Loại</th><th>USDT</th><th>VND</th><th>Tỷ giá</th><th>Balance sau</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">
+      Source: <code>capital_flows_c2c.json</code> · imported ${new Date(cf.imported_at_ts_ms).toLocaleString('vi-VN')} · từ file <code>${cf.imported_from || 'xlsx'}</code>
+      <br>💡 Update: chạy <code>python parse_c2c.py "Binance-...xlsx"</code> → git commit → push
     </div>
   </div>`;
 }
