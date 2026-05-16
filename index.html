@@ -4411,16 +4411,29 @@ function renderOnChainSignals(M) {
     }
     // Format value: reserve_risk needs 5 decimals, mvrv_zscore 2, others 3
     const decimals = k === 'reserve_risk' ? 5 : (k === 'mvrv_zscore' ? 2 : 3);
+    // Per-metric age from smart scheduler
+    const ageMinPerMetric = state.onchain?.[`${k}_age_min`];
+    const ageStr = typeof ageMinPerMetric === 'number'
+      ? (ageMinPerMetric < 60 ? `${ageMinPerMetric}m` : `${Math.floor(ageMinPerMetric/60)}h${ageMinPerMetric%60>0?` ${ageMinPerMetric%60}m`:''}`)
+      : '?';
+    const ageC = typeof ageMinPerMetric === 'number' && ageMinPerMetric < 60 ? 'var(--green)' : 'var(--muted)';
     metricRows += `<tr>
       <td><b>${info.name}</b><div style="font-size:0.7rem;color:var(--muted)">${info.formula}</div></td>
-      <td style="font-family:var(--mono);font-weight:700">${m.value.toFixed(decimals)}</td>
+      <td style="font-family:var(--mono);font-weight:700">${m.value.toFixed(decimals)}<div style="font-size:0.65rem;color:${ageC};margin-top:0.15rem">${ageStr} ago</div></td>
       <td style="color:${m.color};font-weight:700">${m.regime.replace(/_/g,' ')}</td>
       <td style="color:${m.color};font-family:var(--mono)">${(m.pBull*100).toFixed(0)}%</td>
       <td style="font-size:0.72rem;color:var(--muted)">w=${m.weight} · ${info.interp}</td>
     </tr>`;
   }
   const ageMin = state.onchain?.fetched_at ? Math.floor((Date.now() - state.onchain.fetched_at) / 60000) : '?';
-  return `<div class="section-title">⛓ Tín Hiệu On-Chain · ${r.signal_count} metrics ${ageMin}min cache</div>
+  // Smart scheduler status
+  const budgetUsed = state.onchain?._budget_used ?? 0;
+  const budgetLimit = state.onchain?._budget_limit ?? 10;
+  const fetchedNow = state.onchain?._fetched_now ?? 0;
+  const skippedBudget = state.onchain?._skipped_budget ?? 0;
+  const budgetC = budgetUsed >= budgetLimit - 2 ? 'var(--red)' : budgetUsed >= budgetLimit / 2 ? 'var(--yellow)' : 'var(--green)';
+  const budgetHtml = `<span style="font-size:0.72rem;color:var(--muted);font-family:var(--mono)">Budget <b style="color:${budgetC}">${budgetUsed}/${budgetLimit}</b>/h · vừa fetch ${fetchedNow}${skippedBudget>0?` · defer ${skippedBudget}`:''}</span>`;
+  return `<div class="section-title">⛓ Tín Hiệu On-Chain · ${r.signal_count} metrics · ${budgetHtml}</div>
   <div class="card" style="border-left:4px solid ${r.regime_color}">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:1rem;align-items:center;margin-bottom:1rem">
       <div>
@@ -5063,8 +5076,107 @@ async function fetchBGOne(endpoint) {
   }
 }
 
-// Cache all metrics 24h to respect 15 req/day free tier
-// Cache version bump → auto-invalidate stale bad data (timestamp confusion bug)
+// ===================== BG SMART SCHEDULER =====================
+// Strategy: per-metric TTL + hourly budget tracking
+// - Mỗi metric có cache riêng với TTL độc lập (vd MVRV 24h, top trader 4h)
+// - Track requests trong rolling 1h window, dừng fetch nếu sắp hit 10/h limit
+// - Ưu tiên metrics quan trọng nhất khi budget hạn chế
+// - Persistent localStorage → survive across sessions
+
+const BG_METRIC_CONFIG = {
+  // metric_key:    { endpoint:        hint (camelCase),    ttl_h, prio (lower=higher) }
+  mvrv:             { endpoint: 'mvrv',           hint: 'mvrv',          ttl_h: 24, prio: 1 },
+  mvrv_zscore:      { endpoint: 'mvrv-zscore',    hint: 'mvrvZscore',    ttl_h: 24, prio: 1 },
+  nupl:             { endpoint: 'nupl',           hint: 'nupl',          ttl_h: 24, prio: 2 },
+  sopr:             { endpoint: 'sopr',           hint: 'sopr',          ttl_h: 24, prio: 2 },
+  puell_multiple:   { endpoint: 'puell-multiple', hint: 'puellMultiple', ttl_h: 24, prio: 3 },
+  reserve_risk:     { endpoint: 'reserve-risk',   hint: 'reserveRisk',   ttl_h: 24, prio: 3 },
+  aviv:             { endpoint: 'aviv',           hint: 'aviv',          ttl_h: 24, prio: 4 },
+};
+const BG_HOURLY_LIMIT = 10;
+const BG_BUDGET_RESERVE = 1; // leave 1 req as safety buffer
+
+function readBGHistory() {
+  try { return JSON.parse(localStorage.getItem('bgFetchHistory') || '{}'); }
+  catch { return {}; }
+}
+function writeBGHistory(hist) {
+  try { localStorage.setItem('bgFetchHistory', JSON.stringify(hist)); } catch {}
+}
+function getHourlyRequestCount(hist) {
+  const now = Date.now();
+  return ((hist._requests || []).filter(ts => now - ts < 3600 * 1000)).length;
+}
+function recordBGRequest(hist) {
+  if (!hist._requests) hist._requests = [];
+  hist._requests.push(Date.now());
+  hist._requests = hist._requests.filter(ts => Date.now() - ts < 3600 * 1000); // keep only last hour
+  if (hist._requests.length > 30) hist._requests = hist._requests.slice(-30);
+}
+
+async function fetchBGSmart() {
+  const hist = readBGHistory();
+  const now = Date.now();
+
+  // 1) Identify stale metrics
+  const stale = [];
+  for (const [metric, cfg] of Object.entries(BG_METRIC_CONFIG)) {
+    const entry = hist[metric];
+    const age_ms = entry ? now - entry.fetched_at : Infinity;
+    if (!entry || age_ms > cfg.ttl_h * 3600 * 1000) {
+      stale.push({ metric, ...cfg, age_ms });
+    }
+  }
+
+  // 2) Check hourly budget
+  const used = getHourlyRequestCount(hist);
+  const budget = Math.max(0, BG_HOURLY_LIMIT - BG_BUDGET_RESERVE - used);
+
+  let fetched = 0, skipped = 0;
+  if (stale.length === 0) {
+    console.log('[BG-Smart] all 7 metrics fresh (within TTL), no fetch needed');
+  } else if (budget === 0) {
+    console.warn(`[BG-Smart] budget exhausted (${used}/${BG_HOURLY_LIMIT} used last 60min, reserve ${BG_BUDGET_RESERVE}). Try again in ${Math.ceil((3600000 - (now - hist._requests[0]))/60000)} min.`);
+    skipped = stale.length;
+  } else {
+    // 3) Sort by priority then age (highest priority + most stale first)
+    stale.sort((a, b) => a.prio - b.prio || b.age_ms - a.age_ms);
+    const toFetch = stale.slice(0, budget);
+    skipped = stale.length - toFetch.length;
+    console.log(`[BG-Smart] fetching ${toFetch.length}/${stale.length} stale (budget ${used}/${BG_HOURLY_LIMIT} used, ${budget} avail, ${skipped} deferred)`);
+
+    // 4) Fetch in parallel (still within budget)
+    await Promise.all(toFetch.map(async ({ metric, endpoint, hint }) => {
+      recordBGRequest(hist);
+      const raw = await fetchBGOne(endpoint);
+      const value = parseBGLatest(raw, hint);
+      if (typeof value === 'number' && isFinite(value)) {
+        hist[metric] = { value, fetched_at: now };
+        fetched++;
+      }
+    }));
+    writeBGHistory(hist);
+  }
+
+  // 5) Build state.onchain from cached per-metric values
+  const result = { fetched_at: now };
+  for (const metric of Object.keys(BG_METRIC_CONFIG)) {
+    if (hist[metric] && typeof hist[metric].value === 'number') {
+      result[metric] = hist[metric].value;
+      result[`${metric}_age_min`] = Math.floor((now - hist[metric].fetched_at) / 60000);
+    } else {
+      result[metric] = null;
+    }
+  }
+  result._budget_used = getHourlyRequestCount(hist);
+  result._budget_limit = BG_HOURLY_LIMIT;
+  result._fetched_now = fetched;
+  result._skipped_budget = skipped;
+  result._stale_metrics = stale.map(s => s.metric);
+  return result;
+}
+
+// ===================== LEGACY (kept for back-compat, now delegates to smart scheduler) =====================
 const BG_CACHE_VERSION = 3;
 async function fetchBGeometricsOnChainCached() {
   const cached = localStorage.getItem('bgOnChainCache');
@@ -5893,8 +6005,8 @@ async function fetchFromBinance() {
       klinesWBETH: safe('klinesWBETH', fetchPublic('/api/v3/klines?symbol=WBETHUSDT&interval=1d&limit=120')),
       klinesBNB: safe('klinesBNB', fetchPublic('/api/v3/klines?symbol=BNBUSDT&interval=1d&limit=120')),
       fg: safe('fg', fetch(FG_API).then(r => r.json()).then(d => parseInt(d.data[0].value))),
-      // === BGeometrics on-chain (H3) — 12h cache to respect 15 req/day free tier ===
-      onChain: safe('onChain', fetchBGeometricsOnChainCached()),
+      // === BGeometrics on-chain (H3) — smart scheduler with per-metric TTL + hourly budget tracking ===
+      onChain: safe('onChain', fetchBGSmart()),
     };
     const keys = Object.keys(tasks);
     const results = await Promise.all(Object.values(tasks));
