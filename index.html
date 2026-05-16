@@ -2304,10 +2304,17 @@ function getCycleProgress() {
 //   True PnL % = True PnL / Capital deployed × 100
 // Mục tiêu 35% là 35% PnL trên capital deployed (KHÔNG phải NET tăng 35% so anchor)
 function getCumulativeDeposits() {
-  // Manual override takes priority
+  // Priority cascade:
+  // 1. Manual override (user explicit input)
+  // 2. Binance API auto-detected (most accurate)
+  // 3. Pool DCA total invested (fallback, only DCA Pool)
+  // 4. 0 (no data)
   const m = state.capital_flows?.manual_deposits;
   if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
-  // Fallback: estimate from Pool DCA total invested (Binance Auto-Invest)
+  const apiVal = state.capital_flows_api?.total_deposits_usd;
+  if (typeof apiVal === 'number' && apiVal > 0) {
+    return { value: apiVal, source: 'binance_api', count: state.capital_flows_api.deposit_count };
+  }
   const poolInvested = state.pool?.api_total_invested;
   if (typeof poolInvested === 'number' && poolInvested > 0) {
     return { value: poolInvested, source: 'pool_dca_estimate' };
@@ -2316,12 +2323,18 @@ function getCumulativeDeposits() {
 }
 function getCumulativeWithdrawals() {
   const m = state.capital_flows?.manual_withdrawals;
-  return typeof m === 'number' && m >= 0 ? m : 0;
+  if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
+  const apiVal = state.capital_flows_api?.total_withdrawals_usd;
+  if (typeof apiVal === 'number' && apiVal > 0) {
+    return { value: apiVal, source: 'binance_api', count: state.capital_flows_api.withdraw_count };
+  }
+  return { value: 0, source: 'none' };
 }
 function computeTruePnL(currentNet) {
   const anchor = state.target_anchor || 0;
   const depsInfo = getCumulativeDeposits();
-  const withdraws = getCumulativeWithdrawals();
+  const withInfo = getCumulativeWithdrawals();
+  const withdraws = withInfo.value;
   const capitalDeployed = anchor + depsInfo.value - withdraws;
   const truePnL = currentNet - capitalDeployed;
   const truePnLPct = capitalDeployed > 0 ? (truePnL / capitalDeployed) * 100 : 0;
@@ -2332,7 +2345,10 @@ function computeTruePnL(currentNet) {
     anchor,
     cumulative_deposits: depsInfo.value,
     deposits_source: depsInfo.source,
+    deposits_count: depsInfo.count,
     cumulative_withdrawals: withdraws,
+    withdrawals_source: withInfo.source,
+    withdrawals_count: withInfo.count,
     capital_deployed: capitalDeployed,
     net_current: currentNet,
     true_pnl: truePnL,
@@ -2604,7 +2620,7 @@ function renderHero(M) {
   const gaugeCircumference = 2 * Math.PI * 68;
   const gaugeOffset = gaugeCircumference * (1 - pHit/100);
   const pnlColor = pnl.true_pnl >= 0 ? 'var(--mint)' : 'var(--red)';
-  const depBadge = pnl.deposits_source === 'manual' ? '✅' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
 
   return `<div class="hero">
     <div class="hero-main">
@@ -2692,7 +2708,7 @@ function renderKPITracker(M) {
   const dcaStartStr = new Date(yearStartTs).toLocaleDateString('vi-VN');
   const targetDateStr = cycle.targetDate.toLocaleDateString('vi-VN');
   const srcBadge = cycle.authoritative ? '✅' : '⚠️';
-  const depBadge = pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
   return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% PnL / năm (TRUE PnL, đã trừ deposits)</div>
   <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
@@ -5610,6 +5626,152 @@ async function fetchCoinalyzePredFundingHistory() {
 }
 
 // Account snapshot: heavy weight (2400), cache 24h in localStorage with sanity-check invalidation
+// ===================== CAPITAL FLOWS FETCHERS =====================
+// Binance giới hạn 90 ngày/query → cần paginate từ ngày đầu DCA đến hôm nay
+async function fetchPaginatedHistory(endpoint, extraParams = {}) {
+  const cycle = getCycleProgress();
+  const startTs = cycle.yearStartTs;
+  const endTs = Date.now();
+  const WINDOW_MS = 89 * 24 * 3600 * 1000; // 89 days to be safe under 90d limit
+  const allRows = [];
+  let cursor = startTs;
+  while (cursor < endTs) {
+    const windowEnd = Math.min(cursor + WINDOW_MS, endTs);
+    try {
+      const data = await callWorker(endpoint, {
+        ...extraParams,
+        startTime: cursor,
+        endTime: windowEnd,
+        limit: 1000,
+      });
+      // Different endpoints return different shapes: array OR {data:[...]} OR rows
+      const rows = Array.isArray(data) ? data : (data?.data || data?.rows || []);
+      if (Array.isArray(rows)) allRows.push(...rows);
+    } catch (e) {
+      console.warn(`[CapitalFlows] ${endpoint} window ${new Date(cursor).toLocaleDateString()} failed:`, e.message);
+    }
+    cursor = windowEnd + 1;
+  }
+  return allRows;
+}
+async function fetchDepositHistoryAll() {
+  // Only successful deposits (status=1 success, 0 pending, 6 credited)
+  return await fetchPaginatedHistory('/sapi/v1/capital/deposit/hisrec', { status: 1 });
+}
+async function fetchWithdrawHistoryAll() {
+  // Only successful withdrawals (status=6 completed)
+  return await fetchPaginatedHistory('/sapi/v1/capital/withdraw/history', { status: 6 });
+}
+async function fetchFiatOrdersAll() {
+  // Fiat deposit/withdraw via card/bank — transactionType=0 deposit, 1 withdraw
+  const deposits = await fetchPaginatedHistory('/sapi/v1/fiat/orders', { transactionType: 0 });
+  const withdrawals = await fetchPaginatedHistory('/sapi/v1/fiat/orders', { transactionType: 1 });
+  return { deposits, withdrawals };
+}
+async function fetchFiatPaymentsAll() {
+  // Fiat → crypto purchase (BUY) — counts as cap deposit since fiat → crypto
+  const buy = await fetchPaginatedHistory('/sapi/v1/fiat/payments', { transactionType: 0 });
+  const sell = await fetchPaginatedHistory('/sapi/v1/fiat/payments', { transactionType: 1 });
+  return { buy, sell };
+}
+
+// Convert any coin amount → USD at deposit time using BTC kline price ratio
+// Crude approximation when no historical alt klines available
+function valueDepositInUSD(asset, amount, ts, klineHistory) {
+  const a = (asset || '').toUpperCase();
+  amount = parseFloat(amount) || 0;
+  if (amount === 0) return 0;
+  // Stablecoins: 1:1 USD
+  if (['USDT','USDC','BUSD','FDUSD','TUSD','USDP','DAI','PYUSD'].includes(a)) return amount;
+  // BTC: use historical close from kline if available
+  if (a === 'BTC' && klineHistory?.BTC?.length) {
+    const closes = klineHistory.BTC;
+    // klines start ~400 days ago, daily — find closest day to ts
+    const daysAgo = Math.floor((Date.now() - ts) / 86400000);
+    const idx = Math.max(0, closes.length - 1 - daysAgo);
+    return amount * closes[idx];
+  }
+  // ETH/SOL etc: use current price as approximation (introduces small error vs historical)
+  const sym = a === 'WETH' ? 'WBETH' : a === 'SOL' ? 'BNSOL' : a;
+  if (state.holdings?.[sym]?.price) return amount * state.holdings[sym].price;
+  if (state.holdings?.[a]?.price) return amount * state.holdings[a].price;
+  // Unknown asset — return 0 (conservative, will log warning)
+  console.warn(`[CapitalFlows] Unknown asset ${a}, deposit ${amount} not counted`);
+  return 0;
+}
+
+function computeCapitalFlowsFromAPI(r, klineHistory) {
+  const cycle = getCycleProgress();
+  const anchorTs = cycle.yearStartTs;
+  let totalDeposits = 0, totalWithdrawals = 0;
+  const depDetails = [], withDetails = [];
+
+  // Crypto deposits
+  if (Array.isArray(r.depositHistory)) {
+    for (const d of r.depositHistory) {
+      const ts = parseInt(d.insertTime || d.time || 0);
+      if (ts < anchorTs) continue; // skip pre-anchor
+      const usd = valueDepositInUSD(d.coin || d.asset, d.amount, ts, klineHistory);
+      totalDeposits += usd;
+      depDetails.push({ ts, asset: d.coin, amount: parseFloat(d.amount), usd, type: 'crypto' });
+    }
+  }
+  // Crypto withdrawals
+  if (Array.isArray(r.withdrawHistory)) {
+    for (const w of r.withdrawHistory) {
+      const ts = parseInt(w.applyTime ? new Date(w.applyTime).getTime() : (w.completeTime || w.time || 0));
+      if (ts < anchorTs) continue;
+      const usd = valueDepositInUSD(w.coin || w.asset, w.amount, ts, klineHistory);
+      totalWithdrawals += usd;
+      withDetails.push({ ts, asset: w.coin, amount: parseFloat(w.amount), usd, type: 'crypto' });
+    }
+  }
+  // Fiat orders (card/bank)
+  if (r.fiatOrders) {
+    for (const o of (r.fiatOrders.deposits || [])) {
+      const ts = parseInt(o.createTime || o.updateTime || 0);
+      if (ts < anchorTs || o.status !== 'Successful') continue;
+      const usd = parseFloat(o.amount) || 0;
+      totalDeposits += usd;
+      depDetails.push({ ts, asset: o.fiatCurrency, amount: usd, usd, type: 'fiat_order' });
+    }
+    for (const o of (r.fiatOrders.withdrawals || [])) {
+      const ts = parseInt(o.createTime || o.updateTime || 0);
+      if (ts < anchorTs || o.status !== 'Successful') continue;
+      const usd = parseFloat(o.amount) || 0;
+      totalWithdrawals += usd;
+      withDetails.push({ ts, asset: o.fiatCurrency, amount: usd, usd, type: 'fiat_order' });
+    }
+  }
+  // Fiat → crypto purchases (count as deposits since money entered the portfolio)
+  if (r.fiatPayments) {
+    for (const p of (r.fiatPayments.buy || [])) {
+      const ts = parseInt(p.createTime || p.updateTime || 0);
+      if (ts < anchorTs || p.status !== 'Completed') continue;
+      const usd = parseFloat(p.sourceAmount) || 0;
+      totalDeposits += usd;
+      depDetails.push({ ts, asset: p.fiatCurrency, amount: usd, usd, type: 'fiat_buy' });
+    }
+    for (const p of (r.fiatPayments.sell || [])) {
+      const ts = parseInt(p.createTime || p.updateTime || 0);
+      if (ts < anchorTs || p.status !== 'Completed') continue;
+      const usd = parseFloat(p.sourceAmount) || 0;
+      totalWithdrawals += usd;
+      withDetails.push({ ts, asset: p.fiatCurrency, amount: usd, usd, type: 'fiat_sell' });
+    }
+  }
+  return {
+    total_deposits_usd: totalDeposits,
+    total_withdrawals_usd: totalWithdrawals,
+    deposit_count: depDetails.length,
+    withdraw_count: withDetails.length,
+    deposit_details: depDetails,
+    withdraw_details: withDetails,
+    anchor_ts: anchorTs,
+    source: 'binance_api',
+  };
+}
+
 async function fetchAccountSnapshotCached() {
   const cached = localStorage.getItem('accountSnapshotCache');
   if (cached) {
@@ -6155,6 +6317,11 @@ async function fetchFromBinance() {
       caPredFundingHistory: safe('caPredFundingHistory', fetchCoinalyzePredFundingHistory()),
       // Binance — historical NET via daily snapshot (24h cache, heavy weight 2400)
       accountSnapshot: safe('accountSnapshot', fetchAccountSnapshotCached()),
+      // Binance — Capital Flows (deposits/withdrawals/fiat) for TRUE PnL accounting
+      depositHistory:   safe('depositHistory',   fetchDepositHistoryAll()),
+      withdrawHistory:  safe('withdrawHistory',  fetchWithdrawHistoryAll()),
+      fiatOrders:       safe('fiatOrders',       fetchFiatOrdersAll()),
+      fiatPayments:     safe('fiatPayments',     fetchFiatPaymentsAll()),
       // Binance — loan management history
       loanBorrowHistory: safe('loanBorrowHistory', callWorker('/sapi/v2/loan/flexible/borrow/history', { size: 100 })),
       loanRepayHistory: safe('loanRepayHistory', callWorker('/sapi/v2/loan/flexible/repay/history', { size: 100 })),
@@ -6668,6 +6835,15 @@ async function fetchFromBinance() {
     if (r.onChain) {
       state.onchain = r.onChain;
       console.log('[BG] on-chain parsed:', state.onchain);
+    }
+
+    // === CAPITAL FLOWS auto-computed from Binance deposit/withdraw history ===
+    try {
+      const cf = computeCapitalFlowsFromAPI(r, state.klineHistory);
+      state.capital_flows_api = cf;
+      console.log(`[CapitalFlows] deposits=$${cf.total_deposits_usd.toFixed(2)} (${cf.deposit_count}) · withdrawals=$${cf.total_withdrawals_usd.toFixed(2)} (${cf.withdraw_count}) since ${new Date(cf.anchor_ts).toLocaleDateString()}`);
+    } catch (e) {
+      console.warn('[CapitalFlows] compute failed:', e);
     }
 
     // === LOAN MANAGEMENT HISTORY ===
