@@ -2305,12 +2305,17 @@ function getCycleProgress() {
 // Mục tiêu 35% là 35% PnL trên capital deployed (KHÔNG phải NET tăng 35% so anchor)
 function getCumulativeDeposits() {
   // Priority cascade:
-  // 1. Manual override (user explicit input)
-  // 2. Binance API auto-detected (most accurate)
-  // 3. Pool DCA total invested (fallback, only DCA Pool)
-  // 4. 0 (no data)
+  // 1. Manual override (user explicit input — highest trust)
+  // 2. C2C JSON file (parsed from Binance xlsx export — most accurate for C2C/P2P deposits)
+  // 3. Binance API (deposit/withdraw history endpoints)
+  // 4. Pool DCA total invested (fallback)
+  // 5. 0 (no data)
   const m = state.capital_flows?.manual_deposits;
   if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
+  const c2cVal = state.capital_flows_c2c?.total_deposits_usd;
+  if (typeof c2cVal === 'number' && c2cVal > 0) {
+    return { value: c2cVal, source: 'c2c_file', count: state.capital_flows_c2c.deposit_count };
+  }
   const apiVal = state.capital_flows_api?.total_deposits_usd;
   if (typeof apiVal === 'number' && apiVal > 0) {
     return { value: apiVal, source: 'binance_api', count: state.capital_flows_api.deposit_count };
@@ -2324,42 +2329,82 @@ function getCumulativeDeposits() {
 function getCumulativeWithdrawals() {
   const m = state.capital_flows?.manual_withdrawals;
   if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
+  const c2cVal = state.capital_flows_c2c?.total_withdrawals_usd;
+  if (typeof c2cVal === 'number' && c2cVal > 0) {
+    return { value: c2cVal, source: 'c2c_file', count: state.capital_flows_c2c.withdraw_count };
+  }
   const apiVal = state.capital_flows_api?.total_withdrawals_usd;
   if (typeof apiVal === 'number' && apiVal > 0) {
     return { value: apiVal, source: 'binance_api', count: state.capital_flows_api.withdraw_count };
   }
   return { value: 0, source: 'none' };
 }
+
+// Fetch C2C JSON file (saved from xlsx parsing by em); also override anchor date
+async function loadC2CCapitalFlows() {
+  try {
+    const r = await fetch('./capital_flows_c2c.json?v=' + Date.now()); // bust cache
+    if (!r.ok) return;
+    const data = await r.json();
+    state.capital_flows_c2c = data;
+    // Override anchor date if c2c period_start exists and authoritative
+    if (data.period_start_ts_ms && !state.pool?.api_first_execution) {
+      localStorage.setItem('kpiYearStart', String(data.period_start_ts_ms));
+    }
+    console.log(`[C2C] loaded ${data.deposit_count} buys $${data.total_deposits_usd} + ${data.withdraw_count} sells $${data.total_withdrawals_usd} since ${data.period_start}`);
+  } catch (e) {
+    console.warn('[C2C] could not load capital_flows_c2c.json:', e.message);
+  }
+}
 function computeTruePnL(currentNet) {
   const anchor = state.target_anchor || 0;
   const depsInfo = getCumulativeDeposits();
   const withInfo = getCumulativeWithdrawals();
+  const deposits = depsInfo.value;
   const withdraws = withInfo.value;
-  const capitalDeployed = anchor + depsInfo.value - withdraws;
-  const truePnL = currentNet - capitalDeployed;
-  const truePnLPct = capitalDeployed > 0 ? (truePnL / capitalDeployed) * 100 : 0;
+
+  // CORRECT PnL FORMULA — handles withdrawal-heavy case
+  // Total $ put IN  = anchor + deposits (gross capital ever deployed)
+  // Total $ taken OUT = withdrawals
+  // Effective position = current_NET + withdrawals (what we'd have if no withdraws)
+  // True PnL = effective_position − total_in = (current_net + withdrawals) − (anchor + deposits)
+  // PnL % = true_pnl / total_in × 100  (always divides by positive base)
+  const totalIn = anchor + deposits;
+  const totalOut = withdraws;
+  const effectivePosition = currentNet + totalOut;
+  const truePnL = effectivePosition - totalIn;
+  const truePnLPct = totalIn > 0 ? (truePnL / totalIn) * 100 : 0;
+
   const targetPct = state.target_pct || 35;
-  const targetPnL = capitalDeployed * (targetPct / 100);
-  const targetNet = capitalDeployed * (1 + targetPct / 100);
+  const targetPnL = totalIn * (targetPct / 100);
+  // Target NET = nếu KHÔNG rút thêm thì NET phải đạt
+  const targetNet = totalIn * (1 + targetPct / 100) - totalOut;
+  const pnlGap = targetPnL - truePnL;
+  const pnlGapPct = targetPct - truePnLPct;
+
   return {
     anchor,
-    cumulative_deposits: depsInfo.value,
+    cumulative_deposits: deposits,
     deposits_source: depsInfo.source,
     deposits_count: depsInfo.count,
     cumulative_withdrawals: withdraws,
     withdrawals_source: withInfo.source,
     withdrawals_count: withInfo.count,
-    capital_deployed: capitalDeployed,
+    total_in: totalIn,                  // anchor + deposits (gross capital ever in)
+    total_out: totalOut,                // withdrawals
+    effective_position: effectivePosition, // current_net + withdrawals
+    capital_deployed: totalIn,          // alias for compatibility
     net_current: currentNet,
     true_pnl: truePnL,
     true_pnl_pct: truePnLPct,
     target_pct: targetPct,
     target_pnl: targetPnL,
     target_net: targetNet,
-    pnl_gap: targetPnL - truePnL,
-    pnl_gap_pct: targetPct - truePnLPct,
+    pnl_gap: pnlGap,
+    pnl_gap_pct: pnlGapPct,
     progress_pct: targetPct !== 0 ? (truePnLPct / targetPct) * 100 : 0,
     on_track: truePnLPct >= targetPct * 0.5,
+    has_realized_via_withdrawal: totalOut > 0,
   };
 }
 
@@ -2620,13 +2665,13 @@ function renderHero(M) {
   const gaugeCircumference = 2 * Math.PI * 68;
   const gaugeOffset = gaugeCircumference * (1 - pHit/100);
   const pnlColor = pnl.true_pnl >= 0 ? 'var(--mint)' : 'var(--red)';
-  const depBadge = pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'c2c_file' ? `📄 C2C file (${pnl.deposits_count})` : pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
 
   return `<div class="hero">
     <div class="hero-main">
       <div class="hero-label">🎯 LÃI THẬT (True PnL) vs mục tiêu ${pnl.target_pct}%</div>
       <div class="hero-value" style="color:${pnlColor}">${pnl.true_pnl >= 0 ? '+' : ''}${fmt$(pnl.true_pnl)}<span style="font-size:1.5rem;margin-left:0.5rem">(${fmtPct(pnl.true_pnl_pct)})</span></div>
-      <div class="hero-sub">Capital deployed: <b>${fmt$(pnl.capital_deployed)}</b> · Anchor ${fmt$(pnl.anchor)} + Deposits ${fmt$(pnl.cumulative_deposits)} ${depBadge}${pnl.cumulative_withdrawals > 0 ? ' − Withdrawals ' + fmt$(pnl.cumulative_withdrawals) : ''}</div>
+      <div class="hero-sub">Total IN: <b>${fmt$(pnl.total_in)}</b> (anchor ${fmt$(pnl.anchor)} + deposits ${fmt$(pnl.cumulative_deposits)} ${depBadge})${pnl.total_out > 0 ? ` · OUT: <b style="color:var(--orange)">${fmt$(pnl.total_out)}</b>` : ''}</div>
       <div style="font-size:0.8rem;color:var(--text2);margin-top:0.3rem">Còn cần lãi: <b style="color:var(--orange)">${fmt$(pnl.pnl_gap)}</b> (${fmtPct(pnl.pnl_gap_pct)}) để đạt ${pnl.target_pct}% PnL = ${fmt$(pnl.target_pnl)}</div>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="hero-stats">
@@ -2708,14 +2753,15 @@ function renderKPITracker(M) {
   const dcaStartStr = new Date(yearStartTs).toLocaleDateString('vi-VN');
   const targetDateStr = cycle.targetDate.toLocaleDateString('vi-VN');
   const srcBadge = cycle.authoritative ? '✅' : '⚠️';
-  const depBadge = pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'c2c_file' ? `📄 C2C file · ${pnl.deposits_count} lệnh BUY` : pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
   return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% PnL / năm (TRUE PnL, đã trừ deposits)</div>
   <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
       <div>
         <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Mục tiêu: <b style="color:var(--green)">+${fmt$(pnl.target_pnl)}</b> True PnL (NET ≥ ${fmt$(pnl.target_net)}) vào ${targetDateStr}</div>
         <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Ngày đầu DCA: <b>${dcaStartStr}</b> ${srcBadge} <span style="font-size:0.72rem;opacity:0.8">(nguồn: ${cycle.source})</span></div>
-        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">Capital deployed: <b>${fmt$(pnl.capital_deployed)}</b> = Anchor ${fmt$(anchor)} + Deposits ${fmt$(pnl.cumulative_deposits)} <span style="font-size:0.72rem">(${depBadge})</span>${pnl.cumulative_withdrawals > 0 ? ' − Withdrawals ' + fmt$(pnl.cumulative_withdrawals) : ''}</div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">Total IN: <b>${fmt$(pnl.total_in)}</b> = Anchor ${fmt$(anchor)} + Deposits ${fmt$(pnl.cumulative_deposits)} <span style="font-size:0.72rem">(${depBadge})</span>${pnl.cumulative_withdrawals > 0 ? ` · Total OUT (đã rút): <b style="color:var(--orange)">${fmt$(pnl.cumulative_withdrawals)}</b>` : ''}</div>
+        ${pnl.has_realized_via_withdrawal ? `<div style="font-size:0.8rem;color:var(--text2);margin-top:0.15rem">💡 <b>Effective position</b> = NET + Withdrawals = <b style="color:var(--cyan)">${fmt$(pnl.effective_position)}</b> (giá trị nếu anh KHÔNG rút)</div>` : ''}
         <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">${daysElapsed}/365 ngày đã qua · còn ${daysRemaining} ngày</div>
       </div>
       <span class="badge" style="background:${statusC}33;color:${statusC};border:1px solid ${statusC};font-size:0.9rem;padding:0.4rem 0.8rem">${statusTextVi}</span>
@@ -6995,6 +7041,8 @@ async function fetchFromBinance() {
 buildEditor();
 loadManualAvgFromStorage(); // Apply saved manual avg before first render
 loadCapitalFlowsFromStorage(); // Critical: load deposits/withdrawals for TRUE PnL
+// Async fetch C2C JSON (em parsed from xlsx) — overrides anchor date + provides capital flows
+loadC2CCapitalFlows().then(() => render());
 render();
 loadBinanceCreds();
 setManualAvgBadge();
