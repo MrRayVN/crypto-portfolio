@@ -1,0 +1,495 @@
+{
+  "source": "binance_c2c_xlsx",
+  "user_email": "daicatninhphung@gmail.com",
+  "period_start_ts_ms": 1754006400000,
+  "period_start": "2025-08-01",
+  "period_end": "2026-05-13",
+  "imported_at_ts_ms": 1778937668701,
+  "total_deposits_usd": 9820.55,
+  "total_withdrawals_usd": 41536.57,
+  "net_deposit_usd": -31716.02,
+  "deposit_count": 26,
+  "withdraw_count": 34,
+  "orders": [
+    {
+      "ts_ms": 1754974560000,
+      "date": "2025-08-12 04:56:00",
+      "side": "Sell",
+      "usdt_amount": 2353.96,
+      "vnd_amount": 61883254.0,
+      "price_vnd_per_usdt": 26289.0
+    },
+    {
+      "ts_ms": 1755523039000,
+      "date": "2025-08-18 13:17:19",
+      "side": "Buy",
+      "usdt_amount": 188.97,
+      "vnd_amount": 5000000.0,
+      "price_vnd_per_usdt": 26459.0
+    },
+    {
+      "ts_ms": 1755597696000,
+      "date": "2025-08-19 10:01:36",
+      "side": "Buy",
+      "usdt_amount": 113.41,
+      "vnd_amount": 3000000.0,
+      "price_vnd_per_usdt": 26452.0
+    },
+    {
+      "ts_ms": 1756113722000,
+      "date": "2025-08-25 09:22:02",
+      "side": "Buy",
+      "usdt_amount": 750.27,
+      "vnd_amount": 20000000.0,
+      "price_vnd_per_usdt": 26657.0
+    },
+    {
+      "ts_ms": 1756293553000,
+      "date": "2025-08-27 11:19:13",
+      "side": "Buy",
+      "usdt_amount": 186.97,
+      "vnd_amount": 5000000.0,
+      "price_vnd_per_usdt": 26742.0
+    },
+    {
+      "ts_ms": 1759315208000,
+      "date": "2025-10-01 10:40:08",
+      "side": "Buy",
+      "usdt_amount": 90.18,
+      "vnd_amount": 2400000.0,
+      "price_vnd_per_usdt": 26611.0
+    },
+    {
+      "ts_ms": 1761515888000,
+      "date": "2025-10-26 21:58:08",
+      "side": "Buy",
+      "usdt_amount": 250.05,
+      "vnd_amount": 6973644.0,
+      "price_vnd_per_usdt": 27889.0
+    },
+    {
+      "ts_ms": 1764233900000,
+      "date": "2025-11-27 08:58:20",
+      "side": "Buy",
+      "usdt_amount": 300.05,
+      "vnd_amount": 8328487.0,
+      "price_vnd_per_usdt": 27757.0
+    },
+    {
+      "ts_ms": 1766566639000,
+      "date": "2025-12-24 08:57:19",
+      "side": "Buy",
+      "usdt_amount": 300.07,
+      "vnd_amount": 8060780.0,
+      "price_vnd_per_usdt": 26863.0
+    },
+    {
+      "ts_ms": 1767723269000,
+      "date": "2026-01-06 18:14:29",
+      "side": "Buy",
+      "usdt_amount": 300.07,
+      "vnd_amount": 8103990.0,
+      "price_vnd_per_usdt": 27007.0
+    },
+    {
+      "ts_ms": 1768331423000,
+      "date": "2026-01-13 19:10:23",
+      "side": "Sell",
+      "usdt_amount": 49.93,
+      "vnd_amount": 1329186.0,
+      "price_vnd_per_usdt": 26621.0
+    },
+    {
+      "ts_ms": 1768572037000,
+      "date": "2026-01-16 14:00:37",
+      "side": "Buy",
+      "usdt_amount": 364.64,
+      "vnd_amount": 10000000.0,
+      "price_vnd_per_usdt": 27424.0
+    },
+    {
+      "ts_ms": 1770404709000,
+      "date": "2026-02-06 19:05:09",
+      "side": "Buy",
+      "usdt_amount": 299.28,
+      "vnd_amount": 8000000.0,
+      "price_vnd_per_usdt": 26730.0
+    },
+    {
+      "ts_ms": 1771349530000,
+      "date": "2026-02-17 17:32:10",
+      "side": "Buy",
+      "usdt_amount": 399.93,
+      "vnd_amount": 10480565.0,
+      "price_vnd_per_usdt": 26206.0
+    },
+    {
+      "ts_ms": 1772632062000,
+      "date": "2026-03-04 13:47:42",
+      "side": "Buy",
+      "usdt_amount": 705.76,
+      "vnd_amount": 19000000.0,
+      "price_vnd_per_usdt": 26921.0
+    },
+    {
+      "ts_ms": 1772807531000,
+      "date": "2026-03-06 14:32:11",
+      "side": "Buy",
+      "usdt_amount": 371.77,
+      "vnd_amount": 10000000.0,
+      "price_vnd_per_usdt": 26898.0
+    },
+    {
+      "ts_ms": 1773164430000,
+      "date": "2026-03-10 17:40:30",
+      "side": "Buy",
+      "usdt_amount": 293.67,
+      "vnd_amount": 8000000.0,
+      "price_vnd_per_usdt": 27241.0
+    },
+    {
+      "ts_ms": 1773177925000,
+      "date": "2026-03-10 21:25:25",
+      "side": "Buy",
+      "usdt_amount": 367.03,
+      "vnd_amount": 10000000.0,
+      "price_vnd_per_usdt": 27245.0
+    },
+    {
+      "ts_ms": 1773514650000,
+      "date": "2026-03-14 18:57:30",
+      "side": "Sell",
+      "usdt_amount": 329.22,
+      "vnd_amount": 9000000.0,
+      "price_vnd_per_usdt": 27337.0
+    },
+    {
+      "ts_ms": 1773938765000,
+      "date": "2026-03-19 16:46:05",
+      "side": "Buy",
+      "usdt_amount": 181.62,
+      "vnd_amount": 5000000.0,
+      "price_vnd_per_usdt": 27530.0
+    },
+    {
+      "ts_ms": 1774125526000,
+      "date": "2026-03-21 20:38:46",
+      "side": "Sell",
+      "usdt_amount": 143.86,
+      "vnd_amount": 4016139.0,
+      "price_vnd_per_usdt": 27917.0
+    },
+    {
+      "ts_ms": 1774126779000,
+      "date": "2026-03-21 20:59:39",
+      "side": "Sell",
+      "usdt_amount": 998.92,
+      "vnd_amount": 27900000.0,
+      "price_vnd_per_usdt": 27930.0
+    },
+    {
+      "ts_ms": 1774127208000,
+      "date": "2026-03-21 21:06:48",
+      "side": "Sell",
+      "usdt_amount": 1087.8,
+      "vnd_amount": 30386605.0,
+      "price_vnd_per_usdt": 27934.0
+    },
+    {
+      "ts_ms": 1774127479000,
+      "date": "2026-03-21 21:11:19",
+      "side": "Sell",
+      "usdt_amount": 1182.66,
+      "vnd_amount": 33037607.0,
+      "price_vnd_per_usdt": 27935.0
+    },
+    {
+      "ts_ms": 1774127688000,
+      "date": "2026-03-21 21:14:48",
+      "side": "Sell",
+      "usdt_amount": 1443.81,
+      "vnd_amount": 40319838.0,
+      "price_vnd_per_usdt": 27926.0
+    },
+    {
+      "ts_ms": 1774128799000,
+      "date": "2026-03-21 21:33:19",
+      "side": "Sell",
+      "usdt_amount": 2640.29,
+      "vnd_amount": 73703695.0,
+      "price_vnd_per_usdt": 27915.0
+    },
+    {
+      "ts_ms": 1774129686000,
+      "date": "2026-03-21 21:48:06",
+      "side": "Sell",
+      "usdt_amount": 2676.28,
+      "vnd_amount": 74697651.0,
+      "price_vnd_per_usdt": 27911.0
+    },
+    {
+      "ts_ms": 1774130400000,
+      "date": "2026-03-21 22:00:00",
+      "side": "Sell",
+      "usdt_amount": 2705.3,
+      "vnd_amount": 75475164.0,
+      "price_vnd_per_usdt": 27899.0
+    },
+    {
+      "ts_ms": 1774130821000,
+      "date": "2026-03-21 22:07:01",
+      "side": "Sell",
+      "usdt_amount": 2726.99,
+      "vnd_amount": 76113017.0,
+      "price_vnd_per_usdt": 27911.0
+    },
+    {
+      "ts_ms": 1774131943000,
+      "date": "2026-03-21 22:25:43",
+      "side": "Sell",
+      "usdt_amount": 2748.64,
+      "vnd_amount": 76717291.0,
+      "price_vnd_per_usdt": 27911.0
+    },
+    {
+      "ts_ms": 1774132336000,
+      "date": "2026-03-21 22:32:16",
+      "side": "Sell",
+      "usdt_amount": 2773.9,
+      "vnd_amount": 77377940.0,
+      "price_vnd_per_usdt": 27895.0
+    },
+    {
+      "ts_ms": 1774132728000,
+      "date": "2026-03-21 22:38:48",
+      "side": "Sell",
+      "usdt_amount": 2806.44,
+      "vnd_amount": 78302482.0,
+      "price_vnd_per_usdt": 27901.0
+    },
+    {
+      "ts_ms": 1774133070000,
+      "date": "2026-03-21 22:44:30",
+      "side": "Sell",
+      "usdt_amount": 2831.8,
+      "vnd_amount": 79007220.0,
+      "price_vnd_per_usdt": 27900.0
+    },
+    {
+      "ts_ms": 1774133460000,
+      "date": "2026-03-21 22:51:00",
+      "side": "Sell",
+      "usdt_amount": 2857.37,
+      "vnd_amount": 79720623.0,
+      "price_vnd_per_usdt": 27900.0
+    },
+    {
+      "ts_ms": 1774134463000,
+      "date": "2026-03-21 23:07:43",
+      "side": "Buy",
+      "usdt_amount": 2699.4,
+      "vnd_amount": 75300000.0,
+      "price_vnd_per_usdt": 27895.0
+    },
+    {
+      "ts_ms": 1774137664000,
+      "date": "2026-03-22 00:01:04",
+      "side": "Sell",
+      "usdt_amount": 932.36,
+      "vnd_amount": 26000000.0,
+      "price_vnd_per_usdt": 27886.0
+    },
+    {
+      "ts_ms": 1774138247000,
+      "date": "2026-03-22 00:10:47",
+      "side": "Sell",
+      "usdt_amount": 1075.77,
+      "vnd_amount": 30000000.0,
+      "price_vnd_per_usdt": 27887.0
+    },
+    {
+      "ts_ms": 1774138532000,
+      "date": "2026-03-22 00:15:32",
+      "side": "Sell",
+      "usdt_amount": 1954.47,
+      "vnd_amount": 54521895.0,
+      "price_vnd_per_usdt": 27896.0
+    },
+    {
+      "ts_ms": 1774284094000,
+      "date": "2026-03-23 16:41:34",
+      "side": "Sell",
+      "usdt_amount": 1699.93,
+      "vnd_amount": 47762933.0,
+      "price_vnd_per_usdt": 28097.0
+    },
+    {
+      "ts_ms": 1774732827000,
+      "date": "2026-03-28 21:20:27",
+      "side": "Sell",
+      "usdt_amount": 904.97,
+      "vnd_amount": 25448661.0,
+      "price_vnd_per_usdt": 28121.0
+    },
+    {
+      "ts_ms": 1775576427000,
+      "date": "2026-04-07 15:40:27",
+      "side": "Buy",
+      "usdt_amount": 956.84,
+      "vnd_amount": 25900000.0,
+      "price_vnd_per_usdt": 27068.0
+    },
+    {
+      "ts_ms": 1775984611000,
+      "date": "2026-04-12 09:03:31",
+      "side": "Sell",
+      "usdt_amount": 111.39,
+      "vnd_amount": 3000000.0,
+      "price_vnd_per_usdt": 26932.0
+    },
+    {
+      "ts_ms": 1776164589000,
+      "date": "2026-04-14 11:03:09",
+      "side": "Sell",
+      "usdt_amount": 93.19,
+      "vnd_amount": 2500000.0,
+      "price_vnd_per_usdt": 26825.0
+    },
+    {
+      "ts_ms": 1777145938000,
+      "date": "2026-04-25 19:38:58",
+      "side": "Buy",
+      "usdt_amount": 100.11,
+      "vnd_amount": 2673137.0,
+      "price_vnd_per_usdt": 26702.0
+    },
+    {
+      "ts_ms": 1777146518000,
+      "date": "2026-04-25 19:48:38",
+      "side": "Sell",
+      "usdt_amount": 100.03,
+      "vnd_amount": 2672901.0,
+      "price_vnd_per_usdt": 26721.0
+    },
+    {
+      "ts_ms": 1777200485000,
+      "date": "2026-04-26 10:48:05",
+      "side": "Buy",
+      "usdt_amount": 100.11,
+      "vnd_amount": 2682147.0,
+      "price_vnd_per_usdt": 26792.0
+    },
+    {
+      "ts_ms": 1777281011000,
+      "date": "2026-04-27 09:10:11",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2676724.0,
+      "price_vnd_per_usdt": 26786.0
+    },
+    {
+      "ts_ms": 1777281300000,
+      "date": "2026-04-27 09:15:00",
+      "side": "Buy",
+      "usdt_amount": 100.07,
+      "vnd_amount": 2681575.0,
+      "price_vnd_per_usdt": 26797.0
+    },
+    {
+      "ts_ms": 1777394119000,
+      "date": "2026-04-28 16:35:19",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2665532.0,
+      "price_vnd_per_usdt": 26674.0
+    },
+    {
+      "ts_ms": 1777394333000,
+      "date": "2026-04-28 16:38:53",
+      "side": "Buy",
+      "usdt_amount": 100.07,
+      "vnd_amount": 2672069.0,
+      "price_vnd_per_usdt": 26702.0
+    },
+    {
+      "ts_ms": 1777477287000,
+      "date": "2026-04-29 15:41:27",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2664933.0,
+      "price_vnd_per_usdt": 26668.0
+    },
+    {
+      "ts_ms": 1777553964000,
+      "date": "2026-04-30 12:59:24",
+      "side": "Buy",
+      "usdt_amount": 100.07,
+      "vnd_amount": 2681375.0,
+      "price_vnd_per_usdt": 26795.0
+    },
+    {
+      "ts_ms": 1777656742000,
+      "date": "2026-05-01 17:32:22",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2668330.0,
+      "price_vnd_per_usdt": 26702.0
+    },
+    {
+      "ts_ms": 1777657073000,
+      "date": "2026-05-01 17:37:53",
+      "side": "Buy",
+      "usdt_amount": 100.07,
+      "vnd_amount": 2673770.0,
+      "price_vnd_per_usdt": 26719.0
+    },
+    {
+      "ts_ms": 1777713801000,
+      "date": "2026-05-02 09:23:21",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2670029.0,
+      "price_vnd_per_usdt": 26719.0
+    },
+    {
+      "ts_ms": 1777720551000,
+      "date": "2026-05-02 11:15:51",
+      "side": "Buy",
+      "usdt_amount": 100.07,
+      "vnd_amount": 2673770.0,
+      "price_vnd_per_usdt": 26719.0
+    },
+    {
+      "ts_ms": 1777738266000,
+      "date": "2026-05-02 16:11:06",
+      "side": "Sell",
+      "usdt_amount": 99.93,
+      "vnd_amount": 2666831.0,
+      "price_vnd_per_usdt": 26687.0
+    },
+    {
+      "ts_ms": 1778085180000,
+      "date": "2026-05-06 16:33:00",
+      "side": "Sell",
+      "usdt_amount": 758.93,
+      "vnd_amount": 20202716.0,
+      "price_vnd_per_usdt": 26620.0
+    },
+    {
+      "ts_ms": 1778657478000,
+      "date": "2026-05-13 07:31:18",
+      "side": "Sell",
+      "usdt_amount": 569.93,
+      "vnd_amount": 15056410.0,
+      "price_vnd_per_usdt": 26418.0
+    },
+    {
+      "ts_ms": 1778660539000,
+      "date": "2026-05-13 08:22:19",
+      "side": "Sell",
+      "usdt_amount": 378.85,
+      "vnd_amount": 10000000.0,
+      "price_vnd_per_usdt": 26395.0
+    }
+  ]
+}

@@ -3,3 +3,4 @@
 # Allow only the deployable files
 !index.html
 !.gitignore
+!capital_flows_c2c.json
