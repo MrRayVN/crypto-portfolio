@@ -413,6 +413,11 @@ const DEFAULT_STATE = {
     manual_withdrawals: 0,   // user-entered cumulative withdrawals since anchor day
     last_updated_ts: null,
   },
+  // === DEPOSIT SCHEDULE — user nạp cố định ngày 6 hàng tháng ===
+  deposit_schedule: {
+    day_of_month: 6,               // ngày trong tháng user nạp định kỳ
+    expected_amount_usd: null,     // (optional) số tiền nạp mỗi tháng
+  },
 };
 
 let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -1319,26 +1324,88 @@ function m23_unified_decision(M, s) {
     }
   }
 
-  // ---- P3.0: DCA CAPACITY SHORTAGE (urgent if runway < 30d) ----
-  if (M.m32 && !M.m32.sufficient && M.m32.runway_days < 30) {
+  // ---- P3.0: DCA CAPACITY SHORTAGE — alternatives chứ không yêu cầu "nạp gấp" ----
+  // Logic: user nạp định kỳ ngày 6 hàng tháng. Nếu capital không cover được đến ngày nạp kế:
+  //   1. REDUCE_SLIGHTLY: capital ≥ 80% → giảm DCA pace nhẹ, đợi nạp
+  //   2. REDUCE_OR_LOAN: capital 40-80% → reduce mạnh HOẶC vay short-term
+  //   3. LOAN_PRIMARY: capital < 40% → recommend loan vì pause quá lâu = mất signal
+  if (M.m32 && !M.m32.sufficient) {
+    const c = M.m32;
+    const shortLoanAmount = Math.min(c.shortage_until_deposit, M.m7.soft - M.loan, M.m1.net * 0.10);
+    const loanAprMonthly = 0.09 / 12; // 0.75% per month
+    const loanCarryCost = shortLoanAmount * loanAprMonthly * (c.days_to_next_deposit / 30);
+
+    if (c.primary_action_type === 'REDUCE_SLIGHTLY') {
+      return {
+        priority: 3, severity: 'LOW', icon: '⏳', color: '#f59e0b',
+        title: `GIẢM DCA NHẸ ${c.pace_cut_pct.toFixed(0)}% — đợi nạp ngày ${c.schedule_day}`,
+        coin: null, amount: null, deadline: `${c.days_to_next_deposit} ngày tới (đến ngày ${c.schedule_day})`,
+        action_steps: [
+          `1. Vào Binance → Earn → Auto-Invest → Edit plan`,
+          `2. Giảm pace từ $${c.daily_dca_target.toFixed(2)}/d → $${c.daily_dca_sustainable.toFixed(2)}/d (giảm ${c.pace_cut_pct.toFixed(0)}%)`,
+          `3. Capital ${fmt$(c.available_usd)} đủ duy trì pace mới đến ngày ${c.schedule_day} (${c.days_to_next_deposit}d)`,
+          `4. Sau khi nạp ngày ${c.schedule_day} → reset pace về $${c.daily_dca_target.toFixed(2)}/d`,
+          `💡 Alternative: USDC nhàn rỗi cho vào Flexible Earn 5% APR trong ${c.days_to_next_deposit}d → +${fmt$(c.available_usd * 0.055 * c.days_to_next_deposit/365)}`,
+        ],
+        rationale: [
+          `USDT/USDC có sẵn: ${fmt$(c.available_usd)} · cần ${fmt$(c.required_until_next_deposit)} đến ngày ${c.schedule_day}`,
+          `Runway: ${c.runway_days.toFixed(0)} ngày = ${(c.runway_days/c.days_to_next_deposit*100).toFixed(0)}% của period`,
+          `Cách rẻ nhất: giảm pace để stretch capital — không cần vay không cần action lớn`,
+        ],
+        blocks: [],
+        sources_fired: ['M32 DCA Capacity · LOW shortage'],
+      };
+    }
+    if (c.primary_action_type === 'REDUCE_OR_LOAN') {
+      return {
+        priority: 3, severity: 'MEDIUM', icon: '⚖️', color: '#fb923c',
+        title: `2 LỰA CHỌN — REDUCE ${c.pace_cut_pct.toFixed(0)}% hoặc vay ${fmt$(shortLoanAmount)}`,
+        coin: null, amount: null, deadline: `${c.days_to_next_deposit} ngày`,
+        action_steps: [
+          `🅐 OPTION A — REDUCE PACE (zero risk, mất một chút cơ hội)`,
+          `   • Giảm DCA $${c.daily_dca_target.toFixed(2)}/d → $${c.daily_dca_sustainable.toFixed(2)}/d`,
+          `   • Cost: 0 (chỉ chậm pace ${c.pace_cut_pct.toFixed(0)}%)`,
+          `   • Reset về full pace sau ngày ${c.schedule_day}`,
+          ``,
+          `🅑 OPTION B — VAY SHORT-TERM (giữ pace, có carry cost)`,
+          `   • Vay ${fmt$(shortLoanAmount)} USDT (Flexible Loan, collateral BTC)`,
+          `   • Giữ DCA pace $${c.daily_dca_target.toFixed(2)}/d đến ngày ${c.schedule_day}`,
+          `   • Carry cost ~${fmt$(loanCarryCost)} (≈${(loanAprMonthly*100).toFixed(2)}%/tháng × ${c.days_to_next_deposit}d)`,
+          `   • Sau khi nạp ngày ${c.schedule_day} → trả loan ngay`,
+          ``,
+          `💡 EM đề xuất Option B nếu F&G < 35 (đáng giữ pace mua dip) · Option A nếu F&G ≥ 40 (giá fair, không vội)`,
+        ],
+        rationale: [
+          `Available ${fmt$(c.available_usd)} cover ${c.runway_days.toFixed(0)}d / ${c.days_to_next_deposit}d period = ${(c.runway_days/c.days_to_next_deposit*100).toFixed(0)}%`,
+          `Shortage: ${fmt$(c.shortage_until_deposit)} để duy trì đến ngày ${c.schedule_day}`,
+          `Loan cost ${fmt$(loanCarryCost)} là chi phí cơ hội nhỏ nếu DCA pace quan trọng để hit target`,
+        ],
+        blocks: [],
+        sources_fired: ['M32 DCA Capacity · MEDIUM shortage'],
+      };
+    }
+    // HIGH / CRITICAL — LOAN_PRIMARY
     return {
-      priority: 3, severity: 'CRITICAL', icon: '🚨', color: '#ef4444',
-      title: `NẠP USDT GẤP — Còn ${M.m32.runway_days.toFixed(0)} ngày DCA, cần ${fmt$(M.m32.shortage_usd)}`,
-      coin: 'USDT', amount: M.m32.shortage_usd, deadline: 'TRONG TUẦN NÀY',
+      priority: 3, severity: 'HIGH', icon: '💰', color: '#a78bfa',
+      title: `VAY ${fmt$(shortLoanAmount)} ĐỂ DCA TIẾP — đợi ${c.days_to_next_deposit}d đến ngày nạp`,
+      coin: null, amount: shortLoanAmount, deadline: `TRONG 2 NGÀY`,
       action_steps: [
-        `1. Binance C2C hoặc VietQR → mua ${fmt$(M.m32.shortage_usd)} USDT`,
-        `2. Chuyển USDT vào Spot wallet (Auto-Invest source = SPOT)`,
-        `3. Kiểm tra Auto-Invest plan vẫn active (Binance → Earn → Auto-Invest)`,
-        `4. Nếu nạp đủ → DCA tiếp tục ${M.m32.days_remaining} ngày còn lại, tổng cần ${fmt$(M.m32.required_usd)}`,
+        `1. Binance → Vay → Linh hoạt → Vay ${fmt$(shortLoanAmount)} USDT (collateral BTC)`,
+        `2. Hold USDT trong Spot wallet → Auto-Invest dùng tự động`,
+        `3. Giữ DCA pace $${c.daily_dca_target.toFixed(2)}/d (không gián đoạn strategy)`,
+        `4. NGÀY ${c.schedule_day}: khi nạp tiền vào → TRẢ LOAN ngay (avoid carry cost lâu)`,
+        `5. Carry cost dự kiến: ${fmt$(loanCarryCost)} cho ${c.days_to_next_deposit} ngày (rất nhỏ)`,
+        `💡 Tại sao không pause? F&G hiện ${fg} = entry tốt. Pause = mất cơ hội average down ${c.days_to_next_deposit}d, thiệt hại > carry cost`,
       ],
       rationale: [
-        `USDT có sẵn: ${fmt$(M.m32.available_usd)} · DCA pace: $${M.m32.daily_dca.toFixed(2)}/d`,
-        `Runway hiện tại: ${M.m32.runway_days.toFixed(1)} ngày · cần đến cuối chu kỳ: ${M.m32.days_remaining} ngày`,
-        `Thiếu hụt: ${fmt$(M.m32.shortage_usd)} để hoàn thành chu kỳ DCA`,
-        `Nếu hết USDT → Auto-Invest fail → strategy DCA gián đoạn → mất cơ hội average down`,
+        `Available USDT chỉ ${fmt$(c.available_usd)} (runway ${c.runway_days.toFixed(0)}d/${c.days_to_next_deposit}d period)`,
+        `Capital cover < 40% → reduce pace không khả thi (cắt quá sâu)`,
+        `Vay short-term ${c.days_to_next_deposit}d carry cost rất nhỏ vs cơ hội mất nếu pause DCA`,
+        `User không có cash flow ngay (nạp định kỳ ngày ${c.schedule_day}) → loan là giải pháp duy nhất giữ pace`,
+        `Loan room còn: ${fmt$(M.m7.soft - M.loan)} (đủ chỗ cho ${fmt$(shortLoanAmount)})`,
       ],
-      blocks: ['❌ Mọi action khác trước khi nạp đủ USDT'],
-      sources_fired: ['M32 DCA Capacity'],
+      blocks: ['⚠️ Đừng vay quá soft cap (M7) — nguy cơ liquidation cao'],
+      sources_fired: ['M32 DCA Capacity · HIGH shortage', 'M7 Loan room available'],
     };
   }
 
@@ -2332,36 +2399,79 @@ function m26_mark_executed(decisionId, status) {
   } catch (e) { console.warn('[M26] mark executed failed:', e); }
 }
 
-// ===================== M32: DCA CAPACITY CHECK =====================
-// Kiểm tra USDT/USDC trong spot có đủ để duy trì Pool DCA đến cuối chu kỳ không
+// ===================== M32: DCA CAPACITY CHECK (with deposit schedule + alternatives) =====================
+// Logic: user nạp định kỳ ngày 6 hàng tháng → check runway có cover được đến next deposit không
+// Nếu runway < days_until_next_deposit → đề xuất alternatives:
+//   1. REDUCE PACE: giảm DCA để stretch capital đến ngày nạp kế
+//   2. CRYPTO LOAN: vay USDT collateral BTC để DCA tạm thời (carry cost ngắn hạn)
+//   3. EARN INTERIM: USDC vào Flexible Earn lấy yield trong khi chờ
+//   4. (LAST RESORT) Convert một phần holdings — không khuyến nghị
+function daysUntilNextScheduledDeposit() {
+  const scheduleDay = state.deposit_schedule?.day_of_month || 6;
+  const today = new Date();
+  const todayDay = today.getDate();
+  let nextDeposit;
+  if (todayDay < scheduleDay) {
+    nextDeposit = new Date(today.getFullYear(), today.getMonth(), scheduleDay);
+  } else {
+    nextDeposit = new Date(today.getFullYear(), today.getMonth() + 1, scheduleDay);
+  }
+  return Math.max(0, Math.ceil((nextDeposit - today) / 86400000));
+}
+
 function m32_dca_capacity(holdings) {
   const cycle = getCycleProgress();
-  const dailyDCA = (state.funding_yearly || 3650) / 365;
+  const targetDaily = (state.funding_yearly || 3650) / 365;
   const daysRemaining = cycle.daysRemaining;
-  const requiredUSD = dailyDCA * daysRemaining;
+  const daysToNextDeposit = daysUntilNextScheduledDeposit();
+  const scheduleDay = state.deposit_schedule?.day_of_month || 6;
+
   // USDT/USDC sẵn sàng làm funding cho DCA
   const usdtAvail = (holdings.USDT?.qty || 0) + (holdings.USDC?.qty || 0);
-  const runwayDays = dailyDCA > 0 ? usdtAvail / dailyDCA : 0;
-  const shortageUSD = Math.max(0, requiredUSD - usdtAvail);
-  const sufficient = usdtAvail >= requiredUSD;
-  let severity, action;
+  const requiredFullCycle = targetDaily * daysRemaining;
+  const requiredUntilNextDeposit = targetDaily * daysToNextDeposit;
+  const runwayDays = targetDaily > 0 ? usdtAvail / targetDaily : 0;
+
+  // === Bottleneck = next deposit (not end of cycle) ===
+  // Vì user sẽ nạp ngày 6 hàng tháng, chỉ cần đủ runway đến ngày đó
+  const sufficient = usdtAvail >= requiredUntilNextDeposit;
+  const shortageUntilDeposit = Math.max(0, requiredUntilNextDeposit - usdtAvail);
+  // Pace tối đa anh có thể duy trì với capital hiện tại đến ngày nạp
+  const sustainableDaily = daysToNextDeposit > 0 ? usdtAvail / daysToNextDeposit : 0;
+  const paceCutPct = targetDaily > 0 ? Math.max(0, 1 - sustainableDaily / targetDaily) * 100 : 0;
+
+  // === Severity classification ===
+  let severity, primary_action_type;
   if (sufficient) {
-    severity = 'OK'; action = 'Đủ vốn DCA đến cuối chu kỳ';
-  } else if (runwayDays >= daysRemaining * 0.7) {
-    severity = 'WARNING'; action = `Sắp hết — cần nạp ${fmt$(shortageUSD)} trong ${Math.floor(runwayDays * 0.7)} ngày tới`;
-  } else if (runwayDays >= 30) {
-    severity = 'HIGH'; action = `Thiếu ${fmt$(shortageUSD)} — nạp gấp để không gián đoạn DCA`;
+    severity = 'OK';
+    primary_action_type = 'CONTINUE';
+  } else if (runwayDays >= daysToNextDeposit * 0.8) {
+    // Capital đủ ~80% → có thể reduce nhẹ
+    severity = 'LOW';
+    primary_action_type = 'REDUCE_SLIGHTLY';
+  } else if (runwayDays >= daysToNextDeposit * 0.4) {
+    // Capital cover < 80% nhưng > 40% → reduce mạnh hơn HOẶC vay short-term
+    severity = 'MEDIUM';
+    primary_action_type = 'REDUCE_OR_LOAN';
   } else {
-    severity = 'CRITICAL'; action = `Chỉ còn ${runwayDays.toFixed(1)} ngày DCA — NẠP NGAY ${fmt$(shortageUSD)}`;
+    // Capital quá thiếu → cần loan hoặc pause + earn yield trong khi chờ
+    severity = 'HIGH';
+    primary_action_type = 'LOAN_PRIMARY';
   }
+
   return {
-    daily_dca: dailyDCA,
+    daily_dca_target: targetDaily,
+    daily_dca_sustainable: sustainableDaily,
+    pace_cut_pct: paceCutPct,
     days_remaining: daysRemaining,
-    required_usd: requiredUSD,
+    days_to_next_deposit: daysToNextDeposit,
+    schedule_day: scheduleDay,
+    required_full_cycle: requiredFullCycle,
+    required_until_next_deposit: requiredUntilNextDeposit,
     available_usd: usdtAvail,
     runway_days: runwayDays,
-    shortage_usd: shortageUSD,
-    sufficient, severity, action,
+    shortage_until_deposit: shortageUntilDeposit,
+    sufficient, severity, primary_action_type,
   };
 }
 
@@ -2415,24 +2525,24 @@ function m33_path_to_target(M) {
     steps: [`Tiếp tục Pool DCA $${dailyDCA.toFixed(2)}/d`, 'Hold tất cả crypto', 'Không hành động gì thêm'],
   };
 
-  // B. ACCELERATED DCA: 3x pace ($30/d instead of $10/d)
-  const scenB_dcaPace = dailyDCA * 3;
-  const scenB_extraDCA = scenB_dcaPace * daysRemaining;
+  // B. SUSTAINABLE PACE — DCA tại mức USDT có sẵn cho phép (no new capital)
+  const sustDaily = dcaCap.daily_dca_sustainable || dailyDCA;
+  const scenB_extraDCA = sustDaily * daysRemaining;
   const scenB_btcDriftPnL = scenA_btcDriftPnL;
-  const scenB_extraPnL = scenB_btcDriftPnL + scenB_extraDCA * 0.08 * T;
-  const scenB_capitalNeeded = scenB_extraDCA - dcaCap.available_usd;
+  const scenB_extraPnL = scenB_btcDriftPnL + scenB_extraDCA * 0.05 * T;
   const scenB = {
-    name: 'ACCELERATED — Tăng DCA pace 3× ($30/d)',
+    name: `SUSTAINABLE — DCA $${sustDaily.toFixed(2)}/d (capital có sẵn)`,
     extra_dca: scenB_extraDCA,
     extra_leverage: 0, extra_squeeze: 0,
     expected_pnl: scenB_extraPnL,
-    p_hit: probHit(scenB_extraPnL, baseVolUSD * 1.1) * 100,
-    risk: 'medium',
-    capital_need: Math.max(0, scenB_capitalNeeded),
+    p_hit: probHit(scenB_extraPnL, baseVolUSD * 1.05) * 100,
+    risk: 'low',
+    capital_need: 0,
     steps: [
-      `Tăng Pool DCA từ $${dailyDCA.toFixed(2)}/d lên $${scenB_dcaPace.toFixed(2)}/d`,
-      `Nạp thêm ${fmt$(Math.max(0, scenB_capitalNeeded))} USDT trong 30 ngày tới`,
+      `Edit Pool DCA: $${dailyDCA.toFixed(2)}/d → $${sustDaily.toFixed(2)}/d`,
+      `Capital ${fmt$(dcaCap.available_usd)} đủ duy trì pace mới đến ngày nạp tiếp`,
       'Hold tất cả crypto',
+      'Reset full pace sau khi nạp tiền vào ngày ' + (state.deposit_schedule?.day_of_month || 6),
     ],
   };
 
@@ -2444,41 +2554,43 @@ function m33_path_to_target(M) {
   const scenC_btcDriftPnL = scenA_btcDriftPnL + (extraLoan * 0.30 * T) - (extraLoan * loanInterestRate * T);
   const scenC_extraPnL = scenC_btcDriftPnL + scenA_extraDCA * 0.05 * T;
   const scenC = {
-    name: 'LEVERAGE — Vay $X mua thêm BTC',
+    name: `LEVERAGE — Vay ${fmt$(extraLoan)} mua BTC (KHÔNG cần nạp capital)`,
     extra_dca: scenA_extraDCA,
     extra_leverage: extraLoan, extra_squeeze: 0,
     expected_pnl: scenC_extraPnL,
-    p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100, // higher vol due to leverage
+    p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100,
     risk: 'high',
+    capital_need: 0,
     steps: [
-      `Vay ${fmt$(extraLoan)} USDT (Flexible Loan) collateral BTC`,
-      `Mua ${fmtQty(scenC_extraBtcExposure)} BTC tại giá hiện tại`,
-      `Hold + giữ Pool DCA bình thường`,
-      `⚠️ Chi phí lãi vay ${fmt$(extraLoan * loanInterestRate * T)} cho phần còn lại của chu kỳ`,
+      `Binance → Vay → Linh hoạt → Vay ${fmt$(extraLoan)} USDT (collateral BTC)`,
+      `Spot → Mua ${fmtQty(scenC_extraBtcExposure)} BTC ngay tại giá ${fmt$(btcPrice,0)}`,
+      `Giữ Pool DCA bình thường $${dailyDCA.toFixed(2)}/d`,
+      `Chi phí lãi vay: ${fmt$(extraLoan * loanInterestRate * T)} cho ${daysRemaining}d còn lại`,
+      `⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} là backstop hard. Liq distance: ${M.m7.liq_dist.toFixed(1)}%`,
     ],
   };
 
-  // D. FULL SEND: ACCELERATED DCA + LEVERAGE + Squeeze
+  // D. AGGRESSIVE — LEVERAGE + Squeeze (no new capital needed)
   const squeezePerPlay = M.m21?.quarter_kelly_pct > 0 ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
   const playsPerMonth = 2;
   const totalPlays = Math.floor(daysRemaining / 30) * playsPerMonth;
-  const squeezeEVPerPlay = squeezePerPlay * 0.03; // 3% avg return per play (conservative)
+  const squeezeEVPerPlay = squeezePerPlay * 0.03;
   const scenD_squeezePnL = totalPlays * squeezeEVPerPlay;
-  const scenD_extraPnL = scenC_extraPnL + (scenB_extraDCA - scenA_extraDCA) * 0.08 * T + scenD_squeezePnL;
-  const scenD_capNeeded = scenB_capitalNeeded;
+  const scenD_extraPnL = scenC_extraPnL + scenD_squeezePnL;
   const scenD = {
-    name: 'FULL SEND — DCA 3× + Leverage + Squeeze',
-    extra_dca: scenB_extraDCA,
+    name: 'AGGRESSIVE — Leverage BTC + Squeeze plays (no capital nạp)',
+    extra_dca: scenA_extraDCA,
     extra_leverage: extraLoan, extra_squeeze: totalPlays,
     expected_pnl: scenD_extraPnL,
     p_hit: probHit(scenD_extraPnL, baseVolUSD * 1.4) * 100,
     risk: 'very high',
-    capital_need: scenD_capNeeded,
+    capital_need: 0,
     steps: [
-      `Tăng DCA 3× lên $${scenB_dcaPace.toFixed(2)}/d (cần nạp ${fmt$(scenD_capNeeded)})`,
-      `Vay ${fmt$(extraLoan)} mua thêm BTC dip`,
-      `Thực hiện ${totalPlays} squeeze long futures plays (Kelly sized ${fmt$(squeezePerPlay)})`,
-      `⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} là backstop hard`,
+      `Vay ${fmt$(extraLoan)} USDT mua thêm BTC (như scenario C)`,
+      `Thực hiện ${totalPlays} squeeze long futures plays mỗi tháng (Kelly sized ${fmt$(squeezePerPlay)})`,
+      `Giữ Pool DCA bình thường $${dailyDCA.toFixed(2)}/d`,
+      `Stop-loss hard BTC ${fmt$(state.bep_threshold)} · không vượt loan soft cap M7`,
+      `⚠️ Risk rất cao — chỉ phù hợp nếu accept potential capital loss ~30% nếu market crash`,
     ],
   };
 
