@@ -3916,12 +3916,27 @@ function renderActions(M) {
   if (M.m1.equity_ratio < 60) {
     actions.push({color:'var(--green)', icon:'🛑', title:'#5 · Stop-loss enforcement standby', when:'Continuous monitor', detail:`BTC ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)}. Distance ${((state.holdings.BTC.price-state.bep_threshold)/state.bep_threshold*100).toFixed(1)}%. Khi BTC drop và F&G ≤ thresholds → activate dip-buy ladder T1-T4. Khi BTC < ${fmt$(state.bep_threshold,0)} + F&G ≤ 15 = STOP-LOSS reset.`, why:'Capital preservation cho cycle reset. NET threshold $2,000.'});
   }
-  if (!actions.length) actions.push({color:'var(--green)', icon:'✅', title:'#0 · Portfolio healthy — no immediate action', when:'Monitor', detail:'All metrics within bounds.', why:''});
-  let html = `<div id="action" class="section-title">⚡ Tham Khảo Bổ Sung · Các bước hỗ trợ hành động chính</div>
-  <div style="background:rgba(245,158,11,0.05);border-left:3px solid var(--yellow);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.5">
-    ℹ️ Nội dung dưới đây <b>không thay thế</b> "Hành Động Duy Nhất" (M23). Khi conflict → ưu tiên M23.
+  // C7 fix: convert to read-only M23 trace + legacy actions collapsed inside <details>
+  const m23 = M.m23 || {};
+  if (!actions.length) actions.push({color:'var(--green)', icon:'✅', title:'#0 · Portfolio healthy — no legacy concerns', when:'Monitor', detail:'All metrics within bounds.', why:''});
+  let html = `<div id="action" class="section-title">⚡ M23 Decision Trace · sources fired + rationale</div>
+  <div class="card">
+    <div style="font-size:0.85rem;color:var(--text2);line-height:1.65;margin-bottom:0.875rem">
+      Hành động duy nhất hiện tại (xem chi tiết tab <b>Tổng Quan</b>): <b style="color:${m23.color || 'var(--text)'}">${m23.title || '—'}</b>
+      <br>Priority ${m23.priority || '?'} · Severity ${m23.severity || '?'} · Deadline ${m23.deadline || '?'}
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:0.5rem 0;font-size:0.9rem">📡 Sources fired (modules đã contribute):</div>
+    <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.875rem">
+      ${(m23.sources_fired || []).map(s => `<span class="badge b-grey" style="font-size:0.72rem">${s}</span>`).join('')}
+    </div>
+    <div style="font-family:var(--display);font-weight:700;margin:0.5rem 0;font-size:0.9rem">💡 Rationale:</div>
+    <ul style="font-size:0.82rem;line-height:1.6;color:var(--text2);padding-left:1.5rem">
+      ${(m23.rationale || []).map(r => `<li style="margin-bottom:0.3rem">${r}</li>`).join('')}
+    </ul>
   </div>
-  <div class="card">`;
+  <details style="margin-top:1rem;opacity:0.7">
+    <summary style="cursor:pointer;font-size:0.85rem;font-family:var(--display);color:var(--muted);padding:0.5rem 0">▶ 📦 Legacy Action Plan (collapsed · informational only)</summary>
+    <div class="card" style="margin-top:0.5rem">`;
   for (const a of actions) {
     html += `<div style="border-left:4px solid ${a.color};background:var(--bg2);border-radius:10px;padding:0.95rem 1.1rem;margin-bottom:0.7rem">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
@@ -3932,7 +3947,7 @@ function renderActions(M) {
     ${a.why ? `<div style="font-size:0.72rem;color:var(--muted);font-family:var(--mono);margin-top:0.5rem;font-style:italic">↳ Why: ${a.why}</div>` : ''}
     </div>`;
   }
-  html += `</div>`;
+  html += `</div></details>`;
   return html;
 }
 
@@ -4127,38 +4142,38 @@ function renderDCA(M) {
 }
 
 function renderDipLadder(M) {
+  // INFO-ONLY (C4 fix): show zone reference. M23 P5 owns dip-buy decisions with regime gate.
   const btcNow = state.holdings.BTC.price;
-  // Relative tiers — % drop từ current BTC (không hardcode $77K/$75K/$72K)
-  const ref = btcNow; // reference = current
+  const ref = btcNow;
   const tierConfigs = [
-    {name:'T0 BASE',     dropPct: 0,    fgGate: 40, dca: 20, loanTarget: M.loan, eqTarget: M.m1.equity_ratio, color:'var(--green)'},
-    {name:'T1 SOFT',     dropPct: -3,   fgGate: 38, dca: 25, loanTarget: M.loan, eqTarget: 70, color:'var(--cyan)'},
-    {name:'T2 MEDIUM',   dropPct: -8,   fgGate: 35, dca: 30, loanTarget: M.loan + 400, eqTarget: 63, color:'var(--blue)'},
-    {name:'T3 DEEP',     dropPct: -12,  fgGate: 30, dca: 35, loanTarget: M.m7.hard, eqTarget: 50, color:'var(--purple)'},
-    {name:'T4 EXTREME',  dropPct: -16,  fgGate: 25, dca: 35, loanTarget: M.m7.hard, eqTarget: 45, color:'var(--orange)'},
-    {name:'T5 STOP-LOSS',dropPct: -22,  fgGate: 15, dca: 15, loanTarget: M.loan * 0.5, eqTarget: 60, color:'var(--red)'},
+    {name:'T0 BASE',     dropPct: 0,    fgGate: 40, zone: 'Bình thường',           color:'var(--green)'},
+    {name:'T1 SOFT',     dropPct: -3,   fgGate: 38, zone: 'Dip nhẹ',               color:'var(--cyan)'},
+    {name:'T2 MEDIUM',   dropPct: -8,   fgGate: 35, zone: 'Dip-buy bullish zone',  color:'var(--blue)'},
+    {name:'T3 DEEP',     dropPct: -12,  fgGate: 30, zone: 'Dip thận trọng',        color:'var(--purple)'},
+    {name:'T4 EXTREME',  dropPct: -16,  fgGate: 25, zone: 'Cảnh báo extreme',      color:'var(--orange)'},
+    {name:'T5 STOP-LOSS',dropPct: -22,  fgGate: 15, zone: 'Stop-loss territory',   color:'var(--red)'},
   ];
   const tiers = tierConfigs.map(t => {
     const triggerPrice = ref * (1 + t.dropPct / 100);
-    const isActive = t.dropPct === 0 ? btcNow >= triggerPrice : btcNow < triggerPrice;
+    const inZone = t.dropPct === 0 ? btcNow >= triggerPrice : btcNow < triggerPrice;
     return {
       name: t.name,
       cond: `BTC ${t.dropPct === 0 ? '≥' : '<'} ${fmt$(triggerPrice, 0)} (${t.dropPct >= 0 ? '+' : ''}${t.dropPct}% từ current) · F&G ${t.dropPct === 0 ? '≥' : '≤'} ${t.fgGate}`,
-      dca: `$${t.dca}/d`,
-      loan: t.dropPct < -10 ? `${fmt$(t.loanTarget, 0)} HARD CAP` : t.dropPct === 0 ? `Current ${fmt$(t.loanTarget,0)}` : (t.loanTarget > M.loan ? `+$${(t.loanTarget - M.loan).toFixed(0)}` : 'no add'),
-      eq: `${t.eqTarget.toFixed(0)}%${t.eqTarget < 55 ? ' over-cap' : ' target'}`,
+      zone: t.zone,
       color: t.color,
-      active: isActive && t.dropPct < 0 ? state.market.fg_cg <= t.fgGate : t.dropPct === 0 ? btcNow >= triggerPrice : false,
+      active: inZone && t.dropPct < 0 ? state.market.fg_cg <= t.fgGate : t.dropPct === 0 ? btcNow >= triggerPrice : false,
     };
   });
   let rows = '';
   for (const t of tiers) {
-    rows += `<tr style="${t.active ? 'background:rgba(34,197,94,0.05)':''}"><td><b style="color:${t.color}">${t.name}${t.active?' ← ACTIVE':''}</b></td><td>${t.cond}</td><td>${t.dca}</td><td>${t.loan}</td><td><b style="color:${t.color}">${t.eq}</b></td></tr>`;
+    rows += `<tr style="${t.active ? 'background:rgba(34,197,94,0.05)':''}"><td><b style="color:${t.color}">${t.name}${t.active?' ← Đang ở zone này':''}</b></td><td>${t.cond}</td><td>${t.zone}</td></tr>`;
   }
-  return `<div id="dip" class="section-title">📉 Bậc Thang Mua Đáy (5 tầng)</div>
+  return `<div id="dip" class="section-title">📉 Dip Zones — Reference (INFO only)</div>
   <div class="dip-card">
-  <table><thead><tr><th>Tier</th><th>Trigger</th><th>DCA</th><th>Loan target</th><th>Liq dist</th></tr></thead><tbody>${rows}</tbody></table>
-  <div class="warning-bar">⚠️ Loan capacity hiện ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor. Nếu BTC dump T2/T3 → cần repay trước để có ammo dip-buy.</div>
+  <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.55">
+    ℹ️ <b>Đây là reference zones</b>. Hành động dip-buy thực tế do <b>M23 P5</b> quyết định (cần thêm P(bull) > 40%, loan room available). Bảng này giúp anh biết hiện market đang trong zone nào.
+  </div>
+  <table><thead><tr><th>Tier</th><th>Điều kiện</th><th>Zone label</th></tr></thead><tbody>${rows}</tbody></table>
   </div>`;
 }
 
@@ -4211,21 +4226,24 @@ function renderSqueeze(M) {
   const total = conds.length;
   const allMet = metCount === total;
   let statusBadge, statusColor, overallText;
-  const fireThreshold = Math.ceil(total * 0.75); // ≥75% conditions to fire
-  if (allMet) { statusBadge = `🔥 FIRE (${metCount}/${total})`; statusColor = 'var(--green)'; overallText = '🔥 EXECUTE NOW'; }
-  else if (metCount >= fireThreshold) { statusBadge = `🟣 ARMED (${metCount}/${total})`; statusColor = 'var(--purple)'; overallText = `⏳ near fire — ${total-metCount} cond miss`; }
+  // STATUS-ONLY badges (C1 fix): no "EXECUTE NOW" verb — M23 P7 owns squeeze decision via M28 score
+  if (allMet) { statusBadge = `✅ ALL MET (${metCount}/${total})`; statusColor = 'var(--green)'; overallText = `M23 P7 sẽ fire nếu các gate khác mở`; }
+  else if (metCount >= Math.ceil(total * 0.75)) { statusBadge = `🟣 ARMED (${metCount}/${total})`; statusColor = 'var(--purple)'; overallText = `near ready — ${total-metCount} cond miss`; }
   else if (metCount >= 2) { statusBadge = `🟡 BUILDING (${metCount}/${total})`; statusColor = 'var(--yellow)'; overallText = `setup developing`; }
   else { statusBadge = `⚪ STANDBY (${metCount}/${total})`; statusColor = 'var(--muted)'; overallText = 'setup not ready'; }
   let condRows = '';
   for (const c of conds) {
     condRows += `<tr><td>${c.name}</td><td>${c.threshold}</td><td><b>${c.current}</b></td><td>${c.met ? '<span style="color:var(--green)">✅ MET</span>' : '<span style="color:var(--red)">✗ MISS</span>'}</td></tr>`;
   }
-  return `<div id="squeeze" class="section-title">⚡ Vùng Vắt Funding (Cần Gạt #2 · ${statusBadge})</div>
+  return `<div id="squeeze" class="section-title">⚡ Squeeze Conditions — Status (INFO only · ${statusBadge})</div>
   <div class="squeeze-card">
+  <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.55">
+    ℹ️ <b>Bảng này hiển thị trạng thái điều kiện</b>. Hành động squeeze thực tế do <b>M23 P7</b> quyết định khi M28 squeeze_score ≥ 60 + các gate khác (regime, equity ratio). Xem Action tại tab Tổng Quan.
+  </div>
   <div class="dca-header">
     <div>
       <div style="font-family:var(--display);font-size:1.3rem;font-weight:700">${fmt$(margin)} margin · ${leverage}x leverage · ${fmt$(notional)} notional</div>
-      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.3rem">BTC perpetual long · capture short-squeeze setup · max 5% NET allocation</div>
+      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.3rem">BTC perpetual long · reference sizing · max 5% NET allocation</div>
     </div>
     <span class="badge b-purp" style="font-size:0.85rem;padding:0.4rem 0.8rem;color:${statusColor};border-color:${statusColor}">${statusBadge}</span>
   </div>
@@ -4247,19 +4265,19 @@ function renderSqueeze(M) {
 }
 
 function renderStopLoss(M) {
+  // INFO-ONLY (C3 fix): show risk zones, NOT action verbs. M23 P2/P4a cascade owns decisions.
   const btcNow = state.holdings.BTC.price;
   const slBtc = state.bep_threshold;
   const buf = (btcNow - slBtc) / slBtc * 100;
   const fgNow = state.market.fg_cg;
-  // Relative tiers — % drop từ current BTC
   const tierConfigs = [
-    {dropPct: -3,   fgGate: '40-50', action:'Chuẩn bị Tier 1 dip-buy', purpose:'Prep accumulation', critical:false},
-    {dropPct: -8,   fgGate: '≤ 35',  action:'Trigger T2 + loan +$400 (CHỈ KHI đã repay #1)', purpose:'Bullish dip-buy', critical:false},
-    {dropPct: -12,  fgGate: '≤ 30',  action:'Trigger T3 — KHÔNG ADD LOAN (đã ở cap)', purpose:'Spot DCA only', critical:false},
-    {dropPct: -16,  fgGate: '≤ 25',  action:'FREEZE add, DCA cap $35/d', purpose:'Risk management', critical:false},
-    {dropPct: -22,  fgGate: '≤ 15',  action:'STOP-LOSS: reset DCA $15 · sell BNSOL+USDC · pause loan', purpose:'Capital preservation', critical:true, level:1},
-    {dropPct: -28,  fgGate: '≤ 10',  action:'EXTREME: forced loan reduction <20% net · trim profitable assets', purpose:'Survival', critical:true, level:2},
-    {dropPct: -34,  fgGate: '≤ 5',   action:'FULL STOP: clear all loan · pause DCA · hold spot · wait stable bottom 30+ days', purpose:'End-cycle wait', critical:true, level:3},
+    {dropPct: -3,   fgGate: '40-50', zone: 'Cảnh báo nhẹ', criticality: 'INFO', critical:false},
+    {dropPct: -8,   fgGate: '≤ 35',  zone: 'Vùng dip-buy bullish', criticality: 'NORMAL', critical:false},
+    {dropPct: -12,  fgGate: '≤ 30',  zone: 'Vùng dip-buy thận trọng', criticality: 'CAUTION', critical:false},
+    {dropPct: -16,  fgGate: '≤ 25',  zone: 'Vùng quản lý rủi ro', criticality: 'WARN', critical:false},
+    {dropPct: -22,  fgGate: '≤ 15',  zone: 'Vùng capitulation — M23 P2/P4a có thể fire', criticality: 'STOP-LOSS ZONE', critical:true, level:1},
+    {dropPct: -28,  fgGate: '≤ 10',  zone: 'Extreme capitulation', criticality: 'CRITICAL', critical:true, level:2},
+    {dropPct: -34,  fgGate: '≤ 5',   zone: 'Full crash zone', criticality: 'FULL STOP', critical:true, level:3},
   ];
   const tiers = tierConfigs.map(t => {
     const triggerPrice = btcNow * (1 + t.dropPct / 100);
@@ -4271,17 +4289,19 @@ function renderStopLoss(M) {
     if (t.critical && t.level === 1) bg = 'background:rgba(239,68,68,0.05)';
     else if (t.critical && t.level === 2) bg = 'background:rgba(239,68,68,0.10)';
     else if (t.critical && t.level === 3) bg = 'background:rgba(239,68,68,0.15);font-weight:700';
-    rows += `<tr style="${bg}"><td><b>${t.trigger}</b></td><td><b>${t.fg}</b></td><td>${t.critical ? '<b>'+t.action+'</b>' : t.action}</td><td>${t.critical ? '<b>'+t.purpose+'</b>' : t.purpose}</td></tr>`;
+    rows += `<tr style="${bg}"><td><b>${t.trigger}</b></td><td><b>${t.fg}</b></td><td>${t.zone}</td><td>${t.criticality}</td></tr>`;
   }
   const status = btcNow < slBtc && fgNow <= 15 ? '🚨 STOP-LOSS FIRED' : (btcNow < slBtc ? '⚠️ BELOW SL price (F&G not breached)' : `✅ STANDBY · ${buf.toFixed(1)}% buffer`);
   const statusColor = btcNow < slBtc ? 'var(--red)' : 'var(--green)';
-  return `<div id="stoploss" class="section-title">🛑 Khung Cắt Lỗ (Cần Gạt #3 · <span style="color:${statusColor}">${status}</span>)</div>
+  return `<div id="stoploss" class="section-title">🛑 Risk Zones — Stop-Loss reference (INFO only · <span style="color:${statusColor}">${status}</span>)</div>
   <div class="card">
-  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
-  Hard rules cap downside trong capitulation scenario. Goal: preserve >65% NET cho cycle sau. Currently <b style="color:${statusColor}">${btcNow >= slBtc ? 'INACTIVE' : 'ACTIVE'}</b> — BTC ${fmt$(btcNow)} ${btcNow >= slBtc ? `cao hơn ${fmt$(slBtc,0)} trigger ${buf.toFixed(1)}%` : `dưới ${fmt$(slBtc,0)} trigger`}.
+  <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.55">
+    ℹ️ <b>Đây là reference zones</b>, không phải actions. Hành động thực tế do <b>M23 Unified Decision</b> (tab Tổng Quan) quyết định khi điều kiện co-occur. Bảng dưới giúp anh biết currently market đang trong zone nào.
   </div>
-  <table><thead><tr><th>Trigger</th><th>F&G</th><th>Action</th><th>Mục đích</th></tr></thead><tbody>${rows}</tbody></table>
-  <div class="${M.m7.over_accept > 0 ? 'danger-bar' : 'safety-bar'}">${M.m7.over_accept > 0 ? '🚨' : '🛡️'} <b>Constraint</b>: Loan capacity ${fmt$(Math.max(0, M.m7.hard - M.loan))} đến hard floor → ${M.m7.over_accept > 0 ? 'giảm dip-buy capacity. Phải dùng cash từ sell BNSOL+USDC trước khi add loan.' : 'còn buffer cho dip-buy. Nếu BTC dump → có thể add loan T2.'}</div>
+  <div style="font-size:0.85rem;color:var(--text2);line-height:1.7;margin-bottom:1rem">
+  BTC hiện ${fmt$(btcNow)} · stop-loss threshold ${fmt$(slBtc,0)} · buffer ${buf.toFixed(1)}%. ${btcNow >= slBtc ? 'INACTIVE — chưa break threshold.' : 'BELOW threshold — M23 P2 sẽ fire nếu F&G ≤ 15.'}
+  </div>
+  <table><thead><tr><th>Trigger zone</th><th>F&G threshold</th><th>Zone label</th><th>Criticality</th></tr></thead><tbody>${rows}</tbody></table>
   </div>`;
 }
 
@@ -4714,17 +4734,20 @@ function renderMarkowitz(M) {
       <td style="color:var(--purple)">${rp.toFixed(1)}%</td>
       <td>${r.expected_returns_annual[i].toFixed(1)}%</td>
       <td>${r.volatilities_annual[i].toFixed(1)}%</td>
-      <td style="font-size:0.72rem;color:var(--text2)">${tan > cur+5 ? '🔼 Tăng' : tan < cur-5 ? '🔽 Giảm' : '✓ OK'}</td>
+      <td style="font-size:0.72rem;color:var(--muted)">${tan > cur+5 ? 'over-weight' : tan < cur-5 ? 'under-weight' : 'aligned'}</td>
     </tr>`;
   }
-  return `<div class="section-title">📐 Tối Ưu Markowitz · Mean-Variance Optimization</div>
+  return `<div class="section-title">📐 Markowitz · Mean-Variance Analytics (INFO only)</div>
   <div class="card">
+    <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.55">
+      ℹ️ <b>Analytics reference</b> — không phải action. Tangency weights tính từ historical returns, KHÔNG forecast tương lai. M23 hiện không auto-rebalance theo Markowitz (anchor BTC bias). Dùng làm sanity check.
+    </div>
     <div style="font-size:0.85rem;color:var(--text2);margin-bottom:1rem;line-height:1.65">
-      <b>Tangency</b> = max Sharpe (return/risk tốt nhất) · <b>Min-Variance</b> = ít rủi ro nhất · <b>Risk Parity</b> = mỗi asset góp đều rủi ro.
+      <b>Tangency</b> = max Sharpe · <b>Min-Variance</b> = ít rủi ro nhất · <b>Risk Parity</b> = mỗi asset góp đều rủi ro.
       Tangency Sharpe annualized: <b style="color:var(--cyan)">${r.tangency_sharpe.toFixed(2)}</b> · Min-var σ: <b style="color:var(--green)">${r.min_variance_vol.toFixed(1)}%/yr</b>.
     </div>
     <table>
-      <thead><tr><th>Asset</th><th>Hiện tại</th><th>Tangency (max Sharpe)</th><th>Min Variance</th><th>Risk Parity</th><th>Exp Ret/yr</th><th>Vol/yr</th><th>Action</th></tr></thead>
+      <thead><tr><th>Asset</th><th>Hiện tại</th><th>Tangency</th><th>Min Variance</th><th>Risk Parity</th><th>Exp Ret/yr</th><th>Vol/yr</th><th>Drift</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="safety-bar">📊 <b>Áp dụng thận trọng</b>: Tangency dựa trên kỳ vọng từ historical returns — không phải forecast tương lai. Dùng làm <b>reference</b>, không phải mandate. Bias hiện tại: BTC anchor (G9 rule) → đừng đè anchor xuống dưới Tangency suggestion.</div>
@@ -4860,19 +4883,7 @@ function renderQuantumPlaybook(M) {
     }
   }
 
-  // Action 5: Markowitz rebalance
-  if (r20 && r20.current_weights) {
-    let maxDrift = 0, maxDriftSym = '';
-    for (let i = 0; i < r20.assets.length; i++) {
-      const sym = r20.assets[i];
-      const drift = Math.abs((r20.tangency_weights[i] - (r20.current_weights[sym]||0)) * 100);
-      if (drift > maxDrift) { maxDrift = drift; maxDriftSym = sym; }
-    }
-    if (maxDrift > 10) {
-      actions.push({prio:4, color:'var(--yellow)', title:`🔄 Markowitz rebalance suggested`,
-        detail:`${maxDriftSym} lệch ${maxDrift.toFixed(1)}pp khỏi Tangency. Sharpe có thể cải thiện nếu rebalance (lưu ý: G9 BTC anchor không bị cap, đừng đè).`});
-    }
-  }
+  // Action 5: Markowitz rebalance — REMOVED (D2 fix): M23 không consume m20, info-only trong Markowitz tab
 
   // Action 6: Kelly futures
   if (r21 && r21.quarter_kelly_pct > 0) {
