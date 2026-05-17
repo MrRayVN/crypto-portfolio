@@ -422,6 +422,44 @@ const DEFAULT_STATE = {
 
 let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
 
+// ===================== CENTRALIZED THRESHOLDS (single source of truth) =====================
+// Avoid divergent thresholds across modules (audit C5/C6/C9 fix)
+const TH = {
+  // F&G zones
+  FG_EXTREME_FEAR: 15,      // M23 P2 stop-loss + P4a capitulation
+  FG_FEAR: 30,              // M23 P4b boundary, dip-buy gates
+  FG_NEUTRAL_LOW: 40,       // entry threshold cho dip-buy in M23 P5
+  FG_NEUTRAL_HIGH: 55,      // standard "neutral" upper
+  FG_GREED: 65,             // TP1 gate
+  FG_EXTREME_GREED: 80,     // TP4 gate
+  // Regime P(bull) thresholds
+  PBULL_CAPITULATION: 0.15, // M23 P4a
+  PBULL_CAUTIOUS_BEAR: 0.35,// M23 P4b boundary
+  PBULL_DIP_BUY_MIN: 0.40,  // M23 P5 needs P(bull) > 40%
+  PBULL_SQUEEZE_MIN: 0.45,  // M23 P7 squeeze needs P(bull) > 45%
+  PBULL_BULL_TILT: 0.55,    // M23 P8 bull tilt
+  // Pool plan health
+  POOL_DRIFT_FIRE: 15,      // M23 P6 fires
+  POOL_DRIFT_WARN: 8,       // mild drift warning
+  // Squeeze
+  SQUEEZE_LEVERAGE: 3,      // ALL modules use 3x (synced)
+  SQUEEZE_SCORE_FIRE: 60,   // M28 score gate
+  SQUEEZE_FUNDING_NEGATIVE: -0.005, // funding ≤ -0.5% per 8h
+  // Loan safe caps
+  LOAN_LTV_TARGET: 0.60,
+  LTV_ACCEPTABLE: 0.55,
+  LTV_HARD_FLOOR: 0.50,
+  EFFECTIVE_MMR: 0.90,
+  // Correlation regime
+  CORR_CRISIS: 0.85,
+  CORR_HIGH: 0.70,
+  CORR_NORMAL: 0.50,
+  // Capital flows
+  USDC_IDLE_MIN_FOR_EARN: 200,
+  // Stop-loss
+  BTC_STOPLOSS_DEFAULT: 65000,
+};
+
 // ===================== ENGINE (port engine-v47-v2.py) =====================
 const ASSET_COLORS = {BTC:'#f7931a', WBETH:'#627eea', LINK:'#2a5ada', BNB:'#f3ba2f', BNSOL:'#14f195', USDC:'#2775ca'};
 const TP_TIERS = [
@@ -3032,7 +3070,7 @@ function render() {
     + safeRender('Signals', renderSignals)
     + safeRender('TPTriggers', renderTPTriggers)
     + safeRender('TPExplain', renderTPExplain);
-  if (state.prev) marketHTML += safeRender('Journey', renderJourney);
+  // Journey removed (D7) — merged into Plan Changes in Strategy tab
   document.getElementById('panel-market').innerHTML = marketHTML;
 
   // TACTICAL
@@ -3044,19 +3082,23 @@ function render() {
     + safeRender('Stress', renderStress);
   document.getElementById('panel-tactical').innerHTML = tacticalHTML;
 
-  // QUANTUM
+  // QUANTUM — KEY signals expanded by default, ANALYTICS collapsed (D3-D6)
+  const collapseSection = (name, content) => content
+    ? `<details style="margin-bottom:1rem"><summary style="cursor:pointer;padding:0.6rem 0.9rem;background:rgba(167,139,250,0.06);border-radius:10px;font-family:var(--display);font-weight:600;font-size:0.9rem;color:var(--text2);list-style:none">▶ ${name} <span style="opacity:0.6;font-size:0.78rem">· click để mở</span></summary><div style="margin-top:0.5rem">${content}</div></details>`
+    : '';
   let quantumHTML = safeRender('UnifiedActionCompact', renderUnifiedActionCompact)
     + safeRender('QuantumHeader', renderQuantumHeader)
     + safeRender('OnChainSignals', renderOnChainSignals)
     + safeRender('MacroOverlay', renderMacroOverlay)
-    + safeRender('TopTrader', renderTopTrader)
     + safeRender('CorrelationRegime', renderCorrelationRegime)
     + safeRender('QuantumPlaybook', renderQuantumPlaybook)
-    + safeRender('RiskMetrics', renderRiskMetrics)
-    + safeRender('JumpDiffusionMC', renderJumpDiffusionMC)
-    + safeRender('AssetRiskProfile', renderAssetRiskProfile)
-    + safeRender('CorrelationMatrix', renderCorrelationMatrix)
-    + safeRender('Markowitz', renderMarkowitz)
+    // Analytics-only sections — collapsed by default to reduce noise
+    + collapseSection('📊 Risk Metrics (M17) — Sharpe/Sortino/VaR/MaxDD', safeRender('RiskMetrics', renderRiskMetrics))
+    + collapseSection('🎲 Jump-Diffusion Monte Carlo · alt P(hit)', safeRender('JumpDiffusionMC', renderJumpDiffusionMC))
+    + collapseSection('🔬 Per-Asset Risk Profile (M18) — OU z-score, Hurst', safeRender('AssetRiskProfile', renderAssetRiskProfile))
+    + collapseSection('🌐 Correlation Matrix (M19) — pairwise ρ', safeRender('CorrelationMatrix', renderCorrelationMatrix))
+    + collapseSection('📐 Markowitz Analytics (M20) — Tangency / MinVar / RP', safeRender('Markowitz', renderMarkowitz))
+    + collapseSection('👤 Top Trader Sentiment (M31)', safeRender('TopTrader', renderTopTrader))
     + safeRender('KellySizing', renderKellySizing)
     + safeRender('DecisionLog', renderDecisionLog);
   document.getElementById('panel-quantum').innerHTML = quantumHTML;
@@ -3100,7 +3142,7 @@ function renderRequiredCAGR(M) {
     </div>
     <div style="grid-column:1/-1;border-top:1px dashed var(--border2);padding-top:0.8rem;margin-top:0.3rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem">
       <div style="font-size:0.78rem;color:var(--text2)">📈 Tương đương BTC EOY cần: <b style="color:${c.color}">${fmt$(reqBtcEoy,0)}</b> (${c.reqBtcChg>=0?'+':''}${c.reqBtcChg.toFixed(1)}% từ ${fmt$(btcP,0)} với β danh mục ~0.85)</div>
-      <div style="font-size:0.78rem">P(hit) Monte Carlo: <b style="color:${pHit>=50?'var(--green)':pHit>=30?'var(--yellow)':'var(--red)'}">${pHit.toFixed(1)}%</b></div>
+      <div style="font-size:0.78rem">P(hit) GBM MC: <b style="color:${pHit>=50?'var(--green)':pHit>=30?'var(--yellow)':'var(--red)'}">${pHit.toFixed(1)}%</b></div>
     </div>
   </div>`;
 }
@@ -3214,7 +3256,7 @@ function renderHero(M) {
         </svg>
         <div class="gauge-value">
           <div class="gauge-pct" style="color:${pHit >= 50 ? 'var(--mint)' : pHit >= 30 ? 'var(--yellow)' : 'var(--red)'}">${pHit.toFixed(0)}%</div>
-          <div class="gauge-label">Xác suất đạt 35%</div>
+          <div class="gauge-label">P(hit 35%) · GBM MC</div>
         </div>
       </div>
       <div style="font-size:0.78rem;color:var(--text2);text-align:center;line-height:1.5">
