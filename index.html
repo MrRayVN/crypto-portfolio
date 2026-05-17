@@ -1703,10 +1703,21 @@ function buildMaster(s) {
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
-  M.m32 = m32_dca_capacity(M.holdings);
-  M.m33 = m33_path_to_target(M);
+  try { M.m32 = m32_dca_capacity(M.holdings); } catch (e) { console.error('[M32] failed:', e); M.m32 = null; }
+  try { M.m33 = m33_path_to_target(M); } catch (e) { console.error('[M33] failed:', e); M.m33 = null; }
   // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28, m32, m33) ===
-  M.m23 = m23_unified_decision(M, s);
+  try {
+    M.m23 = m23_unified_decision(M, s);
+  } catch (e) {
+    console.error('[M23] cascade failed:', e);
+    M.m23 = {
+      priority: 9, severity: 'ERROR', icon: '⚠️', color: '#fb923c',
+      title: `LỖI CASCADE: ${e.message}`,
+      action_steps: ['Mở F12 console xem stack trace', 'Báo em fix bug'],
+      rationale: [`Exception in m23_unified_decision: ${e.message}`, `Stack: ${e.stack?.slice(0, 200)}`],
+      blocks: [], sources_fired: ['error_handler'],
+    };
+  }
   // === M24/M26 require M23 first ===
   M.m24 = m24_pnl_attribution(M, s);
   // === M29 Backtest — expensive, cache by kline length ===
@@ -2482,7 +2493,7 @@ function m33_path_to_target(M) {
   const pnl = computeTruePnL(M);
   const cycle = getCycleProgress();
   const dcaCap = m32_dca_capacity(M.holdings);
-  const dailyDCA = dcaCap.daily_dca;
+  const dailyDCA = dcaCap.daily_dca_target;
   const daysRemaining = cycle.daysRemaining;
   const targetPnL = pnl.target_pnl;
   const currentPnL = pnl.true_pnl;
