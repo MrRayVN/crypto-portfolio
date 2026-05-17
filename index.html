@@ -2504,11 +2504,33 @@ function m33_path_to_target(M) {
   const T = Math.max(0.01, daysRemaining / 365);
   const btcPrice = M.holdings.BTC.price;
   const portBeta = 0.85;
-  // === DCA SHORTAGE LOAN (tự fold vào mọi scenario) ===
-  // User nguyên tắc: KHÔNG bao giờ giảm pace DCA. Nếu thiếu USDT → vay short-term để giữ pace.
   const dcaShortageLoan = (!dcaCap.sufficient) ? dcaCap.shortage_until_deposit : 0;
   const loanAprMonthly = 0.09 / 12;
   const dcaLoanCarryCost = dcaShortageLoan * loanAprMonthly * (dcaCap.days_to_next_deposit / 30);
+
+  // === QUANTUM/TACTICAL CHECKS (use ACTUAL conditions, not hypothetical) ===
+  // M28 squeeze ready check
+  const m28 = M.m28;
+  const squeezeReadyNow = m28?.available && m28.squeeze_score >= 60;
+  const squeezeScore = m28?.squeeze_score || 0;
+  // M18 OU z-score: which coin is most oversold (best to dip-buy)
+  const m18 = M.m18 || {};
+  let bestDipCoin = 'BTC';
+  let bestDipZ = m18.BTC?.ouZ ?? 0;
+  for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
+    const z = m18[sym]?.ouZ;
+    if (typeof z === 'number' && z < bestDipZ) { bestDipZ = z; bestDipCoin = sym; }
+  }
+  const dipCoinOversold = bestDipZ < -1.5;
+  const dipCoinPrice = M.holdings[bestDipCoin]?.price || btcPrice;
+  // M20 Markowitz tangency for rebalance hint
+  const m20 = M.m20;
+  // M17 risk gate
+  const m17 = M.m17;
+  const riskGateOK = !m17 || (m17.sharpe >= 0 && m17.maxDD_pct <= 35);
+  const riskWarning = m17 && m17.sharpe < 0.5 ? `Sharpe ${m17.sharpe.toFixed(2)} thấp` : m17 && m17.maxDD_pct > 25 ? `MaxDD ${m17.maxDD_pct.toFixed(0)}% cao` : null;
+  // M25 correlation crisis
+  const correlationCrisis = M.m25?.regime === 'CORRELATION_CRISIS';
 
   // Helper: P(hit) for given expected PnL & vol
   // Assume PnL_EOY ~ N(expected_return, sigma_eoy)
@@ -2649,61 +2671,91 @@ function m33_path_to_target(M) {
     steps: scenC_steps,
   };
 
-  // D. AGGRESSIVE — LEVERAGE + Squeeze (no new capital needed)
+  // D. FULL SEND — Leverage + Squeeze (HONEST count based on actual conditions)
   const squeezePerPlay = M.m21?.quarter_kelly_pct > 0 ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
   const playsPerMonth = 2;
-  const totalPlays = Math.floor(daysRemaining / 30) * playsPerMonth;
+  const maxPlaysIfFavorable = Math.floor(daysRemaining / 30) * playsPerMonth;
+  // HONEST: expected plays conditional on regime — bull = 50% of max, neutral/bear = 25%
+  const expectedPlays = M.m22.pBull_final >= 0.55 ? Math.floor(maxPlaysIfFavorable * 0.6)
+                       : M.m22.pBull_final >= 0.45 ? Math.floor(maxPlaysIfFavorable * 0.4)
+                       : Math.floor(maxPlaysIfFavorable * 0.20);
+  const playsReadyNow = squeezeReadyNow ? 1 : 0; // can execute 1 play NOW if conditions met
+  const totalPlays = expectedPlays;
   const squeezeEVPerPlay = squeezePerPlay * 0.03;
-  const scenD_squeezePnL = totalPlays * squeezeEVPerPlay;
+  const scenD_squeezePnL = expectedPlays * squeezeEVPerPlay;
   const scenD_extraPnL = scenC_extraPnL + scenD_squeezePnL;
   // Scenario D — FULL SEND: Leverage (max safe) + Squeeze plays + DCA fund
   const scenD_totalLoan = scenC_totalLoan; // same loan as scenC
   const scenD_extraPnL_v2 = scenC_extraPnL + scenD_squeezePnL;
-  const m28 = M.m28;
   const m28FundingHist = m28?.available ? `min ${m28.min.toFixed(4)}% / median ${m28.median.toFixed(4)}% / max ${m28.max.toFixed(4)}%` : 'cần fetch';
-  const scenD_steps = [
-    `💰 VAY TỔNG ${fmt$(scenD_totalLoan)} USDT — chia mục đích:`,
-    ``,
-  ];
-  if (purp_btc_dip > 0) {
-    scenD_steps.push(`🎯 PURPOSE 1: BTC DIP-BUY — ${fmt$(purp_btc_dip)}`);
-    scenD_steps.push(`   • Mua ${fmtQty(purp_btc_dipExposure)} BTC tại ${fmt$(btcPrice,0)}`);
-    scenD_steps.push(`   • Expected PnL: <b>${fmt$(purp_btc_dipPnL)}</b> (${(purp_btc_dipPnL/gapPnL*100).toFixed(0)}% of gap)`);
-    scenD_steps.push(``);
+
+  // === BUILD STEPS using EXECUTE NOW vs WAIT FOR structure ===
+  // Group A: actions executable IMMEDIATELY based on current conditions
+  // Group B: actions waiting for future conditions to fire
+  const stepsNow = [];
+  const stepsWait = [];
+
+  // Loan action: executable NOW if loan room exists
+  if (purp_btc_dip > 0 || purp_dca_fund > 0) {
+    stepsNow.push(`<b>💰 VAY ${fmt$(scenD_totalLoan)} USDT (collateral BTC)</b>`);
+    if (purp_btc_dip > 0) {
+      stepsNow.push(`├ PURPOSE 1 (${fmt$(purp_btc_dip)}): Mua ngay ${fmtQty(purp_btc_dipExposure)} ${bestDipCoin} tại ${fmt$(dipCoinPrice,0)}`);
+      stepsNow.push(`│   ↳ Lý do chọn ${bestDipCoin}: OU z-score ${bestDipZ.toFixed(2)} ${dipCoinOversold ? '(oversold)' : '(neutral)'}`);
+      stepsNow.push(`│   ↳ Expected PnL: <b>+${fmt$(purp_btc_dipPnL)}</b> (${(purp_btc_dipPnL/gapPnL*100).toFixed(0)}% of gap)`);
+    }
+    if (purp_dca_fund > 0) {
+      stepsNow.push(`└ PURPOSE 2 (${fmt$(purp_dca_fund)}): Hold trong Spot để Pool DCA auto-deduct ${fmt$(dailyDCA)}/d`);
+      stepsNow.push(`    ↳ Carry cost ${fmt$(purp_dca_carry)} (no PnL, repaid ngày ${dcaCap.schedule_day})`);
+    }
   }
-  if (purp_dca_fund > 0) {
-    scenD_steps.push(`🎯 PURPOSE 2: DCA FUND — ${fmt$(purp_dca_fund)}`);
-    scenD_steps.push(`   • Auto-deduct ${fmt$(dailyDCA)}/d cho Pool DCA`);
-    scenD_steps.push(`   • Carry ${fmt$(purp_dca_carry)} (no PnL, repaid ngày ${dcaCap.schedule_day})`);
-    scenD_steps.push(``);
+
+  // Squeeze play NOW or WAIT based on M28 score
+  if (squeezeReadyNow && playsReadyNow > 0) {
+    stepsNow.push(``);
+    stepsNow.push(`<b>⚡ SQUEEZE PLAY READY NOW (M28 score ${squeezeScore}/100)</b>`);
+    stepsNow.push(`• Mở Long BTC Perp 5× leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly)`);
+    stepsNow.push(`• Entry NOW · TP1 +3% close 50% · TP2 +5% close rest · SL −1.5%`);
+    stepsNow.push(`• Force exit nếu funding flip > +0.005%`);
+  } else {
+    stepsWait.push(`<b>⏳ SQUEEZE PLAYS — M28 score hiện ${squeezeScore}/100 (cần ≥60)</b>`);
+    stepsWait.push(`Đợi đủ 3/3 conditions trước khi execute:`);
+    stepsWait.push(`├ A: Funding 24h forecast ≤ −0.005% (hiện ${m28?.forecast_24h?.toFixed(4) ?? '?'}%)`);
+    stepsWait.push(`├ B: P(bull) ≥ 45% AND F&G ≥ 30 (hiện ${(M.m22.pBull_final*100).toFixed(0)}% / ${fg})`);
+    stepsWait.push(`└ C: M28 squeeze_score ≥ 60 (hiện ${squeezeScore})`);
+    stepsWait.push(`Khi fire: Long Perp 5×, size ${fmt$(squeezePerPlay)} · TP +3%/+5% · SL −1.5%`);
+    stepsWait.push(`Expected ${expectedPlays} plays trong ${daysRemaining}d (${(M.m22.pBull_final*100).toFixed(0)}% regime confidence)`);
   }
-  scenD_steps.push(`🎯 PURPOSE 3: SQUEEZE PLAYS (futures equity, NOT loan) — ${fmt$(squeezePerPlay)} × ${totalPlays} plays`);
-  scenD_steps.push(`   Total expected PnL: <b>${fmt$(scenD_squeezePnL)}</b> (${(scenD_squeezePnL/gapPnL*100).toFixed(0)}% of gap)`);
-  scenD_steps.push(`   `);
-  scenD_steps.push(`   📐 ENTRY CONDITIONS (mỗi play cần 3/3):`);
-  scenD_steps.push(`     Trigger A: M28 funding 24h forecast ≤ −0.005% (shorts paying)`);
-  scenD_steps.push(`     Trigger B: M22 P(bull) ≥ 45% AND F&G ≥ 30`);
-  scenD_steps.push(`     Trigger C: M28 squeeze_score ≥ 60`);
-  scenD_steps.push(`   📊 7d funding history: ${m28FundingHist}`);
-  scenD_steps.push(`   `);
-  scenD_steps.push(`   ⚙️ EXECUTION: Long BTC Perp 5× leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly từ M21)`);
-  scenD_steps.push(`   `);
-  scenD_steps.push(`   🏁 EXIT RULES:`);
-  scenD_steps.push(`     TP1 (+3%): close 50% · TP2 (+5%): close phần còn lại`);
-  scenD_steps.push(`     SL (−1.5%): hard close 100%`);
-  scenD_steps.push(`     Force exit: funding flip > +0.005% → close ngay`);
-  scenD_steps.push(`   `);
-  scenD_steps.push(`   📅 Frequency: ${playsPerMonth} plays/tháng × ${Math.floor(daysRemaining/30)} tháng = ${totalPlays} plays`);
+
+  // Risk warning if Sharpe/MaxDD bad
+  if (riskWarning) {
+    stepsWait.push(``);
+    stepsWait.push(`<b>⚠️ RISK FLAG (M17): ${riskWarning}</b> → cân nhắc giảm aggressive nếu condition không cải thiện`);
+  }
+  if (correlationCrisis) {
+    stepsWait.push(`<b>🔴 M25 CORRELATION CRISIS</b> → tăng USDC alloc ngay (diversification failing)`);
+  }
+
+  // Construct final scenD_steps — clean format no empty numbered lines
+  const scenD_steps = [];
+  scenD_steps.push(`🎯 EXECUTE NGAY:`);
+  scenD_steps.push(...stepsNow);
+  if (stepsWait.length > 0) {
+    scenD_steps.push(``);
+    scenD_steps.push(`⏳ ĐỢI / GIÁM SÁT:`);
+    scenD_steps.push(...stepsWait);
+  }
   scenD_steps.push(``);
-  scenD_steps.push(`📊 TỔNG EXPECTED PnL: ${fmt$(scenD_extraPnL_v2)} vs gap cần ${fmt$(gapPnL)}`);
-  scenD_steps.push(`   • BTC dip-buy: ${fmt$(purp_btc_dipPnL)}`);
-  scenD_steps.push(`   • Existing holdings drift: ${fmt$(scenA_btcDriftPnL)}`);
-  scenD_steps.push(`   • DCA new buys: ${fmt$(scenA_extraDCA * 0.05 * T)}`);
-  scenD_steps.push(`   • Squeeze plays: ${fmt$(scenD_squeezePnL)}`);
-  scenD_steps.push(`   • Loan carry cost: −${fmt$(purp_dca_carry)}`);
+  scenD_steps.push(`📊 TỔNG EXPECTED PnL: <b>${fmt$(scenD_extraPnL_v2)}</b> vs gap cần ${fmt$(gapPnL)} (${(scenD_extraPnL_v2/gapPnL*100).toFixed(0)}% closure)`);
+  scenD_steps.push(`├ BTC dip-buy ngay: ${fmt$(purp_btc_dipPnL)}`);
+  scenD_steps.push(`├ Existing holdings drift: ${fmt$(scenA_btcDriftPnL)}`);
+  scenD_steps.push(`├ DCA new buys gain: ${fmt$(scenA_extraDCA * 0.05 * T)}`);
+  scenD_steps.push(`├ Expected ${expectedPlays} squeeze plays: ${fmt$(scenD_squeezePnL)}`);
+  scenD_steps.push(`└ Loan carry: −${fmt$(purp_dca_carry)}`);
   scenD_steps.push(``);
-  scenD_steps.push(`🛡️ SAFETY: Total loan ${fmt$(M.loan + scenD_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)}`);
+  scenD_steps.push(`🛡️ SAFETY: Loan sau plan ${fmt$(M.loan + scenD_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)} · LTV ${((M.loan + scenD_totalLoan) / M.m1.gross * 100).toFixed(1)}% · Liq dist ${M.m7.liq_dist.toFixed(1)}%`);
   scenD_steps.push(`Stop-loss BTC ${fmt$(state.bep_threshold)} hard backstop`);
+  scenD_steps.push(``);
+  scenD_steps.push(`📋 MODULES ÁP DỤNG: M17 risk · M18 OU z-score (pick ${bestDipCoin}) · M21 Kelly · M22 regime · M25 correlation · M28 squeeze score · M32 DCA capacity · M33 path scenarios`);
 
   const scenD = {
     name: `FULL SEND — Vay ${fmt$(scenD_totalLoan)} (BTC dip + DCA fund) + ${totalPlays} squeeze plays`,
@@ -3138,7 +3190,19 @@ function renderRequiredCAGR(M) {
 function renderUnifiedAction(M) {
   const d = M.m23;
   const sevBg = `linear-gradient(135deg, ${d.color}25, ${d.color}08)`;
-  const stepsHTML = d.action_steps.map(s => `<li style="margin-bottom:0.4rem;line-height:1.6">${s}</li>`).join('');
+  // Smart formatting: detect empty lines → render as spacer; lines starting with emoji/bold → headers
+  const stepsHTML = d.action_steps.map(s => {
+    if (!s || s.trim() === '') return `<div style="height:0.5rem"></div>`;
+    // Headers (bold or emoji-led prominent lines)
+    if (s.startsWith('<b>') || /^[🎯⚡💰⏳📊🛡️📋🔴⚠️ℹ️🚀]/.test(s)) {
+      return `<div style="margin:0.5rem 0 0.3rem;font-size:0.88rem;line-height:1.5">${s}</div>`;
+    }
+    // Indented sub-items (start with ├ └ • or whitespace)
+    if (/^[├└│•]/.test(s) || s.startsWith('  ')) {
+      return `<div style="margin-bottom:0.25rem;padding-left:1rem;font-size:0.82rem;line-height:1.55;color:var(--text2);font-family:var(--mono)">${s}</div>`;
+    }
+    return `<div style="margin-bottom:0.35rem;font-size:0.85rem;line-height:1.6">${s}</div>`;
+  }).join('');
   const rationHTML = d.rationale.map(r => `<li style="margin-bottom:0.3rem;line-height:1.55;color:var(--text2);font-size:0.82rem">${r}</li>`).join('');
   const blocksHTML = d.blocks.length ? d.blocks.map(b => `<li style="color:var(--red);font-size:0.78rem;margin-bottom:0.2rem">${b}</li>`).join('') : '';
   const srcHTML = d.sources_fired.map(s => `<span class="badge b-grey" style="font-size:0.65rem">${s}</span>`).join(' ');
@@ -3160,8 +3224,8 @@ function renderUnifiedAction(M) {
       </div>
 
       <div style="background:rgba(0,0,0,0.25);border-radius:12px;padding:1rem 1.25rem;margin-top:1rem;border-left:4px solid ${d.color}">
-        <div style="font-family:var(--display);font-weight:700;font-size:0.9rem;margin-bottom:0.6rem;color:var(--text)">📋 Các bước thực hiện:</div>
-        <ol style="padding-left:1.5rem;font-size:0.85rem;color:var(--text)">${stepsHTML}</ol>
+        <div style="font-family:var(--display);font-weight:700;font-size:0.9rem;margin-bottom:0.6rem;color:var(--text)">📋 Kế hoạch:</div>
+        <div style="font-size:0.85rem;color:var(--text)">${stepsHTML}</div>
       </div>
 
       ${blocksHTML ? `<div style="background:rgba(239,68,68,0.08);border-radius:10px;padding:0.75rem 1rem;margin-top:0.75rem;border-left:3px solid var(--red)">
