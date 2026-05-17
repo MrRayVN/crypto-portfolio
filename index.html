@@ -1280,6 +1280,59 @@ function m22_regime(market, onchainSignals, macroOverlay, topTraderSentiment) {
   };
 }
 
+// ===================== SHARED SQUEEZE GATE (single source of truth) =====================
+// Combines Tactical ARM (4-5 SOP conditions) + M28 score → ONE truth for squeeze readiness.
+// Both M23 P7 cascade AND renderSqueeze use this — never disagree again.
+function computeSqueezeGate(M) {
+  const ca = state.coinalyze || {};
+  const market = state.market || {};
+  const fundingSource = (ca.funding_current !== undefined) ? ca.funding_current : (market.funding_btc_pct ?? 0);
+  const fundingThreshold = market.funding_threshold_adaptive ?? -0.005;
+  const priceThreshold = market.btc_sma20 ?? state.holdings.BTC.price;
+  const volRatio = market.btc_vol_ratio ?? (1 + (market.vol_change || 0) / 100);
+  const rsi = market.rsi6_1d ?? 50;
+  const btcP = state.holdings.BTC.price;
+
+  const conditions = [
+    {name: 'Funding rate (agg)', met: fundingSource <= fundingThreshold,
+     threshold: `≤ ${fundingThreshold.toFixed(4)}%`, current: `${fundingSource.toFixed(4)}%`},
+    {name: 'RSI 6 (1d)', met: rsi > 70,
+     threshold: '> 70 (overbought)', current: rsi.toFixed(2)},
+    {name: 'Price holding', met: btcP > priceThreshold,
+     threshold: `BTC > SMA20 (${fmt$(priceThreshold,0)})`, current: `${fmt$(btcP)} vs ${fmt$(priceThreshold,0)}`},
+    {name: 'BTC volume surge', met: volRatio > 1.5,
+     threshold: '> 1.5× 14d avg', current: `${volRatio.toFixed(2)}×`},
+  ];
+  if (ca.ls_current !== undefined) {
+    conditions.push({name: 'L/S ratio (agg)', met: ca.ls_current < 1.0,
+      threshold: '< 1.0', current: ca.ls_current.toFixed(3)});
+  }
+
+  const metCount = conditions.filter(c => c.met).length;
+  const total = conditions.length;
+  const m28Score = M?.m28?.squeeze_score ?? 0;
+  const m28Ready = m28Score >= 60;
+  // === COMBINED GATE: BOTH must agree ===
+  // - Tactical ARM ≥ 4/5 conditions (bull momentum + funding)
+  // - M28 score ≥ 60 (statistical confirmation)
+  const requiredCount = total >= 5 ? 4 : 3; // 4/5 or 3/4
+  const tacticalReady = metCount >= requiredCount;
+  const ready = tacticalReady && m28Ready;
+
+  let badge, status;
+  if (ready) { badge = `✅ READY (${metCount}/${total} + M28 ${m28Score})`; status = 'EXECUTE'; }
+  else if (tacticalReady && !m28Ready) { badge = `🟡 PARTIAL — M28 score ${m28Score} < 60`; status = 'WAIT_M28'; }
+  else if (!tacticalReady && m28Ready) { badge = `🟡 PARTIAL — Tactical ${metCount}/${total} (cần ${requiredCount})`; status = 'WAIT_TACTICAL'; }
+  else if (metCount >= 2 || m28Score >= 30) { badge = `🟡 BUILDING (${metCount}/${total} · M28 ${m28Score})`; status = 'BUILDING'; }
+  else { badge = `⚪ STANDBY (${metCount}/${total} · M28 ${m28Score})`; status = 'STANDBY'; }
+
+  return {
+    conditions, metCount, total, requiredCount,
+    m28_score: m28Score, m28_ready: m28Ready, tactical_ready: tacticalReady,
+    ready, badge, status,
+  };
+}
+
 // ===================== M23: UNIFIED DECISION SYNTHESIZER =====================
 // Output DUY NHẤT 1 hành động. Cây ưu tiên: safety > opportunity. Cao nhất thắng.
 // Mọi section khác phải SUPPORT hoặc DEFER, không tạo recommendation riêng conflicting.
@@ -1513,9 +1566,10 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P7: FUNDING SQUEEZE — now uses M28 forecast for higher precision ----
+  // ---- P7: FUNDING SQUEEZE — uses shared computeSqueezeGate (Tactical ARM + M28) ----
   const m28 = M.m28;
-  const squeezeReady = m28?.available && m28.squeeze_score >= 60;
+  const squeezeGate = computeSqueezeGate(M);
+  const squeezeReady = squeezeGate.ready;
   if (squeezeReady && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
     const sqAmount = M.m21?.quarter_kelly_pct > 0
       ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
@@ -2468,7 +2522,9 @@ function m33_path_to_target(M) {
   // === QUANTUM/TACTICAL CHECKS (use ACTUAL conditions, not hypothetical) ===
   // M28 squeeze ready check
   const m28 = M.m28;
-  const squeezeReadyNow = m28?.available && m28.squeeze_score >= 60;
+  // Use SHARED gate (Tactical ARM 4/5 + M28 score ≥ 60) for honest squeeze readiness
+  const squeezeGate = computeSqueezeGate(M);
+  const squeezeReadyNow = squeezeGate.ready;
   const squeezeScore = m28?.squeeze_score || 0;
   // M18 OU z-score: which coin is most oversold (best to dip-buy)
   const m18 = M.m18 || {};
@@ -2674,13 +2730,16 @@ function m33_path_to_target(M) {
     stepsNow.push(`• Entry NOW · TP1 +3% close 50% · TP2 +5% close rest · SL −1.5%`);
     stepsNow.push(`• Force exit nếu funding flip > +0.005%`);
   } else {
-    stepsWait.push(`<b>⏳ SQUEEZE PLAYS — M28 score hiện ${squeezeScore}/100 (cần ≥60)</b>`);
-    stepsWait.push(`Đợi đủ 3/3 conditions trước khi execute:`);
-    stepsWait.push(`├ A: Funding 24h forecast ≤ −0.005% (hiện ${m28?.forecast_24h?.toFixed(4) ?? '?'}%)`);
-    stepsWait.push(`├ B: P(bull) ≥ 45% AND F&G ≥ 30 (hiện ${(M.m22.pBull_final*100).toFixed(0)}% / ${fg})`);
-    stepsWait.push(`└ C: M28 squeeze_score ≥ 60 (hiện ${squeezeScore})`);
-    stepsWait.push(`Khi fire: Long Perp 3×, size ${fmt$(squeezePerPlay)} · TP +3%/+5% · SL −1.5%`);
-    stepsWait.push(`Expected ${expectedPlays} plays trong ${daysRemaining}d (${(M.m22.pBull_final*100).toFixed(0)}% regime confidence)`);
+    stepsWait.push(`<b>⏳ SQUEEZE PLAYS — ${squeezeGate.badge}</b>`);
+    stepsWait.push(`Cần đủ <b>${squeezeGate.requiredCount}/${squeezeGate.total} Tactical conditions AND M28 score ≥ 60</b>:`);
+    for (const c of squeezeGate.conditions) {
+      const icon = c.met ? '✅' : '❌';
+      stepsWait.push(`├ ${icon} ${c.name}: ${c.threshold} · hiện <b>${c.current}</b>`);
+    }
+    stepsWait.push(`└ ${squeezeGate.m28_ready ? '✅' : '❌'} M28 squeeze_score: ≥ 60 · hiện <b>${squeezeGate.m28_score}/100</b>`);
+    stepsWait.push(`Status: <b>${squeezeGate.status}</b> — ${squeezeGate.tactical_ready ? 'Tactical OK' : 'Tactical missing'} · ${squeezeGate.m28_ready ? 'M28 OK' : 'M28 missing'}`);
+    stepsWait.push(`Khi đủ điều kiện: Long Perp 3×, size ${fmt$(squeezePerPlay)} · TP +3%/+5% · SL −1.5%`);
+    stepsWait.push(`Expected ${expectedPlays} plays trong ${daysRemaining}d (regime ${(M.m22.pBull_final*100).toFixed(0)}% confidence)`);
   }
 
   // Risk warning if Sharpe/MaxDD bad
@@ -4232,55 +4291,30 @@ function renderSqueeze(M) {
   const evPerPlay = tpGain * winRate + slLoss * (1 - winRate);
   const playsPerYear = 15;
   const annualEV = evPerPlay * playsPerYear;
-  // ADAPTIVE thresholds — fall back to fixed if data unavailable
-  const fundingThreshold = state.market.funding_threshold_adaptive ?? -0.005;
-  const priceThreshold = state.market.btc_sma20 ?? 79000;
-  const volRatioThreshold = 1.5;
-  const volRatio = state.market.btc_vol_ratio ?? (1 + state.market.vol_change / 100);
-  const isAdaptive = state.market.funding_threshold_adaptive !== undefined;
-  const ca = state.coinalyze;
-  // Prefer Coinalyze aggregated funding when available (cross-exchange signal, more accurate)
-  const fundingSource = (ca?.funding_current !== undefined) ? ca.funding_current : state.market.funding_btc_pct;
-  const fundingSourceLabel = (ca?.funding_current !== undefined) ? 'Coinalyze agg' : 'Binance only';
-  const conds = [
-    {name:'Funding rate (agg)', threshold: isAdaptive ? `≤ ${fundingThreshold.toFixed(4)}% (20th pctile 7d)` : '≤ -0.005%',
-     current:`${fundingSource.toFixed(4)}% [${fundingSourceLabel}]${ca?.funding_avg_7d !== undefined ? ` · 7d avg ${ca.funding_avg_7d.toFixed(4)}%` : ''}`,
-     met: fundingSource <= fundingThreshold},
-    {name:'RSI 6 (1d)', threshold:'> 70 (overbought)',
-     current: `${state.market.rsi6_1d.toFixed(2)} (range 0-100)`,
-     met: state.market.rsi6_1d > 70},
-    {name:'Price holding', threshold: isAdaptive ? `BTC > SMA20 (${fmt$(priceThreshold,0)})` : 'BTC > $79K',
-     current: `${fmt$(state.holdings.BTC.price)} vs SMA20 ${fmt$(state.market.btc_sma20 ?? 0,0)}`,
-     met: state.holdings.BTC.price > priceThreshold},
-    {name:'BTC volume surge', threshold: isAdaptive ? `> 1.5× 14d avg` : '+50%',
-     current: `${volRatio.toFixed(2)}x of 14d avg`,
-     met: volRatio > volRatioThreshold},
-  ];
-  // 5th condition only if Coinalyze L/S available
-  if (ca?.ls_current !== undefined) {
-    conds.push({
-      name: 'L/S ratio (agg)', threshold: '< 1.0 (not over-long)',
-      current: `${ca.ls_current.toFixed(3)} (7d avg ${(ca.ls_avg_7d ?? 0).toFixed(3)})`,
-      met: ca.ls_current < 1.0,
-    });
-  }
-  const metCount = conds.filter(c=>c.met).length;
-  const total = conds.length;
-  const allMet = metCount === total;
-  let statusBadge, statusColor, overallText;
-  // STATUS-ONLY badges (C1 fix): no "EXECUTE NOW" verb — M23 P7 owns squeeze decision via M28 score
-  if (allMet) { statusBadge = `✅ ALL MET (${metCount}/${total})`; statusColor = 'var(--green)'; overallText = `M23 P7 sẽ fire nếu các gate khác mở`; }
-  else if (metCount >= Math.ceil(total * 0.75)) { statusBadge = `🟣 ARMED (${metCount}/${total})`; statusColor = 'var(--purple)'; overallText = `near ready — ${total-metCount} cond miss`; }
-  else if (metCount >= 2) { statusBadge = `🟡 BUILDING (${metCount}/${total})`; statusColor = 'var(--yellow)'; overallText = `setup developing`; }
-  else { statusBadge = `⚪ STANDBY (${metCount}/${total})`; statusColor = 'var(--muted)'; overallText = 'setup not ready'; }
+
+  // === SINGLE SOURCE OF TRUTH (C1 final fix) ===
+  // computeSqueezeGate is the SAME function M23 P7 + M33 path-to-target use.
+  // Tactical tab + M23 + M33 will now ALWAYS agree on squeeze readiness.
+  const gate = computeSqueezeGate(M);
+  const statusBadge = gate.badge;
+  let statusColor, overallText;
+  if (gate.status === 'EXECUTE') { statusColor = 'var(--green)'; overallText = 'M23 P7 sẽ fire (gate đã đủ điều kiện)'; }
+  else if (gate.status === 'WAIT_M28') { statusColor = 'var(--yellow)'; overallText = `Tactical OK nhưng M28 score ${gate.m28_score} < 60 — đợi statistical confirmation`; }
+  else if (gate.status === 'WAIT_TACTICAL') { statusColor = 'var(--yellow)'; overallText = `M28 OK nhưng Tactical ${gate.metCount}/${gate.total} < ${gate.requiredCount} — đợi market conditions`; }
+  else if (gate.status === 'BUILDING') { statusColor = 'var(--yellow)'; overallText = 'setup developing — chưa đủ ngưỡng'; }
+  else { statusColor = 'var(--muted)'; overallText = 'setup not ready'; }
+
   let condRows = '';
-  for (const c of conds) {
+  for (const c of gate.conditions) {
     condRows += `<tr><td>${c.name}</td><td>${c.threshold}</td><td><b>${c.current}</b></td><td>${c.met ? '<span style="color:var(--green)">✅ MET</span>' : '<span style="color:var(--red)">✗ MISS</span>'}</td></tr>`;
   }
-  return `<div id="squeeze" class="section-title">⚡ Squeeze Conditions — Status (INFO only · ${statusBadge})</div>
+  // M28 row appended for transparency
+  condRows += `<tr><td>M28 squeeze_score</td><td>≥ 60 (statistical)</td><td><b>${gate.m28_score}/100</b></td><td>${gate.m28_ready ? '<span style="color:var(--green)">✅ READY</span>' : '<span style="color:var(--red)">✗ &lt; 60</span>'}</td></tr>`;
+
+  return `<div id="squeeze" class="section-title">⚡ Squeeze Gate — ${statusBadge}</div>
   <div class="squeeze-card">
   <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:0.875rem;font-size:0.78rem;color:var(--text2);line-height:1.55">
-    ℹ️ <b>Bảng này hiển thị trạng thái điều kiện</b>. Hành động squeeze thực tế do <b>M23 P7</b> quyết định khi M28 squeeze_score ≥ 60 + các gate khác (regime, equity ratio). Xem Action tại tab Tổng Quan.
+    ℹ️ <b>Combined gate</b>: Tactical ARM (${gate.requiredCount}/${gate.total} conditions) <b>AND</b> M28 squeeze_score ≥ 60. Cả hai PHẢI đồng thuận. M23 P7 ở tab Tổng Quan dùng CHÍNH gate này — không có xung đột.
   </div>
   <div class="dca-header">
     <div>
@@ -4297,10 +4331,10 @@ function renderSqueeze(M) {
   <div class="metric"><div class="metric-label">EV per play</div><div class="metric-value" style="color:${evPerPlay>=0?'var(--green)':'var(--red)'}">${fmt$signed(evPerPlay)}</div><div class="metric-sub">at ${winRate*100}% win rate</div></div>
   <div class="metric"><div class="metric-label">Annual EV</div><div class="metric-value" style="color:${annualEV>=0?'var(--green)':'var(--red)'}">~${fmt$signed(annualEV).replace(/\.\d+$/, '')}</div><div class="metric-sub">${playsPerYear} plays/yr</div></div>
   </div>
-  <div style="font-family:var(--display);font-weight:700;margin:0.875rem 0 0.5rem">🎯 ARM Conditions Check (4-condition gate per SOP)</div>
+  <div style="font-family:var(--display);font-weight:700;margin:0.875rem 0 0.5rem">🎯 Gate Conditions (Tactical ARM ${gate.requiredCount}/${gate.total} <b>+</b> M28 ≥ 60)</div>
   <table>
   <thead><tr><th>Condition</th><th>Threshold</th><th>Current</th><th>Status</th></tr></thead>
-  <tbody>${condRows}<tr style="background:rgba(245,158,11,0.05)"><td><b>Overall</b></td><td>${total}/${total} to fire</td><td><b>${statusBadge}</b></td><td style="color:${statusColor}"><b>${overallText}</b></td></tr></tbody>
+  <tbody>${condRows}<tr style="background:rgba(245,158,11,0.05)"><td><b>Overall</b></td><td>Tactical ${gate.requiredCount}/${gate.total} <b>AND</b> M28 ≥ 60</td><td><b>${statusBadge}</b></td><td style="color:${statusColor}"><b>${overallText}</b></td></tr></tbody>
   </table>
   <div class="warning-bar">⚠️ <b>Squeeze rules</b>: KHÔNG > ${leverage}x leverage · KHÔNG > 5% NET margin · BẮT BUỘC SL/TP setup trước khi rời màn hình · Frequency 1-2 plays/tháng · Pause sau 3 lệnh thua liên tiếp · KHÔNG fire trong NFP/CPI window.</div>
   </div>`;
