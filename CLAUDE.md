@@ -1,4 +1,4 @@
-# CLAUDE.md (v4 — packed 2026-05-17 · post-session full context)
+# CLAUDE.md (v5 — packed 2026-05-17 · post-audit cleanup)
 
 Hướng dẫn cho Claude (Cowork + Claude Code) khi tiếp tục project này từ session mới.
 
@@ -374,6 +374,29 @@ dde04b7 Quantum v74 deploy
 8. **Loan có purpose cụ thể** — không vay vô tội vạ
 9. **Read-only Binance API** — không trade execution
 10. **safeRender wrapping** — error 1 module không kill toàn dashboard
+11. **TH constants** (line ~390 trong index.html) — single source of truth cho thresholds. KHÔNG hardcode F&G/P(bull) numbers rải rác.
+12. **Tactical + Quantum sections = INFO ONLY** — actions chỉ từ M23 cascade. Tabs này show status, không produce action verbs.
+13. **Squeeze leverage = 3x** (TH.SQUEEZE_LEVERAGE) mọi nơi.
+
+## 🧹 AUDIT CLEANUP (v5)
+
+Phase A (HIGH severity fixes):
+- C2: Squeeze leverage synced 5x → 3x mọi nơi
+- C3/C4: Stop-Loss + Dip-Ladder INFO-only (no action verbs, defer M23)
+- C1: renderSqueeze converted to status display
+- C7: renderActions = read-only M23 trace, legacy actions collapsed
+- D1: 4-LEVER mini cards deleted (renderLeverDCA/Squeeze/Loan/Stop removed)
+- D2: Markowitz Action 5 removed from QuantumPlaybook
+- O1: Dead M32 cascade block deleted (~80 lines)
+- D9: renderScenarios stub deleted
+
+Phase B (medium cleanups):
+- TH constants object added — centralize thresholds
+- P(hit) labels: "GBM MC" vs "Jump-Diffusion MC"
+- Quantum analytics collapsed `<details>` (Risk Metrics, Jump-Diff, AssetRisk, Correlation, Markowitz, TopTrader)
+- D7: renderJourney removed (Plan Changes covers diff)
+
+Total: ~230 lines cleaned. Dashboard lean hơn, single source of action.
 
 ---
 

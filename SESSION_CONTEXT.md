@@ -1,8 +1,20 @@
 # SESSION_CONTEXT.md — Last Session State
 
-**Date packed**: 2026-05-17
-**Last commit**: `5b9d94a` Purpose-driven loan breakdown
-**Session status**: ✅ Stable, all features deployed
+**Date packed**: 2026-05-17 (post-audit cleanup)
+**Last commit**: `71ea4a0` Phase B audit cleanup
+**Session status**: ✅ Audit Phase A + B done. Phase C minor cleanup pending.
+
+## 🧹 Audit accomplishments
+
+Em did comprehensive audit (using Plan agent) finding 31 conflicts/dead displays/orphans. Phase A (8 HIGH severity) + Phase B (5 cleanups) all deployed.
+
+See CLAUDE.md "AUDIT CLEANUP (v5)" section for full list.
+
+Remaining (Phase C low priority):
+- O3-O10 orphans cleanup
+- Backtest M29 F&G proxy improvement
+- D11 NET deduplication (5 places)
+- Centralize betas hardcode
 
 ---
 
