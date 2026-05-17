@@ -2575,61 +2575,77 @@ function m33_path_to_target(M) {
     ],
   };
 
-  // C. LEVERAGE BOOST — VỚI SAFE CAP để không escalate vô tận
-  // Hard ceilings:
-  //   - Total loan ≤ M.m7.accept (acceptable LTV cap)
-  //   - Total loan ≤ cost × 0.5 (max 50% leverage trên cost basis)
-  //   - Total loan ≤ NET × 0.4 (max 40% leverage trên equity)
+  // C. PURPOSE-DRIVEN LEVERAGE — vay tối đa safe cap, mỗi $ có mục đích PnL cụ thể
+  // Safe ceilings (system tính, vay đến đây OK):
   const maxSafeLoanTotal = Math.min(
-    M.m7.accept * 0.95,        // 95% of acceptable cap (5pp safety buffer)
-    pnl.cost * 0.5,            // max 50% leverage on cost basis
-    M.m1.net * 0.4             // max 40% leverage on net equity
+    M.m7.accept * 0.95,        // 95% of acceptable LTV cap (5pp safety buffer)
+    pnl.cost * 0.5,            // 50% leverage trên cost basis
+    M.m1.net * 0.4             // 40% leverage trên net equity
   );
   const maxAdditionalLoan = Math.max(0, maxSafeLoanTotal - M.loan);
-  const loanRoomRaw = Math.max(0, M.m7.soft - M.loan);
-  // Conservatively use 50% of available room AND cap at maxAdditional
-  const extraLoan = Math.min(loanRoomRaw * 0.5, cost * 0.30, maxAdditionalLoan);
   const loanInterestRate = 0.09;
-  const scenC_extraBtcExposure = extraLoan / btcPrice;
-  const scenC_btcDriftPnL = scenA_btcDriftPnL + (extraLoan * 0.30 * T) - (extraLoan * loanInterestRate * T);
-  const scenC_extraPnL = scenC_btcDriftPnL + scenA_extraDCA * 0.05 * T;
-  // Flag if leverage no longer recommendable (already at/near cap)
-  const leverageCapped = extraLoan < 100;
-  const scenC_totalLoan = extraLoan + dcaShortageLoan;
-  const scenC_steps = [];
-  if (leverageCapped) {
-    scenC_steps.push(`🛑 LOAN ĐÃ GẦN MAX SAFE — current loan ${fmt$(M.loan)} / max safe ${fmt$(maxSafeLoanTotal)}`);
-    scenC_steps.push(`KHÔNG ĐƯỢC vay thêm leverage cho dip-buy. Chỉ vay ${fmt$(dcaShortageLoan)} cho DCA shortage (nếu có)`);
-    if (dcaShortageLoan > 0) scenC_steps.push(`Vay ${fmt$(dcaShortageLoan)} USDT short-term cho DCA. Trả ngày ${dcaCap.schedule_day}`);
-    scenC_steps.push(`Giữ Pool DCA $${dailyDCA.toFixed(2)}/d · Hold tất cả crypto`);
-    scenC_steps.push(`⏳ Đợi BTC drift tự nhiên hoặc rebalance khi capital available`);
-  } else {
-    scenC_steps.push(`Binance → Vay → Linh hoạt → Vay ${fmt$(scenC_totalLoan)} USDT (collateral BTC)`);
-    scenC_steps.push(`Spot → Mua ${fmtQty(scenC_extraBtcExposure)} BTC ngay tại giá ${fmt$(btcPrice,0)} = ${fmt$(extraLoan)}`);
-    if (dcaShortageLoan > 0) scenC_steps.push(`Giữ ${fmt$(dcaShortageLoan)} USDT trong Spot để DCA pace $${dailyDCA.toFixed(2)}/d (auto-deduct mỗi ngày)`);
-    scenC_steps.push(`Pool DCA giữ $${dailyDCA.toFixed(2)}/d`);
-    scenC_steps.push(`Chi phí lãi vay: ${fmt$(extraLoan * loanInterestRate * T + dcaLoanCarryCost)} cho ${daysRemaining}d`);
-    scenC_steps.push(`⚠️ Total loan sau action = ${fmt$(M.loan + scenC_totalLoan)} (max safe ${fmt$(maxSafeLoanTotal)} · LTV target ≤ 60%)`);
-    scenC_steps.push(`⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} backstop. Liq distance hiện ${M.m7.liq_dist.toFixed(1)}%`);
+
+  // === LOAN ALLOCATION BY PURPOSE ===
+  // Purpose 1: DCA shortage fund (carry cost, no PnL contribution, repaid ngày nạp)
+  const purp_dca_fund = dcaShortageLoan; // = M.m32.shortage_until_deposit
+  const purp_dca_carry = dcaLoanCarryCost;
+  // Purpose 2: BTC dip-buy (PnL contribution = exposure × drift × T × beta − interest cost × T)
+  // Net contribution per $1 loan = 0.30 × T × 0.85 − 0.09 × T = (0.255 − 0.09) × T = 0.165 × T
+  const btcPnLPerDollar = (0.30 * portBeta - loanInterestRate) * T; // ~$0.063 per $1 at T=0.38
+  const purp_btc_dip = Math.max(0, maxAdditionalLoan - purp_dca_fund);
+  const purp_btc_dipExposure = purp_btc_dip / btcPrice;
+  const purp_btc_dipPnL = purp_btc_dip * btcPnLPerDollar;
+  const extraLoan = purp_btc_dip; // for backward compat with var names
+  const scenC_extraBtcExposure = purp_btc_dipExposure;
+  const scenC_extraPnL = scenA_btcDriftPnL + purp_btc_dipPnL + scenA_extraDCA * 0.05 * T - purp_dca_carry;
+  // Build purpose-driven steps cho scenario C
+  const scenC_totalLoan = purp_btc_dip + purp_dca_fund;
+  const scenC_steps = [
+    `💰 VAY TỔNG ${fmt$(scenC_totalLoan)} USDT — mỗi $ có mục đích PnL cụ thể:`,
+    ``,
+  ];
+  if (purp_btc_dip > 0) {
+    scenC_steps.push(`🎯 PURPOSE 1: BTC DIP-BUY — ${fmt$(purp_btc_dip)}`);
+    scenC_steps.push(`   • Spot → Mua ${fmtQty(purp_btc_dipExposure)} BTC tại giá ${fmt$(btcPrice,0)}`);
+    scenC_steps.push(`   • Expected PnL contribution: <b>${fmt$(purp_btc_dipPnL)}</b> trong ${daysRemaining}d`);
+    scenC_steps.push(`   • Math: $${purp_btc_dip.toFixed(0)} × (30%/yr × β 0.85 − 9% lãi) × ${T.toFixed(2)}yr = ${fmt$(purp_btc_dipPnL)}`);
+    scenC_steps.push(``);
   }
+  if (purp_dca_fund > 0) {
+    scenC_steps.push(`🎯 PURPOSE 2: DCA FUND (carry, no PnL) — ${fmt$(purp_dca_fund)}`);
+    scenC_steps.push(`   • Hold trong Spot wallet để Auto-Invest auto-deduct ${fmt$(dailyDCA)}/d`);
+    scenC_steps.push(`   • Carry cost: ${fmt$(purp_dca_carry)} cho ${dcaCap.days_to_next_deposit}d`);
+    scenC_steps.push(`   • Trả ngay khi nạp định kỳ ngày ${dcaCap.schedule_day} (no PnL contribution, chỉ duy trì pace)`);
+    scenC_steps.push(``);
+  }
+  scenC_steps.push(`📋 CÁC BƯỚC THỰC HIỆN:`);
+  scenC_steps.push(`   1. Binance → Vay → Linh hoạt → Vay ${fmt$(scenC_totalLoan)} USDT (collateral BTC)`);
+  if (purp_btc_dip > 0) scenC_steps.push(`   2. Spot → Mua ${fmtQty(purp_btc_dipExposure)} BTC ngay`);
+  scenC_steps.push(`   3. Giữ Pool DCA $${dailyDCA.toFixed(2)}/d (không đổi)`);
+  scenC_steps.push(`   4. Stop-loss BTC ${fmt$(state.bep_threshold)} hard backstop`);
+  scenC_steps.push(``);
+  scenC_steps.push(`🛡️ SAFETY CHECK:`);
+  scenC_steps.push(`   • Loan sau plan = ${fmt$(M.loan + scenC_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)}`);
+  scenC_steps.push(`   • Liq distance hiện tại ${M.m7.liq_dist.toFixed(1)}% (đảm bảo > 30%)`);
+  scenC_steps.push(`   • LTV sau plan ≤ ${((M.loan + scenC_totalLoan) / M.m1.gross * 100).toFixed(1)}%`);
+
   const scenC = {
-    name: leverageCapped
-      ? `LEVERAGE — KHÔNG TĂNG (đã gần max safe ${fmt$(maxSafeLoanTotal)})`
-      : `LEVERAGE — Vay ${fmt$(scenC_totalLoan)} (BTC dip-buy + DCA fund)`,
+    name: `LEVERAGE — Vay ${fmt$(scenC_totalLoan)} (mỗi $ có purpose cụ thể)`,
     extra_dca: scenA_extraDCA,
-    extra_leverage: leverageCapped ? dcaShortageLoan : scenC_totalLoan,
+    extra_leverage: scenC_totalLoan,
     extra_squeeze: 0,
-    expected_pnl: leverageCapped ? (scenA_extraPnL - dcaLoanCarryCost) : (scenC_extraPnL - dcaLoanCarryCost),
-    p_hit: leverageCapped
-      ? probHit(scenA_extraPnL - dcaLoanCarryCost, baseVolUSD * 1.05) * 100
-      : probHit(scenC_extraPnL - dcaLoanCarryCost, baseVolUSD * 1.3) * 100,
-    risk: leverageCapped ? 'low' : 'high',
+    expected_pnl: scenC_extraPnL,
+    p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100,
+    risk: scenC_totalLoan > maxSafeLoanTotal * 0.7 ? 'high' : 'medium',
     capital_need: 0,
-    dca_loan: dcaShortageLoan,
-    leverage_amount: leverageCapped ? 0 : extraLoan,
-    leverage_capped: leverageCapped,
+    dca_loan: purp_dca_fund,
+    leverage_amount: purp_btc_dip,
     max_safe_loan: maxSafeLoanTotal,
     current_loan: M.loan,
+    purpose_breakdown: {
+      btc_dip: { amount: purp_btc_dip, contribution: purp_btc_dipPnL },
+      dca_fund: { amount: purp_dca_fund, carry: purp_dca_carry },
+    },
     steps: scenC_steps,
   };
 
@@ -2640,65 +2656,73 @@ function m33_path_to_target(M) {
   const squeezeEVPerPlay = squeezePerPlay * 0.03;
   const scenD_squeezePnL = totalPlays * squeezeEVPerPlay;
   const scenD_extraPnL = scenC_extraPnL + scenD_squeezePnL;
-  const scenD_extraLoanD = leverageCapped ? 0 : extraLoan;
-  const scenD_totalLoan = scenD_extraLoanD + dcaShortageLoan;
-  // Squeeze plays — detailed entry/exit conditions from M28 forecast + M21 Kelly
+  // Scenario D — FULL SEND: Leverage (max safe) + Squeeze plays + DCA fund
+  const scenD_totalLoan = scenC_totalLoan; // same loan as scenC
+  const scenD_extraPnL_v2 = scenC_extraPnL + scenD_squeezePnL;
   const m28 = M.m28;
   const m28FundingHist = m28?.available ? `min ${m28.min.toFixed(4)}% / median ${m28.median.toFixed(4)}% / max ${m28.max.toFixed(4)}%` : 'cần fetch';
-  const squeezeSteps = [
-    `🎯 SQUEEZE PLAYS — ENTRY CONDITIONS (mỗi play):`,
-    `  Trigger A: M28 funding forecast 24h ≤ −0.005% (shorts paying)`,
-    `  Trigger B: M22 P(bull) ≥ 45% AND F&G ≥ 30 (không trong extreme fear)`,
-    `  Trigger C: M28 squeeze_score ≥ 60 (PRIME_SQUEEZE hoặc SETUP_BUILDING)`,
-    `  → Khi đủ 3/3 → mở Long BTC Perp 5x leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly từ M21)`,
-    `  📊 7d funding history: ${m28FundingHist}`,
+  const scenD_steps = [
+    `💰 VAY TỔNG ${fmt$(scenD_totalLoan)} USDT — chia mục đích:`,
     ``,
-    `🏁 EXIT RULES:`,
-    `  TP1 (+3%): close 50% position`,
-    `  TP2 (+5%): close phần còn lại`,
-    `  SL (−1.5%): hard stop, close 100%`,
-    `  Force exit: nếu funding flip > +0.005% → close ngay (squeeze setup phá vỡ)`,
-    ``,
-    `📅 FREQUENCY: tối đa ${playsPerMonth} plays/tháng = ${totalPlays} plays trong ${daysRemaining}d còn lại`,
-    `Expected EV per play: ${fmt$(squeezeEVPerPlay)} · Total expected ${fmt$(scenD_squeezePnL)}`,
   ];
-  const scenD_steps = leverageCapped
-    ? [
-        `🛑 LEVERAGE PORTION ĐÃ CAP — current loan ${fmt$(M.loan)} / max safe ${fmt$(maxSafeLoanTotal)}`,
-        `KHÔNG vay thêm BTC dip-buy. Chỉ vay ${fmt$(dcaShortageLoan)} cho DCA shortage (nếu cần).`,
-        '',
-        ...squeezeSteps,
-        '',
-        `📌 OVERALL: Pool DCA $${dailyDCA.toFixed(2)}/d (loan-funded short-term nếu thiếu USDT)`,
-        `Stop-loss hard BTC ${fmt$(state.bep_threshold)}`,
-      ]
-    : [
-        `1. LEVERAGE PORTION — Vay ${fmt$(scenD_totalLoan)} USDT:`,
-        `   • ${fmt$(scenD_extraLoanD)} mua ${fmtQty(scenC_extraBtcExposure)} BTC tại ${fmt$(btcPrice,0)}`,
-        `   • ${fmt$(dcaShortageLoan)} cho DCA fund (auto-deduct)`,
-        '',
-        ...squeezeSteps,
-        '',
-        `📌 OVERALL: Pool DCA $${dailyDCA.toFixed(2)}/d không gián đoạn`,
-        `Stop-loss hard BTC ${fmt$(state.bep_threshold)} · không vượt soft cap M7 ${fmt$(M.m7.soft)}`,
-        `⚠️ Total loan sau plan = ${fmt$(M.loan + scenD_totalLoan)} (max safe ${fmt$(maxSafeLoanTotal)})`,
-      ];
+  if (purp_btc_dip > 0) {
+    scenD_steps.push(`🎯 PURPOSE 1: BTC DIP-BUY — ${fmt$(purp_btc_dip)}`);
+    scenD_steps.push(`   • Mua ${fmtQty(purp_btc_dipExposure)} BTC tại ${fmt$(btcPrice,0)}`);
+    scenD_steps.push(`   • Expected PnL: <b>${fmt$(purp_btc_dipPnL)}</b> (${(purp_btc_dipPnL/gapPnL*100).toFixed(0)}% of gap)`);
+    scenD_steps.push(``);
+  }
+  if (purp_dca_fund > 0) {
+    scenD_steps.push(`🎯 PURPOSE 2: DCA FUND — ${fmt$(purp_dca_fund)}`);
+    scenD_steps.push(`   • Auto-deduct ${fmt$(dailyDCA)}/d cho Pool DCA`);
+    scenD_steps.push(`   • Carry ${fmt$(purp_dca_carry)} (no PnL, repaid ngày ${dcaCap.schedule_day})`);
+    scenD_steps.push(``);
+  }
+  scenD_steps.push(`🎯 PURPOSE 3: SQUEEZE PLAYS (futures equity, NOT loan) — ${fmt$(squeezePerPlay)} × ${totalPlays} plays`);
+  scenD_steps.push(`   Total expected PnL: <b>${fmt$(scenD_squeezePnL)}</b> (${(scenD_squeezePnL/gapPnL*100).toFixed(0)}% of gap)`);
+  scenD_steps.push(`   `);
+  scenD_steps.push(`   📐 ENTRY CONDITIONS (mỗi play cần 3/3):`);
+  scenD_steps.push(`     Trigger A: M28 funding 24h forecast ≤ −0.005% (shorts paying)`);
+  scenD_steps.push(`     Trigger B: M22 P(bull) ≥ 45% AND F&G ≥ 30`);
+  scenD_steps.push(`     Trigger C: M28 squeeze_score ≥ 60`);
+  scenD_steps.push(`   📊 7d funding history: ${m28FundingHist}`);
+  scenD_steps.push(`   `);
+  scenD_steps.push(`   ⚙️ EXECUTION: Long BTC Perp 5× leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly từ M21)`);
+  scenD_steps.push(`   `);
+  scenD_steps.push(`   🏁 EXIT RULES:`);
+  scenD_steps.push(`     TP1 (+3%): close 50% · TP2 (+5%): close phần còn lại`);
+  scenD_steps.push(`     SL (−1.5%): hard close 100%`);
+  scenD_steps.push(`     Force exit: funding flip > +0.005% → close ngay`);
+  scenD_steps.push(`   `);
+  scenD_steps.push(`   📅 Frequency: ${playsPerMonth} plays/tháng × ${Math.floor(daysRemaining/30)} tháng = ${totalPlays} plays`);
+  scenD_steps.push(``);
+  scenD_steps.push(`📊 TỔNG EXPECTED PnL: ${fmt$(scenD_extraPnL_v2)} vs gap cần ${fmt$(gapPnL)}`);
+  scenD_steps.push(`   • BTC dip-buy: ${fmt$(purp_btc_dipPnL)}`);
+  scenD_steps.push(`   • Existing holdings drift: ${fmt$(scenA_btcDriftPnL)}`);
+  scenD_steps.push(`   • DCA new buys: ${fmt$(scenA_extraDCA * 0.05 * T)}`);
+  scenD_steps.push(`   • Squeeze plays: ${fmt$(scenD_squeezePnL)}`);
+  scenD_steps.push(`   • Loan carry cost: −${fmt$(purp_dca_carry)}`);
+  scenD_steps.push(``);
+  scenD_steps.push(`🛡️ SAFETY: Total loan ${fmt$(M.loan + scenD_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)}`);
+  scenD_steps.push(`Stop-loss BTC ${fmt$(state.bep_threshold)} hard backstop`);
+
   const scenD = {
-    name: leverageCapped ? 'AGGRESSIVE — Squeeze only (leverage capped)' : 'AGGRESSIVE — Leverage BTC + Squeeze plays',
+    name: `FULL SEND — Vay ${fmt$(scenD_totalLoan)} (BTC dip + DCA fund) + ${totalPlays} squeeze plays`,
     extra_dca: scenA_extraDCA,
-    extra_leverage: leverageCapped ? dcaShortageLoan : scenD_totalLoan,
+    extra_leverage: scenD_totalLoan,
     extra_squeeze: totalPlays,
-    expected_pnl: leverageCapped ? (scenA_extraPnL + scenD_squeezePnL - dcaLoanCarryCost) : (scenD_extraPnL - dcaLoanCarryCost),
-    p_hit: leverageCapped
-      ? probHit(scenA_extraPnL + scenD_squeezePnL - dcaLoanCarryCost, baseVolUSD * 1.2) * 100
-      : probHit(scenD_extraPnL - dcaLoanCarryCost, baseVolUSD * 1.4) * 100,
-    risk: leverageCapped ? 'medium-high' : 'very high',
+    expected_pnl: scenD_extraPnL_v2,
+    p_hit: probHit(scenD_extraPnL_v2, baseVolUSD * 1.4) * 100,
+    risk: 'high',
     capital_need: 0,
-    dca_loan: dcaShortageLoan,
-    leverage_amount: leverageCapped ? 0 : scenD_extraLoanD,
-    leverage_capped: leverageCapped,
+    dca_loan: purp_dca_fund,
+    leverage_amount: purp_btc_dip,
     squeeze_plays: totalPlays,
     squeeze_size_per_play: squeezePerPlay,
+    purpose_breakdown: {
+      btc_dip: { amount: purp_btc_dip, contribution: purp_btc_dipPnL },
+      dca_fund: { amount: purp_dca_fund, carry: purp_dca_carry },
+      squeeze: { plays: totalPlays, size_per: squeezePerPlay, contribution: scenD_squeezePnL },
+    },
     steps: scenD_steps,
   };
 
