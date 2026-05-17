@@ -1324,12 +1324,11 @@ function m23_unified_decision(M, s) {
     }
   }
 
-  // ---- P3.0: DCA CAPACITY SHORTAGE — alternatives chứ không yêu cầu "nạp gấp" ----
-  // Logic: user nạp định kỳ ngày 6 hàng tháng. Nếu capital không cover được đến ngày nạp kế:
-  //   1. REDUCE_SLIGHTLY: capital ≥ 80% → giảm DCA pace nhẹ, đợi nạp
-  //   2. REDUCE_OR_LOAN: capital 40-80% → reduce mạnh HOẶC vay short-term
-  //   3. LOAN_PRIMARY: capital < 40% → recommend loan vì pause quá lâu = mất signal
-  if (M.m32 && !M.m32.sufficient) {
+  // ---- P3.0: DCA CAPACITY SHORTAGE — REMOVED ----
+  // Logic mới: DCA shortage được tự động fold vào M33 scenarios (loan-funded by default).
+  // KHÔNG bao giờ pause/reduce DCA vì thiếu vốn. Mục tiêu 35% là priority cao hơn.
+  // Block below KEPT for safety: nếu loan room hết hoàn toàn → cảnh báo
+  if (false && M.m32 && !M.m32.sufficient) {
     const c = M.m32;
     const shortLoanAmount = Math.min(c.shortage_until_deposit, M.m7.soft - M.loan, M.m1.net * 0.10);
     const loanAprMonthly = 0.09 / 12; // 0.75% per month
@@ -1409,14 +1408,16 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P3.5: PATH-TO-TARGET (when behind schedule with time remaining < 70%) ----
-  // Chỉ fire khi đã qua >30% chu kỳ AND PnL pct < target × elapsed_pct (proportional progress)
-  if (M.m33 && M.m22.pBull_final >= 0.30) {
+  // ---- P3.5: PATH-TO-TARGET — fire aggressively whenever behind target ----
+  // Nguyên tắc: "bằng mọi cách hit 35%". P3.5 ưu tiên cao hơn P4b cautious bear.
+  // Fire ngay cả khi mới đầu chu kỳ, miễn là có gap > 5% và không trong capitulation extreme.
+  if (M.m33 && M.m33.best) {
     const elapsedFrac = cycle.daysElapsed / 365;
-    const targetProgress = elapsedFrac; // proportional: at 50% time, should be at 50% × target_pct
-    const currentProgress = (M.m33.current_pnl / M.m33.target_pnl);
-    const isBehind = elapsedFrac > 0.30 && currentProgress < targetProgress * 0.85;
-    if (isBehind && M.m33.best) {
+    const targetProgress = elapsedFrac;
+    const currentProgress = M.m33.target_pnl > 0 ? (M.m33.current_pnl / M.m33.target_pnl) : 0;
+    // Fire if: PnL behind proportional schedule OR gap > 10% of target
+    const isBehind = currentProgress < targetProgress * 0.90 || M.m33.gap_pnl > M.m33.target_pnl * 0.10;
+    if (isBehind) {
       const best = M.m33.best;
       const baseline = M.m33.scenarios[0];
       const liftPctPoints = best.p_hit - baseline.p_hit;
@@ -2503,6 +2504,11 @@ function m33_path_to_target(M) {
   const T = Math.max(0.01, daysRemaining / 365);
   const btcPrice = M.holdings.BTC.price;
   const portBeta = 0.85;
+  // === DCA SHORTAGE LOAN (tự fold vào mọi scenario) ===
+  // User nguyên tắc: KHÔNG bao giờ giảm pace DCA. Nếu thiếu USDT → vay short-term để giữ pace.
+  const dcaShortageLoan = (!dcaCap.sufficient) ? dcaCap.shortage_until_deposit : 0;
+  const loanAprMonthly = 0.09 / 12;
+  const dcaLoanCarryCost = dcaShortageLoan * loanAprMonthly * (dcaCap.days_to_next_deposit / 30);
 
   // Helper: P(hit) for given expected PnL & vol
   // Assume PnL_EOY ~ N(expected_return, sigma_eoy)
@@ -2521,39 +2527,51 @@ function m33_path_to_target(M) {
   // Sigma USD: scale market value by annual vol × √T
   const baseVolUSD = cost * sigma * Math.sqrt(T) * portBeta;
 
-  // === SCENARIOS ===
-  // A. BASELINE: hold + current DCA pace
+  // === SCENARIOS — Tất cả GIỮ FULL DCA PACE. Nếu thiếu USDT → vay short-term tự động fold vào loan amount.
+  // Nguyên tắc: KHÔNG BAO GIỜ giảm pace DCA hoặc pause vì thiếu vốn. Mục tiêu 35% là priority.
+
+  // A. BASELINE: hold + current DCA pace (+ DCA shortage loan if needed)
   const scenA_extraDCA = dailyDCA * daysRemaining;
-  const scenA_btcDriftPnL = cost * 0.30 * T * portBeta; // assume BTC 30%/yr drift
-  const scenA_extraPnL = scenA_btcDriftPnL + scenA_extraDCA * 0.05 * T; // DCA gain assumes ~5% on new capital
+  const scenA_btcDriftPnL = cost * 0.30 * T * portBeta;
+  const scenA_extraPnL = scenA_btcDriftPnL + scenA_extraDCA * 0.05 * T - dcaLoanCarryCost;
+  const scenA_steps = [`Tiếp tục Pool DCA $${dailyDCA.toFixed(2)}/d`, 'Hold tất cả crypto'];
+  if (dcaShortageLoan > 0) {
+    scenA_steps.push(`⚙️ Vay ${fmt$(dcaShortageLoan)} USDT (collateral BTC) để giữ pace đến ngày nạp ${dcaCap.schedule_day} — carry cost ${fmt$(dcaLoanCarryCost)}`);
+    scenA_steps.push(`Ngày ${dcaCap.schedule_day} nạp tiền vào → trả loan ngay`);
+  }
   const scenA = {
-    name: 'BASELINE — HODL + DCA hiện tại',
+    name: 'BASELINE — HODL + DCA hiện tại' + (dcaShortageLoan > 0 ? ' (loan-funded)' : ''),
     extra_dca: scenA_extraDCA,
-    extra_leverage: 0, extra_squeeze: 0,
+    extra_leverage: dcaShortageLoan, extra_squeeze: 0,
     expected_pnl: scenA_extraPnL,
     p_hit: probHit(scenA_extraPnL, baseVolUSD) * 100,
-    risk: 'low',
-    steps: [`Tiếp tục Pool DCA $${dailyDCA.toFixed(2)}/d`, 'Hold tất cả crypto', 'Không hành động gì thêm'],
+    risk: dcaShortageLoan > 0 ? 'low-medium' : 'low',
+    capital_need: 0,
+    dca_loan: dcaShortageLoan,
+    steps: scenA_steps,
   };
 
-  // B. SUSTAINABLE PACE — DCA tại mức USDT có sẵn cho phép (no new capital)
-  const sustDaily = dcaCap.daily_dca_sustainable || dailyDCA;
-  const scenB_extraDCA = sustDaily * daysRemaining;
-  const scenB_btcDriftPnL = scenA_btcDriftPnL;
-  const scenB_extraPnL = scenB_btcDriftPnL + scenB_extraDCA * 0.05 * T;
+  // B. DOUBLED DCA — Tăng pace 2× để add capital nhanh (loan-funded if needed)
+  const scenB_dcaPace = dailyDCA * 2;
+  const scenB_extraDCA = scenB_dcaPace * daysRemaining;
+  // Total loan need: shortage from current + 2× shortfall from doubled pace
+  const scenB_loanForDCA = Math.max(0, scenB_extraDCA - dcaCap.available_usd - (dailyDCA * daysRemaining));
+  const scenB_loanCarryCost = scenB_loanForDCA * loanAprMonthly * 6; // assume ~6 months avg carry
+  const scenB_extraPnL = scenA_btcDriftPnL + scenB_extraDCA * 0.07 * T - scenB_loanCarryCost;
   const scenB = {
-    name: `SUSTAINABLE — DCA $${sustDaily.toFixed(2)}/d (capital có sẵn)`,
+    name: `DOUBLED DCA — $${scenB_dcaPace.toFixed(2)}/d (loan-funded)`,
     extra_dca: scenB_extraDCA,
-    extra_leverage: 0, extra_squeeze: 0,
+    extra_leverage: scenB_loanForDCA, extra_squeeze: 0,
     expected_pnl: scenB_extraPnL,
-    p_hit: probHit(scenB_extraPnL, baseVolUSD * 1.05) * 100,
-    risk: 'low',
+    p_hit: probHit(scenB_extraPnL, baseVolUSD * 1.1) * 100,
+    risk: 'medium',
     capital_need: 0,
+    dca_loan: scenB_loanForDCA,
     steps: [
-      `Edit Pool DCA: $${dailyDCA.toFixed(2)}/d → $${sustDaily.toFixed(2)}/d`,
-      `Capital ${fmt$(dcaCap.available_usd)} đủ duy trì pace mới đến ngày nạp tiếp`,
+      `Edit Pool DCA: $${dailyDCA.toFixed(2)}/d → $${scenB_dcaPace.toFixed(2)}/d`,
+      `Vay ${fmt$(scenB_loanForDCA)} USDT (collateral BTC) để fund double pace`,
+      `Carry cost ~${fmt$(scenB_loanCarryCost)} cho ${daysRemaining}d (trả dần từ nạp định kỳ ngày ${dcaCap.schedule_day})`,
       'Hold tất cả crypto',
-      'Reset full pace sau khi nạp tiền vào ngày ' + (state.deposit_schedule?.day_of_month || 6),
     ],
   };
 
@@ -2564,21 +2582,26 @@ function m33_path_to_target(M) {
   const scenC_extraBtcExposure = extraLoan / btcPrice;
   const scenC_btcDriftPnL = scenA_btcDriftPnL + (extraLoan * 0.30 * T) - (extraLoan * loanInterestRate * T);
   const scenC_extraPnL = scenC_btcDriftPnL + scenA_extraDCA * 0.05 * T;
+  const scenC_totalLoan = extraLoan + dcaShortageLoan;
+  const scenC_steps = [
+    `Binance → Vay → Linh hoạt → Vay ${fmt$(scenC_totalLoan)} USDT (collateral BTC)`,
+    `Spot → Mua ${fmtQty(scenC_extraBtcExposure)} BTC ngay tại giá ${fmt$(btcPrice,0)} = ${fmt$(extraLoan)}`,
+  ];
+  if (dcaShortageLoan > 0) scenC_steps.push(`Giữ ${fmt$(dcaShortageLoan)} USDT trong Spot để DCA pace $${dailyDCA.toFixed(2)}/d (auto-deduct mỗi ngày)`);
+  scenC_steps.push(`Pool DCA giữ $${dailyDCA.toFixed(2)}/d`);
+  scenC_steps.push(`Chi phí lãi vay: ${fmt$(extraLoan * loanInterestRate * T + dcaLoanCarryCost)} cho ${daysRemaining}d còn lại`);
+  scenC_steps.push(`⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} backstop. Liq distance hiện ${M.m7.liq_dist.toFixed(1)}%`);
   const scenC = {
-    name: `LEVERAGE — Vay ${fmt$(extraLoan)} mua BTC (KHÔNG cần nạp capital)`,
+    name: `LEVERAGE — Vay ${fmt$(scenC_totalLoan)} (BTC dip-buy + DCA fund)`,
     extra_dca: scenA_extraDCA,
-    extra_leverage: extraLoan, extra_squeeze: 0,
-    expected_pnl: scenC_extraPnL,
-    p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100,
+    extra_leverage: scenC_totalLoan, extra_squeeze: 0,
+    expected_pnl: scenC_extraPnL - dcaLoanCarryCost,
+    p_hit: probHit(scenC_extraPnL - dcaLoanCarryCost, baseVolUSD * 1.3) * 100,
     risk: 'high',
     capital_need: 0,
-    steps: [
-      `Binance → Vay → Linh hoạt → Vay ${fmt$(extraLoan)} USDT (collateral BTC)`,
-      `Spot → Mua ${fmtQty(scenC_extraBtcExposure)} BTC ngay tại giá ${fmt$(btcPrice,0)}`,
-      `Giữ Pool DCA bình thường $${dailyDCA.toFixed(2)}/d`,
-      `Chi phí lãi vay: ${fmt$(extraLoan * loanInterestRate * T)} cho ${daysRemaining}d còn lại`,
-      `⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} là backstop hard. Liq distance: ${M.m7.liq_dist.toFixed(1)}%`,
-    ],
+    dca_loan: dcaShortageLoan,
+    leverage_amount: extraLoan,
+    steps: scenC_steps,
   };
 
   // D. AGGRESSIVE — LEVERAGE + Squeeze (no new capital needed)
@@ -2588,20 +2611,24 @@ function m33_path_to_target(M) {
   const squeezeEVPerPlay = squeezePerPlay * 0.03;
   const scenD_squeezePnL = totalPlays * squeezeEVPerPlay;
   const scenD_extraPnL = scenC_extraPnL + scenD_squeezePnL;
+  const scenD_totalLoan = extraLoan + dcaShortageLoan;
   const scenD = {
-    name: 'AGGRESSIVE — Leverage BTC + Squeeze plays (no capital nạp)',
+    name: 'AGGRESSIVE — Leverage BTC + Squeeze plays',
     extra_dca: scenA_extraDCA,
-    extra_leverage: extraLoan, extra_squeeze: totalPlays,
-    expected_pnl: scenD_extraPnL,
-    p_hit: probHit(scenD_extraPnL, baseVolUSD * 1.4) * 100,
+    extra_leverage: scenD_totalLoan, extra_squeeze: totalPlays,
+    expected_pnl: scenD_extraPnL - dcaLoanCarryCost,
+    p_hit: probHit(scenD_extraPnL - dcaLoanCarryCost, baseVolUSD * 1.4) * 100,
     risk: 'very high',
     capital_need: 0,
+    dca_loan: dcaShortageLoan,
+    leverage_amount: extraLoan,
     steps: [
-      `Vay ${fmt$(extraLoan)} USDT mua thêm BTC (như scenario C)`,
-      `Thực hiện ${totalPlays} squeeze long futures plays mỗi tháng (Kelly sized ${fmt$(squeezePerPlay)})`,
-      `Giữ Pool DCA bình thường $${dailyDCA.toFixed(2)}/d`,
-      `Stop-loss hard BTC ${fmt$(state.bep_threshold)} · không vượt loan soft cap M7`,
-      `⚠️ Risk rất cao — chỉ phù hợp nếu accept potential capital loss ~30% nếu market crash`,
+      `Vay tổng ${fmt$(scenD_totalLoan)} USDT (${fmt$(extraLoan)} mua BTC dip + ${fmt$(dcaShortageLoan)} cho DCA fund)`,
+      `Spot → Mua ${fmtQty(scenC_extraBtcExposure)} BTC tại giá ${fmt$(btcPrice,0)}`,
+      `Thực hiện ${totalPlays} squeeze long futures plays (Kelly sized ${fmt$(squeezePerPlay)})`,
+      `Giữ Pool DCA pace $${dailyDCA.toFixed(2)}/d (loan-funded nếu thiếu USDT)`,
+      `Stop-loss hard BTC ${fmt$(state.bep_threshold)} · không vượt soft cap M7 ${fmt$(M.m7.soft)}`,
+      `⚠️ Risk rất cao — chỉ phù hợp nếu chấp nhận potential drawdown ~30%`,
     ],
   };
 
