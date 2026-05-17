@@ -1488,12 +1488,12 @@ function m23_unified_decision(M, s) {
   }
 
   // ---- P9: DEFAULT — maintain current plan (with True PnL context) ----
-  const _pnl = computeTruePnL(M.m1.net);
+  const _pnl = computeTruePnL(M);
   const pnlNote = _pnl.true_pnl >= _pnl.target_pnl
-    ? `🏆 True PnL đã đạt ${(_pnl.true_pnl_pct/_pnl.target_pct).toFixed(2)}× mục tiêu ${_pnl.target_pct}% (${fmtPct(_pnl.true_pnl_pct)} trên capital ${fmt$(_pnl.total_in)}). Tiếp tục bảo vệ thành quả.`
+    ? `🏆 True PnL đã đạt ${(_pnl.true_pnl_pct/_pnl.target_pct).toFixed(2)}× mục tiêu ${_pnl.target_pct}% (${fmtPct(_pnl.true_pnl_pct)} trên cost basis ${fmt$(_pnl.cost)}). Tiếp tục bảo vệ thành quả.`
     : _pnl.true_pnl >= 0
-      ? `True PnL hiện ${fmtPct(_pnl.true_pnl_pct)} · cần thêm ${fmt$(_pnl.pnl_gap)} để đạt ${_pnl.target_pct}%`
-      : `True PnL âm ${fmtPct(_pnl.true_pnl_pct)} · capital đang lỗ, theo dõi sát`;
+      ? `True PnL hiện ${fmtPct(_pnl.true_pnl_pct)} · cần thêm ${fmt$(_pnl.pnl_gap)} để đạt ${_pnl.target_pct}% trên cost basis`
+      : `True PnL âm ${fmtPct(_pnl.true_pnl_pct)} · holdings đang lỗ so với giá vốn, theo dõi sát`;
   return {
     priority: 9, severity: 'INFO', icon: '✅', color: '#10b981',
     title: 'DUY TRÌ KẾ HOẠCH DCA HIỆN TẠI',
@@ -1509,7 +1509,7 @@ function m23_unified_decision(M, s) {
       `Regime ${M.m22.regime.replace(/_/g, ' ')} (P bull ${(M.m22.pBull_final*100).toFixed(0)}%) — không cần can thiệp`,
       `Loan ${fmt$(M.loan)} dưới soft cap ${fmt$(M.m7.soft)} (${M.m7.liq_dist.toFixed(1)}% liq distance)`,
       `Pool plan health: ${planHealth.aligned ? 'aligned' : `drift ${planHealth.maxDiff.toFixed(1)}pp (chưa đến ngưỡng 15pp)`}`,
-      `Capital flows: Total IN ${fmt$(_pnl.total_in)} · Total OUT ${fmt$(_pnl.total_out)} · True PnL ${fmt$signed(_pnl.true_pnl)} (${fmtPct(_pnl.true_pnl_pct)})`,
+      `Crypto position: Cost basis ${fmt$(_pnl.cost)} · Market value ${fmt$(_pnl.market_value)} · Unrealized PnL ${fmt$signed(_pnl.unrealized)} (${fmtPct(_pnl.cost > 0 ? _pnl.unrealized/_pnl.cost*100 : 0)})`,
     ],
     blocks: [],
     sources_fired: ['All M1-M22 within neutral bands', 'computeTruePnL'],
@@ -2365,75 +2365,104 @@ async function loadCapitalFlowsData() {
     console.warn('[CapFlows] could not load capital_flows.json:', e.message);
   }
 }
-function computeTruePnL(currentNet) {
-  const anchor = state.target_anchor || 0;
-  const depsInfo = getCumulativeDeposits();
-  const withInfo = getCumulativeWithdrawals();
-  const deposits = depsInfo.value;
-  const withdraws = withInfo.value;
+// CORRECT PnL FORMULA — PnL tính trên COST BASIS của crypto holdings
+//   Unrealized PnL = sum((current_price - avg_cost) × qty) cho mọi holding
+//   = M.m1.pnl_unreal (đã có sẵn từ engine v47)
+// + Realized PnL từ futures đã đóng
+// + Earn rewards (Flexible Earn yield)
+// − Loan interest cost
+// = True PnL tổng hợp
+//
+// Capital flows (USDT nạp/rút qua C2C/Fiat) là CYCLING TIỀN GỐC, KHÔNG phải PnL.
+// Khi user SELL USDT → VND, đó chỉ là chuyển fiat về bank, không phải chốt lời crypto.
+// Crypto holdings (BTC/WBETH/BNB/LINK/BNSOL) chỉ thay đổi qua spot trade, không qua C2C.
+function computeTruePnL(M) {
+  if (!M || !M.m1) {
+    // Backward compat: nếu legacy caller pass currentNet, return minimal info
+    return {
+      cost: 0, market_value: 0, unrealized: 0,
+      true_pnl: 0, true_pnl_pct: 0,
+      target_pct: state.target_pct || 35,
+      target_pnl: 0, target_market_value: 0,
+      pnl_gap: 0, pnl_gap_pct: 0, progress_pct: 0,
+      on_track: false,
+    };
+  }
 
-  // CORRECT PnL FORMULA — handles withdrawal-heavy case
-  // Total $ put IN  = anchor + deposits (gross capital ever deployed)
-  // Total $ taken OUT = withdrawals
-  // Effective position = current_NET + withdrawals (what we'd have if no withdraws)
-  // True PnL = effective_position − total_in = (current_net + withdrawals) − (anchor + deposits)
-  // PnL % = true_pnl / total_in × 100  (always divides by positive base)
-  const totalIn = anchor + deposits;
-  const totalOut = withdraws;
-  const effectivePosition = currentNet + totalOut;
-  const truePnL = effectivePosition - totalIn;
-  const truePnLPct = totalIn > 0 ? (truePnL / totalIn) * 100 : 0;
+  const cost = M.m1.cost;
+  const marketValue = M.m1.gross;
+  const unrealized = M.m1.pnl_unreal;
+  const futuresRealized = state.futures?.total_realized || 0;
+  const futuresFunding = state.futures?.total_funding_fee || 0;
+  const futuresCommission = state.futures?.total_commission || 0;
+  const futuresUnrealized = state.futures?.total_unrealized || 0;
+  const earn30d = state.income?.earn_flexible_rewards_30d || 0;
+  const earnAnnualized = earn30d * 12;
+  const loan30d = state.income?.loan_interest_paid_30d || 0;
+  const loanInterestAnnualized = -loan30d * 12; // negative (cost)
+
+  const truePnL = unrealized + futuresRealized + futuresFunding + futuresUnrealized + futuresCommission + earnAnnualized + loanInterestAnnualized;
+  const truePnLPct = cost > 0 ? (truePnL / cost) * 100 : 0;
 
   const targetPct = state.target_pct || 35;
-  const targetPnL = totalIn * (targetPct / 100);
-  // Target NET = nếu KHÔNG rút thêm thì NET phải đạt
-  const targetNet = totalIn * (1 + targetPct / 100) - totalOut;
+  const targetPnL = cost * (targetPct / 100);
+  const targetMarketValue = cost * (1 + targetPct / 100);
   const pnlGap = targetPnL - truePnL;
   const pnlGapPct = targetPct - truePnLPct;
 
+  // Capital flows info (for display only — NOT used in PnL calc)
+  const depsInfo = getCumulativeDeposits();
+  const withInfo = getCumulativeWithdrawals();
+
   return {
-    anchor,
-    cumulative_deposits: deposits,
-    deposits_source: depsInfo.source,
-    deposits_count: depsInfo.count,
-    cumulative_withdrawals: withdraws,
-    withdrawals_source: withInfo.source,
-    withdrawals_count: withInfo.count,
-    total_in: totalIn,                  // anchor + deposits (gross capital ever in)
-    total_out: totalOut,                // withdrawals
-    effective_position: effectivePosition, // current_net + withdrawals
-    capital_deployed: totalIn,          // alias for compatibility
-    net_current: currentNet,
-    true_pnl: truePnL,
-    true_pnl_pct: truePnLPct,
+    // === CORE PnL (cost basis approach) ===
+    cost,                              // sum(qty × avg_cost) cho holdings
+    market_value: marketValue,         // sum(qty × current_price) = M.m1.gross
+    unrealized,                        // gross - cost (M.m1.pnl_unreal)
+    futures_realized: futuresRealized,
+    futures_funding: futuresFunding,
+    futures_unrealized: futuresUnrealized,
+    futures_commission: futuresCommission,
+    earn_annualized: earnAnnualized,
+    loan_interest_annualized: loanInterestAnnualized,
+    true_pnl: truePnL,                 // tổng PnL thực
+    true_pnl_pct: truePnLPct,          // % trên cost basis
     target_pct: targetPct,
-    target_pnl: targetPnL,
-    target_net: targetNet,
+    target_pnl: targetPnL,             // cost × 0.35 (target USD)
+    target_market_value: targetMarketValue, // cost × 1.35
     pnl_gap: pnlGap,
     pnl_gap_pct: pnlGapPct,
     progress_pct: targetPct !== 0 ? (truePnLPct / targetPct) * 100 : 0,
     on_track: truePnLPct >= targetPct * 0.5,
-    has_realized_via_withdrawal: totalOut > 0,
+    // === CAPITAL FLOWS (info only — NOT used for PnL calc) ===
+    cumulative_deposits: depsInfo.value,
+    deposits_source: depsInfo.source,
+    deposits_count: depsInfo.count,
+    cumulative_withdrawals: withInfo.value,
+    withdrawals_source: withInfo.source,
+    withdrawals_count: withInfo.count,
+    net_capital_in: depsInfo.value - withInfo.value,
+    // For backward compat with older display code
+    anchor: state.target_anchor || 0,
+    capital_deployed: cost,            // semantic: capital deployed in crypto = cost basis
+    net_current: M.m1.net,
   };
 }
 
 // ===================== REQUIRED CAGR CALCULATIONS (C3) — uses TRUE PnL =====================
 // Tính tốc độ PnL cần đạt (không phải NET tăng), tính trên capital deployed
-function computeRequiredCAGR(currentNet, anchor, targetPct) {
+function computeRequiredCAGR(M) {
   const cycle = getCycleProgress();
-  const pnl = computeTruePnL(currentNet);
-  // Gap PnL = target PnL - current true PnL (in USD on current capital)
+  const pnl = computeTruePnL(M);
   const gapPnlUsd = pnl.pnl_gap;
   const gapPnlPct = pnl.pnl_gap_pct;
-  // Required compound rate on CAPITAL DEPLOYED to close PnL gap
-  // (current_true_pnl_pct → target_pct) over remaining days
-  const currentValue = pnl.capital_deployed + pnl.true_pnl; // = current NET
-  const targetValue = pnl.target_net;
+  // Required compound rate on MARKET VALUE to reach target_market_value
+  const currentValue = pnl.market_value;
+  const targetValue = pnl.target_market_value;
   const compoundFactor = currentValue > 0 ? targetValue / currentValue : 1;
   const reqDaily = currentValue > 0 && cycle.daysRemaining > 0 ? (Math.pow(compoundFactor, 1/cycle.daysRemaining) - 1) * 100 : 0;
   const reqWeekly = currentValue > 0 && cycle.daysRemaining > 0 ? (Math.pow(compoundFactor, 7/cycle.daysRemaining) - 1) * 100 : 0;
   const reqMonthly = currentValue > 0 && cycle.daysRemaining > 0 ? (Math.pow(compoundFactor, 30/cycle.daysRemaining) - 1) * 100 : 0;
-  // Difficulty grade
   let difficulty, color;
   if (reqMonthly < 1) { difficulty = 'TRIVIAL'; color = '#10b981'; }
   else if (reqMonthly < 3) { difficulty = 'DỄ'; color = '#84cc16'; }
@@ -2441,14 +2470,13 @@ function computeRequiredCAGR(currentNet, anchor, targetPct) {
   else if (reqMonthly < 10) { difficulty = 'KHÓ'; color = '#fb923c'; }
   else if (reqMonthly < 15) { difficulty = 'RẤT KHÓ'; color = '#ef4444'; }
   else { difficulty = 'CỰC KHÓ (không khả thi an toàn)'; color = '#a78bfa'; }
-  // Equivalent BTC EOY price needed (assume portfolio beta ~0.85)
   const portBeta = 0.85;
   const reqBtcChg = gapPnlPct / portBeta;
   return {
-    pnl,                     // full TruePnL object
-    target: pnl.target_net,
-    gapUsd: gapPnlUsd,       // gap in PnL USD (not NET)
-    reqTotalPct: gapPnlPct,  // % PnL needed remaining
+    pnl,
+    target: pnl.target_market_value,
+    gapUsd: gapPnlUsd,
+    reqTotalPct: gapPnlPct,
     reqDaily, reqWeekly, reqMonthly,
     difficulty, color, reqBtcChg,
     cycle,
@@ -2574,7 +2602,7 @@ function render() {
 
 // === 🎯 C3 REQUIRED CAGR BANNER — luôn hiển thị "anh cần lãi X%/ngày từ hôm nay" ===
 function renderRequiredCAGR(M) {
-  const c = computeRequiredCAGR(M.m1.net, state.target_anchor, state.target_pct);
+  const c = computeRequiredCAGR(M);
   const btcP = state.holdings.BTC.price;
   const reqBtcEoy = btcP * (1 + c.reqBtcChg/100);
   const pHit = (state.pathMC?.probHit ?? 0);
@@ -2582,7 +2610,7 @@ function renderRequiredCAGR(M) {
     <div>
       <div style="font-size:0.7rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;color:${c.color};font-weight:700">⚡ TỐC ĐỘ PnL CẦN ĐẠT (đã trừ deposits)</div>
       <div style="font-family:var(--display);font-size:1.6rem;font-weight:700;margin-top:0.3rem;color:${c.color}">${c.difficulty}</div>
-      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.2rem">Còn <b>${c.cycle.daysRemaining} ngày</b> · cần thêm <b style="color:${c.color}">+${fmt$(c.gapUsd)}</b> PnL (${c.reqTotalPct.toFixed(1)}%) trên capital ${fmt$(c.pnl.capital_deployed)} → NET target ${fmt$(c.target)}</div>
+      <div style="font-size:0.78rem;color:var(--text2);margin-top:0.2rem">Còn <b>${c.cycle.daysRemaining} ngày</b> · cần thêm <b style="color:${c.color}">+${fmt$(c.gapUsd)}</b> PnL (${c.reqTotalPct.toFixed(1)}%) trên cost basis ${fmt$(c.pnl.cost)} → market value target ${fmt$(c.target)}</div>
     </div>
     <div style="text-align:center;border-left:1px solid var(--border)">
       <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">/ ngày</div>
@@ -2665,28 +2693,26 @@ function renderUnifiedActionCompact(M) {
   </div>`;
 }
 
-// === HERO SECTION — uses TRUE PnL (subtracts deposits) ===
+// === HERO SECTION — Unrealized PnL trên COST BASIS của crypto holdings ===
 function renderHero(M) {
   const currentNet = M.m1.net;
-  const pnl = computeTruePnL(currentNet);
-  // Progress = % of TRUE PnL achieved relative to target
+  const pnl = computeTruePnL(M);
   const progressPct = Math.max(0, Math.min(100, pnl.progress_pct));
   const pHit = state.pathMC?.probHit ?? 0;
   const gaugeCircumference = 2 * Math.PI * 68;
   const gaugeOffset = gaugeCircumference * (1 - pHit/100);
   const pnlColor = pnl.true_pnl >= 0 ? 'var(--mint)' : 'var(--red)';
-  const depBadge = pnl.deposits_source === 'xlsx_file' ? `📄 xlsx (${pnl.deposits_count} lệnh)` : pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
 
   return `<div class="hero">
     <div class="hero-main">
-      <div class="hero-label">🎯 LÃI THẬT (True PnL) vs mục tiêu ${pnl.target_pct}%</div>
+      <div class="hero-label">🎯 LÃI THẬT (PnL trên cost basis) vs mục tiêu ${pnl.target_pct}%</div>
       <div class="hero-value" style="color:${pnlColor}">${pnl.true_pnl >= 0 ? '+' : ''}${fmt$(pnl.true_pnl)}<span style="font-size:1.5rem;margin-left:0.5rem">(${fmtPct(pnl.true_pnl_pct)})</span></div>
-      <div class="hero-sub">Total IN: <b>${fmt$(pnl.total_in)}</b> (anchor ${fmt$(pnl.anchor)} + deposits ${fmt$(pnl.cumulative_deposits)} ${depBadge})${pnl.total_out > 0 ? ` · OUT: <b style="color:var(--orange)">${fmt$(pnl.total_out)}</b>` : ''}</div>
-      <div style="font-size:0.8rem;color:var(--text2);margin-top:0.3rem">Còn cần lãi: <b style="color:var(--orange)">${fmt$(pnl.pnl_gap)}</b> (${fmtPct(pnl.pnl_gap_pct)}) để đạt ${pnl.target_pct}% PnL = ${fmt$(pnl.target_pnl)}</div>
+      <div class="hero-sub">Cost basis: <b>${fmt$(pnl.cost)}</b> · Market value: <b>${fmt$(pnl.market_value)}</b> · Unrealized: <b style="color:${pnl.unrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.unrealized)}</b></div>
+      <div style="font-size:0.8rem;color:var(--text2);margin-top:0.3rem">Còn cần lãi: <b style="color:var(--orange)">${fmt$(pnl.pnl_gap)}</b> (${fmtPct(pnl.pnl_gap_pct)}) → market value mục tiêu ${fmt$(pnl.target_market_value)}</div>
       <div class="hero-progress"><div class="hero-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="hero-stats">
-        <div><div class="hero-stat-label">NET hiện tại</div><div class="hero-stat-val">${fmt$(currentNet)}</div></div>
-        <div><div class="hero-stat-label">Capital deployed</div><div class="hero-stat-val" style="color:var(--cyan)">${fmt$(pnl.capital_deployed)}</div></div>
+        <div><div class="hero-stat-label">NET ròng</div><div class="hero-stat-val">${fmt$(currentNet)}</div></div>
+        <div><div class="hero-stat-label">Cost basis</div><div class="hero-stat-val" style="color:var(--cyan)">${fmt$(pnl.cost)}</div></div>
         <div><div class="hero-stat-label">Vay margin</div><div class="hero-stat-val" style="color:var(--red)">${fmt$(M.loan)}</div></div>
       </div>
     </div>
@@ -2710,7 +2736,7 @@ function renderHero(M) {
       </div>
       <div style="font-size:0.78rem;color:var(--text2);text-align:center;line-height:1.5">
         Monte Carlo 500 mô phỏng · σ ${(state.pathMC?.sigma ?? 0).toFixed(0)}%/năm<br>
-        <span style="color:var(--muted);font-size:0.7rem">Kỳ vọng cuối năm: <b style="color:${(state.pathMC?.expectedEoy ?? 0) >= pnl.target_net ? 'var(--mint)' : 'var(--text2)'}">${fmt$(state.pathMC?.expectedEoy ?? currentNet)}</b></span>
+        <span style="color:var(--muted);font-size:0.7rem">Kỳ vọng cuối năm: <b style="color:${(state.pathMC?.expectedEoy ?? 0) >= pnl.target_market_value ? 'var(--mint)' : 'var(--text2)'}">${fmt$(state.pathMC?.expectedEoy ?? currentNet)}</b></span>
       </div>
     </div>
   </div>`;
@@ -2719,19 +2745,8 @@ function renderHero(M) {
 // === 🎯 KPI TRACKER — 35% target progress ===
 function renderKPITracker(M) {
   const currentNet = M.m1.net;
-  const pnl = computeTruePnL(currentNet);
-  const anchor = pnl.anchor;
+  const pnl = computeTruePnL(M);
   const targetPct = pnl.target_pct;
-  const futuresRealized = state.futures?.total_realized ?? 0;
-  const futuresFunding = state.futures?.total_funding_fee ?? 0;
-  const futuresUnrealized = state.futures?.total_unrealized ?? 0;
-
-  // Total return components — use TRUE PnL (NET - capital deployed)
-  const unrealized_spot = M.m1.pnl_unreal;
-  const total_unrealized = unrealized_spot + futuresUnrealized;
-  const total_realized = futuresRealized + futuresFunding;
-  const total_return = pnl.true_pnl; // = NET - capital_deployed (correct accounting)
-  const total_return_pct = pnl.true_pnl_pct;
 
   // Time tracking
   const cycle = getCycleProgress();
@@ -2740,22 +2755,13 @@ function renderKPITracker(M) {
   const daysRemaining = cycle.daysRemaining;
   const elapsedPct = cycle.elapsedPct;
 
-  // Gap is in PnL terms (not NET)
-  const gapPnL = pnl.pnl_gap;
-  const gapPctNeeded = pnl.pnl_gap_pct;
-  // Required compound rates on CURRENT NET to grow it to target_net by EOY
-  const requiredCompoundRate = currentNet > 0 && daysRemaining > 0 ? (Math.pow(pnl.target_net / currentNet, 1/daysRemaining) - 1) * 100 : 0;
-  const requiredMonthlyRate = currentNet > 0 && daysRemaining > 0 ? (Math.pow(pnl.target_net / currentNet, 30/daysRemaining) - 1) * 100 : 0;
+  // Required compound rate on MARKET VALUE to reach target_market_value by EOY
+  // (cost × 1.35 = target market value)
+  const requiredCompoundRate = pnl.market_value > 0 && daysRemaining > 0 ? (Math.pow(pnl.target_market_value / pnl.market_value, 1/daysRemaining) - 1) * 100 : 0;
+  const requiredMonthlyRate = pnl.market_value > 0 && daysRemaining > 0 ? (Math.pow(pnl.target_market_value / pnl.market_value, 30/daysRemaining) - 1) * 100 : 0;
 
-  // Current rate — use accountSnapshot if available, ELSE compute from true PnL annualized
-  const trueDailyRate = state.snapshot?.true_daily_compound_pct;
-  const trueAnnualRate = state.snapshot?.true_annual_compound_pct;
-  const trueRateSrc = trueDailyRate !== undefined ? 'accountSnapshot 30d' : 'từ True PnL annualized';
-  // Fallback: annualize true_pnl_pct based on days elapsed
+  // Current rate annualized from current PnL %
   const fallbackAnnualPnLRate = daysElapsed > 0 ? pnl.true_pnl_pct * (365 / daysElapsed) : 0;
-  const fallbackDailyRate = daysElapsed > 0 && pnl.capital_deployed > 0 ?
-    (Math.pow(1 + pnl.true_pnl_pct/100, 1/daysElapsed) - 1) * 100 : 0;
-  const currentRatePctPerDay = trueDailyRate ?? fallbackDailyRate;
   const onTrack = pnl.true_pnl_pct >= (targetPct * elapsedPct / 100); // proportional progress
 
   const statusC = onTrack ? 'var(--green)' : pnl.true_pnl < 0 ? 'var(--red)' : 'var(--orange)';
@@ -2763,39 +2769,39 @@ function renderKPITracker(M) {
   const dcaStartStr = new Date(yearStartTs).toLocaleDateString('vi-VN');
   const targetDateStr = cycle.targetDate.toLocaleDateString('vi-VN');
   const srcBadge = cycle.authoritative ? '✅' : '⚠️';
-  const depBadge = pnl.deposits_source === 'xlsx_file' ? `📄 xlsx (C2C+Fiat) · ${pnl.deposits_count} lệnh nạp` : pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
-  return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% PnL / năm (TRUE PnL, đã trừ deposits)</div>
+
+  return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% PnL / năm (trên cost basis của crypto holdings)</div>
   <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
       <div>
-        <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Mục tiêu: <b style="color:var(--green)">+${fmt$(pnl.target_pnl)}</b> True PnL (NET ≥ ${fmt$(pnl.target_net)}) vào ${targetDateStr}</div>
+        <div style="font-family:var(--display);font-size:1.5rem;font-weight:700">Mục tiêu: <b style="color:var(--green)">+${fmt$(pnl.target_pnl)}</b> PnL → market value ≥ ${fmt$(pnl.target_market_value)} vào ${targetDateStr}</div>
         <div style="font-size:0.85rem;color:var(--text2);margin-top:0.3rem">Ngày đầu DCA: <b>${dcaStartStr}</b> ${srcBadge} <span style="font-size:0.72rem;opacity:0.8">(nguồn: ${cycle.source})</span></div>
-        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">Total IN: <b>${fmt$(pnl.total_in)}</b> = Anchor ${fmt$(anchor)} + Deposits ${fmt$(pnl.cumulative_deposits)} <span style="font-size:0.72rem">(${depBadge})</span>${pnl.cumulative_withdrawals > 0 ? ` · Total OUT (đã rút): <b style="color:var(--orange)">${fmt$(pnl.cumulative_withdrawals)}</b>` : ''}</div>
-        ${pnl.has_realized_via_withdrawal ? `<div style="font-size:0.8rem;color:var(--text2);margin-top:0.15rem">💡 <b>Effective position</b> = NET + Withdrawals = <b style="color:var(--cyan)">${fmt$(pnl.effective_position)}</b> (giá trị nếu anh KHÔNG rút)</div>` : ''}
-        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">${daysElapsed}/365 ngày đã qua · còn ${daysRemaining} ngày</div>
+        <div style="font-size:0.85rem;color:var(--text2);margin-top:0.15rem">Cost basis (giá vốn) = <b>${fmt$(pnl.cost)}</b> · Market value (giá thị trường) = <b style="color:var(--cyan)">${fmt$(pnl.market_value)}</b> · ${daysElapsed}/365 ngày đã qua · còn ${daysRemaining} ngày</div>
       </div>
       <span class="badge" style="background:${statusC}33;color:${statusC};border:1px solid ${statusC};font-size:0.9rem;padding:0.4rem 0.8rem">${statusTextVi}</span>
     </div>
 
     <div class="metrics" style="margin-bottom:1rem">
-      <div class="metric"><div class="metric-label">True PnL (đã trừ deposits)</div><div class="metric-value" style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.true_pnl)}</div><div class="metric-sub">${fmtPct(pnl.true_pnl_pct)} trên capital</div></div>
-      <div class="metric"><div class="metric-label">Khoảng cách PnL</div><div class="metric-value" style="color:var(--orange)">${fmt$(pnl.pnl_gap)}</div><div class="metric-sub">cần thêm ${fmtPct(gapPctNeeded)} PnL</div></div>
+      <div class="metric"><div class="metric-label">True PnL (gross − cost)</div><div class="metric-value" style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.true_pnl)}</div><div class="metric-sub">${fmtPct(pnl.true_pnl_pct)} trên cost basis</div></div>
+      <div class="metric"><div class="metric-label">Khoảng cách PnL</div><div class="metric-value" style="color:var(--orange)">${fmt$(pnl.pnl_gap)}</div><div class="metric-sub">cần thêm ${fmtPct(pnl.pnl_gap_pct)} PnL</div></div>
       <div class="metric"><div class="metric-label">Ngày còn lại</div><div class="metric-value">${daysRemaining}</div><div class="metric-sub">đã qua ${elapsedPct.toFixed(1)}%</div></div>
-      <div class="metric"><div class="metric-label">Lãi kép cần/ngày</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/ngày</div><div class="metric-sub">NET → target</div></div>
+      <div class="metric"><div class="metric-label">Lãi kép cần/ngày</div><div class="metric-value" style="color:var(--purple)">${requiredCompoundRate.toFixed(3)}%/ngày</div><div class="metric-sub">gross → target market value</div></div>
       <div class="metric"><div class="metric-label">Lãi cần/tháng</div><div class="metric-value">${requiredMonthlyRate.toFixed(2)}%/tháng</div><div class="metric-sub">lãi kép</div></div>
-      <div class="metric"><div class="metric-label">Lãi thực hiện tại</div><div class="metric-value" style="color:${currentRatePctPerDay >= 0 ? 'var(--green)' : 'var(--red)'}">${currentRatePctPerDay.toFixed(3)}%/ngày</div><div class="metric-sub">${trueRateSrc} · ann ${fallbackAnnualPnLRate.toFixed(1)}%/y</div></div>
+      <div class="metric"><div class="metric-label">Pace hiện tại</div><div class="metric-value" style="color:${fallbackAnnualPnLRate >= 0 ? 'var(--green)' : 'var(--red)'}">${fallbackAnnualPnLRate.toFixed(1)}%/năm</div><div class="metric-sub">annualized từ True PnL hiện tại</div></div>
     </div>
 
-    <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Phân rã PnL (% trên Capital Deployed = ${fmt$(pnl.capital_deployed)})</div>
+    <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📊 Phân rã PnL (% trên Cost Basis = ${fmt$(pnl.cost)})</div>
     <table>
-      <thead><tr><th>Component</th><th>Value</th><th>% of capital</th><th>Note</th></tr></thead>
+      <thead><tr><th>Component</th><th>Value</th><th>% of cost</th><th>Note</th></tr></thead>
       <tbody>
-        <tr><td>Spot unrealized PnL (all holdings)</td><td style="color:${unrealized_spot >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(unrealized_spot)}</td><td>${fmtPct(pnl.capital_deployed > 0 ? (unrealized_spot/pnl.capital_deployed)*100 : 0)}</td><td>qty × (price − avg) cho TẤT CẢ crypto</td></tr>
-        <tr><td>Futures unrealized</td><td style="color:${futuresUnrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresUnrealized)}</td><td>${fmtPct(pnl.capital_deployed > 0 ? (futuresUnrealized/pnl.capital_deployed)*100 : 0)}</td><td>open perp positions</td></tr>
-        <tr><td>Futures realized</td><td style="color:${futuresRealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresRealized)}</td><td>${fmtPct(pnl.capital_deployed > 0 ? (futuresRealized/pnl.capital_deployed)*100 : 0)}</td><td>closed perp trades</td></tr>
-        <tr><td>Funding fee net</td><td style="color:${futuresFunding >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(futuresFunding)}</td><td>${fmtPct(pnl.capital_deployed > 0 ? (futuresFunding/pnl.capital_deployed)*100 : 0)}</td><td>perp funding cumulative</td></tr>
+        <tr><td>Spot unrealized PnL</td><td style="color:${pnl.unrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.unrealized)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.unrealized/pnl.cost)*100 : 0)}</td><td>(price − avg) × qty cho TẤT CẢ crypto holdings</td></tr>
+        <tr><td>Futures unrealized</td><td style="color:${pnl.futures_unrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.futures_unrealized)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.futures_unrealized/pnl.cost)*100 : 0)}</td><td>open perp positions</td></tr>
+        <tr><td>Futures realized</td><td style="color:${pnl.futures_realized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.futures_realized)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.futures_realized/pnl.cost)*100 : 0)}</td><td>closed perp trades</td></tr>
+        <tr><td>Funding fee net</td><td style="color:${pnl.futures_funding >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.futures_funding)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.futures_funding/pnl.cost)*100 : 0)}</td><td>perp funding cumulative</td></tr>
+        <tr><td>Earn yield (annualized)</td><td style="color:var(--green)">${fmt$signed(pnl.earn_annualized)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.earn_annualized/pnl.cost)*100 : 0)}</td><td>Flexible Earn rewards × 12</td></tr>
+        <tr><td>Loan interest (annualized)</td><td style="color:var(--red)">${fmt$signed(pnl.loan_interest_annualized)}</td><td>${fmtPct(pnl.cost > 0 ? (pnl.loan_interest_annualized/pnl.cost)*100 : 0)}</td><td>cost of leverage</td></tr>
         <tr style="background:rgba(167,139,250,0.1);font-weight:700">
-          <td><b>TRUE PnL = NET − Capital Deployed</b></td>
+          <td><b>TRUE PnL TỔNG</b></td>
           <td style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}"><b>${fmt$signed(pnl.true_pnl)}</b></td>
           <td style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}"><b>${fmtPct(pnl.true_pnl_pct)}</b></td>
           <td>${fmtPct(pnl.progress_pct)} of ${targetPct}% target</td>
@@ -2807,8 +2813,8 @@ function renderKPITracker(M) {
       ${onTrack ? '✅' : '🚨'} <b>Verdict</b>: ${onTrack
         ? `True PnL <b>${fmtPct(pnl.true_pnl_pct)}</b> tỷ lệ ổn so với ${elapsedPct.toFixed(0)}% thời gian đã qua → on track ${targetPct}% PnL cuối năm.`
         : pnl.true_pnl < 0
-          ? `True PnL <b>${fmtPct(pnl.true_pnl_pct)}</b> đang ÂM. Capital deployed ${fmt$(pnl.capital_deployed)} mà NET chỉ ${fmt$(currentNet)} = LỖ ${fmt$(Math.abs(pnl.true_pnl))}. Cần ${fmt$(pnl.pnl_gap)} PnL trong ${daysRemaining}d. Xem 🤖 Expert Playbook.`
-          : `True PnL <b>${fmtPct(pnl.true_pnl_pct)}</b> dương nhưng chậm so với ${elapsedPct.toFixed(0)}% thời gian. Cần thêm ${fmt$(pnl.pnl_gap)} PnL (${fmtPct(gapPctNeeded)}) trong ${daysRemaining}d. Required ${requiredCompoundRate.toFixed(3)}%/ngày compound trên NET.`}
+          ? `True PnL <b>${fmtPct(pnl.true_pnl_pct)}</b> ÂM. Cost basis ${fmt$(pnl.cost)} nhưng market value chỉ ${fmt$(pnl.market_value)} = LỖ ${fmt$(Math.abs(pnl.true_pnl))}. Cần ${fmt$(pnl.pnl_gap)} PnL trong ${daysRemaining}d.`
+          : `True PnL <b>${fmtPct(pnl.true_pnl_pct)}</b> dương nhưng chậm so với ${elapsedPct.toFixed(0)}% thời gian. Cần thêm ${fmt$(pnl.pnl_gap)} PnL (${fmtPct(pnl.pnl_gap_pct)}) trong ${daysRemaining}d. Required ${requiredCompoundRate.toFixed(3)}%/ngày compound trên market value.`}
     </div>
   </div>`;
 }
@@ -3918,8 +3924,8 @@ function renderAlerts(M) {
   for (const k of ['BTC','WBETH']) {
     if (M.m2[k]?.pnl > 0) alerts.push({type:'green', icon:'💚', title:`${k} ABOVE BEP (profitable)`, text:`${k} BEP ${fmtPct(M.m2[k].bep_gap)} (${fmt$signed(M.m2[k].pnl)}). F&G ${state.market.fg_cg < 65 ? '< 65 → HOLD' : '≥ 65 → cân nhắc TP1 partial'}.`});
   }
-  const _pnl = computeTruePnL(M.m1.net);
-  alerts.push({type:'purple', icon:'🎯', title:`True PnL: ${fmtPct(_pnl.true_pnl_pct)} vs target ${state.target_pct}%`, text:`Capital deployed ${fmt$(_pnl.capital_deployed)} · NET ${fmt$(M.m1.net)} · True PnL ${fmt$signed(_pnl.true_pnl)}. Cần thêm <b>${fmt$(_pnl.pnl_gap)}</b> PnL (${fmtPct(_pnl.pnl_gap_pct)}) để đạt ${state.target_pct}%.`});
+  const _pnl = computeTruePnL(M);
+  alerts.push({type:'purple', icon:'🎯', title:`True PnL: ${fmtPct(_pnl.true_pnl_pct)} vs target ${state.target_pct}%`, text:`Cost basis ${fmt$(_pnl.cost)} · Market value ${fmt$(_pnl.market_value)} · True PnL ${fmt$signed(_pnl.true_pnl)} (${fmtPct(_pnl.true_pnl_pct)}). Cần thêm <b>${fmt$(_pnl.pnl_gap)}</b> PnL (${fmtPct(_pnl.pnl_gap_pct)}) để đạt ${state.target_pct}% trên cost basis.`});
   let html = `<div id="alerts" class="section-title">⚠️ Cảnh báo (sắp xếp theo ưu tiên)</div>`;
   for (const a of alerts) {
     html += `<div class="alert alert-${a.type}"><div class="alert-icon">${a.icon}</div><div class="alert-content"><div class="alert-title">${a.title}</div><div class="alert-text">${a.text}</div></div></div>`;
@@ -4775,7 +4781,7 @@ function renderFundingForecast(M) {
 function renderCapitalFlows(M) {
   const cf = state.capital_flows_data;
   if (!cf || !cf.orders || cf.orders.length === 0) return '';
-  const pnl = computeTruePnL(M.m1.net);
+  const pnl = computeTruePnL(M);
   const cycle = getCycleProgress();
   // DCA pace analysis
   const monthsElapsed = cycle.daysElapsed / 30.44;
@@ -4861,19 +4867,18 @@ function renderCapitalFlows(M) {
         <div class="metric-sub">${fmt$(actualDepositPerYear,0)}/năm vs ${fmt$(committedPerYear,0)} commit · ${paceVerdict}</div>
       </div>
       <div class="metric">
-        <div class="metric-label">Hypothetical PnL</div>
-        <div class="metric-value" style="color:${hypotheticalPnLPct >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtPct(hypotheticalPnLPct)}</div>
-        <div class="metric-sub">nếu KHÔNG rút: ${fmt$(hypotheticalNet)}</div>
+        <div class="metric-label">Cost basis crypto</div>
+        <div class="metric-value" style="color:var(--cyan)">${fmt$(pnl.cost)}</div>
+        <div class="metric-sub">tổng qty × avg cost</div>
       </div>
     </div>
 
-    <div style="background:rgba(0,217,255,0.05);border-left:3px solid var(--cyan);padding:0.75rem 1rem;border-radius:8px;margin-top:1rem;font-size:0.85rem;line-height:1.6">
-      📊 <b>Phân tích PnL chuẩn (sau khi tính cả tiền rút)</b>:
-      <br>• <b>Total IN</b> = anchor ${fmt$(pnl.anchor)} + deposits ${fmt$(pnl.cumulative_deposits)} = <b>${fmt$(pnl.total_in)}</b>
-      <br>• <b>Total OUT</b> (đã rút về VND) = <b style="color:var(--orange)">${fmt$(pnl.total_out)}</b>
-      <br>• <b>Effective position</b> = NET hiện tại ${fmt$(pnl.net_current)} + Total OUT = <b style="color:var(--cyan)">${fmt$(pnl.effective_position)}</b>
-      <br>• <b>True PnL</b> = Effective − Total IN = <b style="color:${pnl.true_pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.true_pnl)} (${fmtPct(pnl.true_pnl_pct)})</b>
-      <br>• Mục tiêu ${pnl.target_pct}% PnL trên Total IN = ${fmt$(pnl.target_pnl)} ${pnl.true_pnl >= pnl.target_pnl ? `→ <b style="color:var(--green)">✅ ĐÃ ĐẠT ${(pnl.true_pnl_pct/pnl.target_pct).toFixed(2)}× target</b>` : `→ còn cần ${fmt$(pnl.pnl_gap)}`}
+    <div style="background:rgba(245,158,11,0.08);border-left:3px solid var(--yellow);padding:0.75rem 1rem;border-radius:8px;margin-top:1rem;font-size:0.85rem;line-height:1.6">
+      ⚠️ <b>Lưu ý quan trọng — Capital Flows ≠ PnL</b>:
+      <br>• Số tiền nạp/rút USDT ở đây là <b>cycling tiền gốc giữa VND ↔ USDT</b>, KHÔNG phải chốt lời.
+      <br>• Anh chưa SELL crypto (BTC/WBETH/BNB/LINK/BNSOL) → chưa có realized PnL từ holdings.
+      <br>• <b>PnL THẬT</b> = (giá hiện tại − giá vốn) × số lượng = <b style="color:${pnl.unrealized >= 0 ? 'var(--green)' : 'var(--red)'}">${fmt$signed(pnl.unrealized)} (${fmtPct(pnl.cost > 0 ? pnl.unrealized/pnl.cost*100 : 0)})</b> trên cost basis ${fmt$(pnl.cost)}.
+      <br>• Xem chi tiết PnL ở tab <b>Tổng Quan</b> → Hero & KPI Tracker.
     </div>
 
     <div style="font-family:var(--display);font-weight:700;margin:1.25rem 0 0.5rem">📅 Lịch sử giao dịch C2C (20 gần nhất)</div>
