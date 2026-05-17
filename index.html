@@ -2320,9 +2320,9 @@ function getCumulativeDeposits() {
   // 5. 0 (no data)
   const m = state.capital_flows?.manual_deposits;
   if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
-  const c2cVal = state.capital_flows_c2c?.total_deposits_usd;
+  const c2cVal = state.capital_flows_data?.total_deposits_usd;
   if (typeof c2cVal === 'number' && c2cVal > 0) {
-    return { value: c2cVal, source: 'c2c_file', count: state.capital_flows_c2c.deposit_count };
+    return { value: c2cVal, source: 'xlsx_file', count: state.capital_flows_data.deposit_count };
   }
   const apiVal = state.capital_flows_api?.total_deposits_usd;
   if (typeof apiVal === 'number' && apiVal > 0) {
@@ -2337,9 +2337,9 @@ function getCumulativeDeposits() {
 function getCumulativeWithdrawals() {
   const m = state.capital_flows?.manual_withdrawals;
   if (typeof m === 'number' && m > 0) return { value: m, source: 'manual' };
-  const c2cVal = state.capital_flows_c2c?.total_withdrawals_usd;
+  const c2cVal = state.capital_flows_data?.total_withdrawals_usd;
   if (typeof c2cVal === 'number' && c2cVal > 0) {
-    return { value: c2cVal, source: 'c2c_file', count: state.capital_flows_c2c.withdraw_count };
+    return { value: c2cVal, source: 'xlsx_file', count: state.capital_flows_data.withdraw_count };
   }
   const apiVal = state.capital_flows_api?.total_withdrawals_usd;
   if (typeof apiVal === 'number' && apiVal > 0) {
@@ -2348,20 +2348,21 @@ function getCumulativeWithdrawals() {
   return { value: 0, source: 'none' };
 }
 
-// Fetch C2C JSON file (saved from xlsx parsing by em); also override anchor date
-async function loadC2CCapitalFlows() {
+// Fetch combined capital flows JSON (parsed from C2C + Fiat xlsx); override anchor date
+async function loadCapitalFlowsData() {
   try {
-    const r = await fetch('./capital_flows_c2c.json?v=' + Date.now()); // bust cache
+    const r = await fetch('./capital_flows.json?v=' + Date.now()); // bust cache
     if (!r.ok) return;
     const data = await r.json();
-    state.capital_flows_c2c = data;
-    // Override anchor date if c2c period_start exists and authoritative
+    state.capital_flows_data = data;
+    // Override anchor date if period_start exists and Pool API doesn't have it
     if (data.period_start_ts_ms && !state.pool?.api_first_execution) {
       localStorage.setItem('kpiYearStart', String(data.period_start_ts_ms));
     }
-    console.log(`[C2C] loaded ${data.deposit_count} buys $${data.total_deposits_usd} + ${data.withdraw_count} sells $${data.total_withdrawals_usd} since ${data.period_start}`);
+    const srcSummary = (data.sources || []).map(s => `${s.type}=${s.order_count}`).join(',');
+    console.log(`[CapFlows] loaded ${data.deposit_count} deposits $${data.total_deposits_usd} + ${data.withdraw_count} withdrawals $${data.total_withdrawals_usd} since ${data.period_start} (sources: ${srcSummary})`);
   } catch (e) {
-    console.warn('[C2C] could not load capital_flows_c2c.json:', e.message);
+    console.warn('[CapFlows] could not load capital_flows.json:', e.message);
   }
 }
 function computeTruePnL(currentNet) {
@@ -2674,7 +2675,7 @@ function renderHero(M) {
   const gaugeCircumference = 2 * Math.PI * 68;
   const gaugeOffset = gaugeCircumference * (1 - pHit/100);
   const pnlColor = pnl.true_pnl >= 0 ? 'var(--mint)' : 'var(--red)';
-  const depBadge = pnl.deposits_source === 'c2c_file' ? `📄 C2C file (${pnl.deposits_count})` : pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'xlsx_file' ? `📄 xlsx (${pnl.deposits_count} lệnh)` : pnl.deposits_source === 'binance_api' ? `🔗 API (${pnl.deposits_count} giao dịch)` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool' : '⚠️ chưa nhập';
 
   return `<div class="hero">
     <div class="hero-main">
@@ -2762,7 +2763,7 @@ function renderKPITracker(M) {
   const dcaStartStr = new Date(yearStartTs).toLocaleDateString('vi-VN');
   const targetDateStr = cycle.targetDate.toLocaleDateString('vi-VN');
   const srcBadge = cycle.authoritative ? '✅' : '⚠️';
-  const depBadge = pnl.deposits_source === 'c2c_file' ? `📄 C2C file · ${pnl.deposits_count} lệnh BUY` : pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
+  const depBadge = pnl.deposits_source === 'xlsx_file' ? `📄 xlsx (C2C+Fiat) · ${pnl.deposits_count} lệnh nạp` : pnl.deposits_source === 'binance_api' ? `🔗 Binance API · ${pnl.deposits_count} giao dịch` : pnl.deposits_source === 'manual' ? '✅ thủ công' : pnl.deposits_source === 'pool_dca_estimate' ? '⚠️ ước lượng Pool DCA' : '⚠️ chưa nhập';
   return `<div id="kpi" class="section-title section-title-target">🎯 Đồng Hồ KPI · Mục tiêu ${targetPct}% PnL / năm (TRUE PnL, đã trừ deposits)</div>
   <div class="target-card" style="border-color:${statusC};background:linear-gradient(135deg,${statusC}15,rgba(167,139,250,0.08),rgba(6,182,212,0.05))">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
@@ -4772,7 +4773,7 @@ function renderFundingForecast(M) {
 // ===================== CAPITAL FLOWS UI =====================
 // Hiển thị timeline deposits/withdrawals + DCA pace + insights từ C2C JSON
 function renderCapitalFlows(M) {
-  const cf = state.capital_flows_c2c;
+  const cf = state.capital_flows_data;
   if (!cf || !cf.orders || cf.orders.length === 0) return '';
   const pnl = computeTruePnL(M.m1.net);
   const cycle = getCycleProgress();
@@ -4807,8 +4808,10 @@ function renderCapitalFlows(M) {
     const o = cf.orders[i];
     const balAfter = balancesForward[i];
     const c = o.side === 'Buy' ? 'var(--green)' : 'var(--orange)';
+    const srcIcon = o.source_type === 'fiat' ? '💳' : '🤝';
     rows += `<tr>
       <td style="font-size:0.78rem">${o.date.slice(0, 16)}</td>
+      <td style="font-size:0.85rem">${srcIcon} ${(o.source_type || 'c2c').toUpperCase()}</td>
       <td style="color:${c};font-weight:700">${o.side === 'Buy' ? '↓ NẠP' : '↑ RÚT'}</td>
       <td style="font-family:var(--mono);color:${c}">${o.side === 'Buy' ? '+' : '−'}$${o.usdt_amount.toFixed(2)}</td>
       <td style="font-family:var(--mono);color:var(--muted)">${o.vnd_amount.toLocaleString('vi-VN')} ₫</td>
@@ -4820,8 +4823,17 @@ function renderCapitalFlows(M) {
   const paceColor = dcaPaceRatio >= 0.9 ? 'var(--green)' : dcaPaceRatio >= 0.5 ? 'var(--yellow)' : 'var(--red)';
   const paceVerdict = dcaPaceRatio >= 0.95 ? 'Đúng pace' : dcaPaceRatio >= 0.5 ? 'Chậm pace' : 'Rất chậm pace';
 
+  // Source breakdown
+  const sourcesHtml = (cf.sources || []).map(s => {
+    const label = s.type === 'c2c' ? '🤝 C2C P2P' : s.type === 'fiat' ? '💳 Fiat (VietQR/Card)' : s.type;
+    return `<div style="display:inline-block;margin-right:1rem;font-size:0.78rem">${label}: <b style="color:var(--green)">+${fmt$(s.buy_usdt)}</b>${s.sell_usdt > 0 ? ` / <b style="color:var(--orange)">−${fmt$(s.sell_usdt)}</b>` : ''} <span style="color:var(--muted)">(${s.order_count} lệnh)</span></div>`;
+  }).join('');
+
   return `<div class="section-title">💸 Dòng Tiền · ${cf.deposit_count} nạp + ${cf.withdraw_count} rút từ ${cf.period_start}</div>
   <div class="card" style="border-left:4px solid var(--cyan)">
+    ${sourcesHtml ? `<div style="background:rgba(0,217,255,0.05);padding:0.6rem 0.9rem;border-radius:6px;margin-bottom:1rem;font-size:0.82rem">
+      <b>Nguồn data</b>: ${sourcesHtml}
+    </div>` : ''}
     <div class="metrics" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
       <div class="metric">
         <div class="metric-label">Tổng NẠP (BUY USDT)</div>
@@ -4867,13 +4879,13 @@ function renderCapitalFlows(M) {
     <div style="font-family:var(--display);font-weight:700;margin:1.25rem 0 0.5rem">📅 Lịch sử giao dịch C2C (20 gần nhất)</div>
     <div style="overflow-x:auto">
       <table>
-        <thead><tr><th>Thời gian</th><th>Loại</th><th>USDT</th><th>VND</th><th>Tỷ giá</th><th>Balance sau</th></tr></thead>
+        <thead><tr><th>Thời gian</th><th>Nguồn</th><th>Loại</th><th>USDT</th><th>VND</th><th>Tỷ giá</th><th>Balance sau</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
     <div style="margin-top:0.5rem;font-size:0.72rem;color:var(--muted)">
-      Source: <code>capital_flows_c2c.json</code> · imported ${new Date(cf.imported_at_ts_ms).toLocaleString('vi-VN')} · từ file <code>${cf.imported_from || 'xlsx'}</code>
-      <br>💡 Update: chạy <code>python parse_c2c.py "Binance-...xlsx"</code> → git commit → push
+      Source: <code>capital_flows.json</code> · imported ${new Date(cf.imported_at_ts_ms).toLocaleString('vi-VN')} · ${(cf.sources||[]).length} file(s)
+      <br>💡 Update: thả xlsx mới vào repo → <code>python parse_capital_flows.py</code> → git commit → push
     </div>
   </div>`;
 }
@@ -7160,7 +7172,7 @@ buildEditor();
 loadManualAvgFromStorage(); // Apply saved manual avg before first render
 loadCapitalFlowsFromStorage(); // Critical: load deposits/withdrawals for TRUE PnL
 // Async fetch C2C JSON (em parsed from xlsx) — overrides anchor date + provides capital flows
-loadC2CCapitalFlows().then(() => render());
+loadCapitalFlowsData().then(() => render());
 render();
 loadBinanceCreds();
 setManualAvgBadge();
