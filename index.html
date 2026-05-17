@@ -1324,89 +1324,8 @@ function m23_unified_decision(M, s) {
     }
   }
 
-  // ---- P3.0: DCA CAPACITY SHORTAGE — REMOVED ----
-  // Logic mới: DCA shortage được tự động fold vào M33 scenarios (loan-funded by default).
-  // KHÔNG bao giờ pause/reduce DCA vì thiếu vốn. Mục tiêu 35% là priority cao hơn.
-  // Block below KEPT for safety: nếu loan room hết hoàn toàn → cảnh báo
-  if (false && M.m32 && !M.m32.sufficient) {
-    const c = M.m32;
-    const shortLoanAmount = Math.min(c.shortage_until_deposit, M.m7.soft - M.loan, M.m1.net * 0.10);
-    const loanAprMonthly = 0.09 / 12; // 0.75% per month
-    const loanCarryCost = shortLoanAmount * loanAprMonthly * (c.days_to_next_deposit / 30);
-
-    if (c.primary_action_type === 'REDUCE_SLIGHTLY') {
-      return {
-        priority: 3, severity: 'LOW', icon: '⏳', color: '#f59e0b',
-        title: `GIẢM DCA NHẸ ${c.pace_cut_pct.toFixed(0)}% — đợi nạp ngày ${c.schedule_day}`,
-        coin: null, amount: null, deadline: `${c.days_to_next_deposit} ngày tới (đến ngày ${c.schedule_day})`,
-        action_steps: [
-          `1. Vào Binance → Earn → Auto-Invest → Edit plan`,
-          `2. Giảm pace từ $${c.daily_dca_target.toFixed(2)}/d → $${c.daily_dca_sustainable.toFixed(2)}/d (giảm ${c.pace_cut_pct.toFixed(0)}%)`,
-          `3. Capital ${fmt$(c.available_usd)} đủ duy trì pace mới đến ngày ${c.schedule_day} (${c.days_to_next_deposit}d)`,
-          `4. Sau khi nạp ngày ${c.schedule_day} → reset pace về $${c.daily_dca_target.toFixed(2)}/d`,
-          `💡 Alternative: USDC nhàn rỗi cho vào Flexible Earn 5% APR trong ${c.days_to_next_deposit}d → +${fmt$(c.available_usd * 0.055 * c.days_to_next_deposit/365)}`,
-        ],
-        rationale: [
-          `USDT/USDC có sẵn: ${fmt$(c.available_usd)} · cần ${fmt$(c.required_until_next_deposit)} đến ngày ${c.schedule_day}`,
-          `Runway: ${c.runway_days.toFixed(0)} ngày = ${(c.runway_days/c.days_to_next_deposit*100).toFixed(0)}% của period`,
-          `Cách rẻ nhất: giảm pace để stretch capital — không cần vay không cần action lớn`,
-        ],
-        blocks: [],
-        sources_fired: ['M32 DCA Capacity · LOW shortage'],
-      };
-    }
-    if (c.primary_action_type === 'REDUCE_OR_LOAN') {
-      return {
-        priority: 3, severity: 'MEDIUM', icon: '⚖️', color: '#fb923c',
-        title: `2 LỰA CHỌN — REDUCE ${c.pace_cut_pct.toFixed(0)}% hoặc vay ${fmt$(shortLoanAmount)}`,
-        coin: null, amount: null, deadline: `${c.days_to_next_deposit} ngày`,
-        action_steps: [
-          `🅐 OPTION A — REDUCE PACE (zero risk, mất một chút cơ hội)`,
-          `   • Giảm DCA $${c.daily_dca_target.toFixed(2)}/d → $${c.daily_dca_sustainable.toFixed(2)}/d`,
-          `   • Cost: 0 (chỉ chậm pace ${c.pace_cut_pct.toFixed(0)}%)`,
-          `   • Reset về full pace sau ngày ${c.schedule_day}`,
-          ``,
-          `🅑 OPTION B — VAY SHORT-TERM (giữ pace, có carry cost)`,
-          `   • Vay ${fmt$(shortLoanAmount)} USDT (Flexible Loan, collateral BTC)`,
-          `   • Giữ DCA pace $${c.daily_dca_target.toFixed(2)}/d đến ngày ${c.schedule_day}`,
-          `   • Carry cost ~${fmt$(loanCarryCost)} (≈${(loanAprMonthly*100).toFixed(2)}%/tháng × ${c.days_to_next_deposit}d)`,
-          `   • Sau khi nạp ngày ${c.schedule_day} → trả loan ngay`,
-          ``,
-          `💡 EM đề xuất Option B nếu F&G < 35 (đáng giữ pace mua dip) · Option A nếu F&G ≥ 40 (giá fair, không vội)`,
-        ],
-        rationale: [
-          `Available ${fmt$(c.available_usd)} cover ${c.runway_days.toFixed(0)}d / ${c.days_to_next_deposit}d period = ${(c.runway_days/c.days_to_next_deposit*100).toFixed(0)}%`,
-          `Shortage: ${fmt$(c.shortage_until_deposit)} để duy trì đến ngày ${c.schedule_day}`,
-          `Loan cost ${fmt$(loanCarryCost)} là chi phí cơ hội nhỏ nếu DCA pace quan trọng để hit target`,
-        ],
-        blocks: [],
-        sources_fired: ['M32 DCA Capacity · MEDIUM shortage'],
-      };
-    }
-    // HIGH / CRITICAL — LOAN_PRIMARY
-    return {
-      priority: 3, severity: 'HIGH', icon: '💰', color: '#a78bfa',
-      title: `VAY ${fmt$(shortLoanAmount)} ĐỂ DCA TIẾP — đợi ${c.days_to_next_deposit}d đến ngày nạp`,
-      coin: null, amount: shortLoanAmount, deadline: `TRONG 2 NGÀY`,
-      action_steps: [
-        `1. Binance → Vay → Linh hoạt → Vay ${fmt$(shortLoanAmount)} USDT (collateral BTC)`,
-        `2. Hold USDT trong Spot wallet → Auto-Invest dùng tự động`,
-        `3. Giữ DCA pace $${c.daily_dca_target.toFixed(2)}/d (không gián đoạn strategy)`,
-        `4. NGÀY ${c.schedule_day}: khi nạp tiền vào → TRẢ LOAN ngay (avoid carry cost lâu)`,
-        `5. Carry cost dự kiến: ${fmt$(loanCarryCost)} cho ${c.days_to_next_deposit} ngày (rất nhỏ)`,
-        `💡 Tại sao không pause? F&G hiện ${fg} = entry tốt. Pause = mất cơ hội average down ${c.days_to_next_deposit}d, thiệt hại > carry cost`,
-      ],
-      rationale: [
-        `Available USDT chỉ ${fmt$(c.available_usd)} (runway ${c.runway_days.toFixed(0)}d/${c.days_to_next_deposit}d period)`,
-        `Capital cover < 40% → reduce pace không khả thi (cắt quá sâu)`,
-        `Vay short-term ${c.days_to_next_deposit}d carry cost rất nhỏ vs cơ hội mất nếu pause DCA`,
-        `User không có cash flow ngay (nạp định kỳ ngày ${c.schedule_day}) → loan là giải pháp duy nhất giữ pace`,
-        `Loan room còn: ${fmt$(M.m7.soft - M.loan)} (đủ chỗ cho ${fmt$(shortLoanAmount)})`,
-      ],
-      blocks: ['⚠️ Đừng vay quá soft cap (M7) — nguy cơ liquidation cao'],
-      sources_fired: ['M32 DCA Capacity · HIGH shortage', 'M7 Loan room available'],
-    };
-  }
+  // ---- P3.0: DCA CAPACITY — folded into M33 scenarios (loan-funded by default) ----
+  // M32 still tracked for capacity diagnostics; shortage_until_deposit auto-added to M33 loan amounts.
 
   // ---- P3.5: PATH-TO-TARGET — fire aggressively whenever behind target ----
   // Nguyên tắc: "bằng mọi cách hit 35%". P3.5 ưu tiên cao hơn P4b cautious bear.
@@ -1567,7 +1486,7 @@ function m23_unified_decision(M, s) {
       title: `SQUEEZE LONG BTC — VỊ THẾ ${fmt$(sqAmount)} (M28 score ${m28.squeeze_score}/100)`,
       coin: 'BTC', amount: sqAmount, deadline: 'TRONG 24 GIỜ',
       action_steps: [
-        `1. Binance Futures → BTCUSDT Perp → Long 5x leverage`,
+        `1. Binance Futures → BTCUSDT Perp → Long 3x leverage`,
         `2. Size: ${fmt$(sqAmount)} (${M.m21 ? 'Quarter Kelly Bayesian + vol-adj' : '2% NET fallback'})`,
         `3. Funding hiện: ${m28.current.toFixed(4)}% · forecast 24h: ${m28.forecast_24h.toFixed(4)}% · 72h: ${m28.forecast_72h.toFixed(4)}%`,
         `4. Trend ${m28.slope_per_day.toFixed(5)}/ngày (${m28.slope_per_day < 0 ? 'đang giảm, setup tiếp diễn' : 'đang tăng'}) · AR(1) ρ=${m28.ar1_rho.toFixed(2)}`,
@@ -2713,7 +2632,7 @@ function m33_path_to_target(M) {
   if (squeezeReadyNow && playsReadyNow > 0) {
     stepsNow.push(``);
     stepsNow.push(`<b>⚡ SQUEEZE PLAY READY NOW (M28 score ${squeezeScore}/100)</b>`);
-    stepsNow.push(`• Mở Long BTC Perp 5× leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly)`);
+    stepsNow.push(`• Mở Long BTC Perp 3× leverage, size ${fmt$(squeezePerPlay)} (Quarter Kelly)`);
     stepsNow.push(`• Entry NOW · TP1 +3% close 50% · TP2 +5% close rest · SL −1.5%`);
     stepsNow.push(`• Force exit nếu funding flip > +0.005%`);
   } else {
@@ -2722,7 +2641,7 @@ function m33_path_to_target(M) {
     stepsWait.push(`├ A: Funding 24h forecast ≤ −0.005% (hiện ${m28?.forecast_24h?.toFixed(4) ?? '?'}%)`);
     stepsWait.push(`├ B: P(bull) ≥ 45% AND F&G ≥ 30 (hiện ${(M.m22.pBull_final*100).toFixed(0)}% / ${fg})`);
     stepsWait.push(`└ C: M28 squeeze_score ≥ 60 (hiện ${squeezeScore})`);
-    stepsWait.push(`Khi fire: Long Perp 5×, size ${fmt$(squeezePerPlay)} · TP +3%/+5% · SL −1.5%`);
+    stepsWait.push(`Khi fire: Long Perp 3×, size ${fmt$(squeezePerPlay)} · TP +3%/+5% · SL −1.5%`);
     stepsWait.push(`Expected ${expectedPlays} plays trong ${daysRemaining}d (${(M.m22.pBull_final*100).toFixed(0)}% regime confidence)`);
   }
 
@@ -3963,51 +3882,9 @@ function renderTarget(M) {
   <div style="font-family:var(--display);font-weight:700;margin-bottom:0.5rem">📈 BTC milestones → NET projection</div>
   <table><thead><tr><th>BTC price</th><th>BTC %</th><th>Gross %</th><th>New gross</th><th>New NET</th><th>vs anchor</th><th>Status</th></tr></thead><tbody>${milestones.join('')}</tbody></table>
 
-  <div style="font-family:var(--display);font-weight:700;margin:1rem 0 0.5rem">🚀 4 LEVERS state</div>
-  <div class="lever-grid">
-  ${renderLeverDCA(M)}
-  ${renderLeverSqueeze(M)}
-  ${renderLeverLoan(M)}
-  ${renderLeverStop(M)}
-  </div>
   </div>`;
 }
-
-function renderLeverDCA(M) {
-  const a = state.pool.plan_alloc;
-  const total = state.funding_yearly / 365 * 2; // assume Pool = 2x funding floor
-  return `<div class="lever">
-  <h4>💎 #1 · DCA ${fmt$(state.pool.value/state.pool.days || 20, 2)}/day Pool</h4>
-  <div class="lever-status">✅ ACTIVE</div>
-  <div class="lever-detail">Pool plan v73: <b>LINK ${a.LINK}%</b> · BNB ${a.BNB}% · BTC ${a.BTC}% · WBETH ${a.WBETH}%. Total Σ=${a.LINK+a.BNB+a.BTC+a.WBETH}%.</div>
-  </div>`;
-}
-function renderLeverSqueeze(M) {
-  const margin = M.m1.net * 0.05;
-  return `<div class="lever lever-armed">
-  <h4>⚡ #2 · Funding squeeze 5% NET</h4>
-  <div class="lever-status lever-status-armed">🟣 ARMED</div>
-  <div class="lever-detail">${fmt$(margin)} margin × 3x = ${fmt$(margin*3)} notional. SL -7% · TP +15%. Funding ${state.market.funding_btc_pct.toFixed(4)}%. RSI6 ${state.market.rsi6_1d}.</div>
-  </div>`;
-}
-function renderLeverLoan(M) {
-  const cls = M.m7.over_hard > 0 ? 'lever-warn' : (M.m7.over_accept > 0 ? 'lever-warn' : '');
-  const stCls = M.m7.over_hard > 0 ? 'lever-status-warn' : (M.m7.over_accept > 0 ? 'lever-status-warn' : '');
-  const status = M.m7.over_hard > 0 ? '⚠️ OVER HARD FLOOR' : (M.m7.over_accept > 0 ? '⚠️ OVER ACCEPT' : '✅ NORMAL');
-  return `<div class="lever ${cls}">
-  <h4>💰 #4 · Loan v1.6 dynamic</h4>
-  <div class="lever-status ${stCls}">${status}</div>
-  <div class="lever-detail">Current ${fmt$(M.loan)} · Soft ${fmt$(M.m7.soft)} · Acceptable ${fmt$(M.m7.accept)} · Hard ${fmt$(M.m7.hard)}. Liq dist ${M.m7.liq_dist.toFixed(2)}%.</div>
-  </div>`;
-}
-function renderLeverStop(M) {
-  const buf = (state.holdings.BTC.price - state.bep_threshold) / state.bep_threshold * 100;
-  return `<div class="lever">
-  <h4>🛑 #3 · Stop-loss BTC ${fmt$(state.bep_threshold,0)}</h4>
-  <div class="lever-status">✅ STANDBY</div>
-  <div class="lever-detail">BTC current ${fmt$(state.holdings.BTC.price)} · trigger ${fmt$(state.bep_threshold,0)} (buffer ${buf.toFixed(1)}%). F&G hiện ${state.market.fg_cg} · trigger ≤ 15.</div>
-  </div>`;
-}
+// 4-LEVER mini cards removed (D1) — M23 sources_fired covers lever state
 
 function renderPlanChanges(M) {
   const changes = M.plan_changes;
@@ -4604,10 +4481,6 @@ function renderTPTriggers(M) {
   <table><thead><tr><th>Asset · TP</th><th>Trigger</th><th>F&G ≥</th><th>Bull pts ≥</th><th>3-cond</th><th>Sell</th><th>Reinvest proceeds</th></tr></thead><tbody>${rows}</tbody></table>
   <div class="warning-bar">📐 TP1 = avg × 1.40 · TP2 × 1.80 · TP3 × 2.50 · TP4 × 3.50. Cumulative 65% sell, 35% hold. Reinvest → most underwater by BEP gap.</div>
   </div>`;
-}
-
-function renderScenarios(M) {
-  return `<div id="scenarios"></div>`; // merged into 🛣 Path to 35% Monte Carlo section
 }
 
 function renderSignals(M) {
