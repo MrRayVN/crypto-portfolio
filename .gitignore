@@ -5,3 +5,6 @@
 !.gitignore
 !capital_flows.json
 !parse_capital_flows.py
+!CLAUDE.md
+!DECISIONS.md
+!SESSION_CONTEXT.md
