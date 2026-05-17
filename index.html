@@ -1244,6 +1244,7 @@ function m23_unified_decision(M, s) {
   const fg = s.market.fg_cg;
   const btcP = s.holdings.BTC.price;
   const sma20 = s.market.btc_sma20 || (s.market.btc_200wma ? s.market.btc_200wma * 1.15 : btcP);
+  const cycle = getCycleProgress();
 
   // ---- P1: LIQUIDATION RISK (vượt hard cap) ----
   if (M.m7.over_hard > 0) {
@@ -1315,6 +1316,62 @@ function m23_unified_decision(M, s) {
           sources_fired: ['M3 TP Triggers', 'M9 Signal Aggregator'],
         };
       }
+    }
+  }
+
+  // ---- P3.0: DCA CAPACITY SHORTAGE (urgent if runway < 30d) ----
+  if (M.m32 && !M.m32.sufficient && M.m32.runway_days < 30) {
+    return {
+      priority: 3, severity: 'CRITICAL', icon: '🚨', color: '#ef4444',
+      title: `NẠP USDT GẤP — Còn ${M.m32.runway_days.toFixed(0)} ngày DCA, cần ${fmt$(M.m32.shortage_usd)}`,
+      coin: 'USDT', amount: M.m32.shortage_usd, deadline: 'TRONG TUẦN NÀY',
+      action_steps: [
+        `1. Binance C2C hoặc VietQR → mua ${fmt$(M.m32.shortage_usd)} USDT`,
+        `2. Chuyển USDT vào Spot wallet (Auto-Invest source = SPOT)`,
+        `3. Kiểm tra Auto-Invest plan vẫn active (Binance → Earn → Auto-Invest)`,
+        `4. Nếu nạp đủ → DCA tiếp tục ${M.m32.days_remaining} ngày còn lại, tổng cần ${fmt$(M.m32.required_usd)}`,
+      ],
+      rationale: [
+        `USDT có sẵn: ${fmt$(M.m32.available_usd)} · DCA pace: $${M.m32.daily_dca.toFixed(2)}/d`,
+        `Runway hiện tại: ${M.m32.runway_days.toFixed(1)} ngày · cần đến cuối chu kỳ: ${M.m32.days_remaining} ngày`,
+        `Thiếu hụt: ${fmt$(M.m32.shortage_usd)} để hoàn thành chu kỳ DCA`,
+        `Nếu hết USDT → Auto-Invest fail → strategy DCA gián đoạn → mất cơ hội average down`,
+      ],
+      blocks: ['❌ Mọi action khác trước khi nạp đủ USDT'],
+      sources_fired: ['M32 DCA Capacity'],
+    };
+  }
+
+  // ---- P3.5: PATH-TO-TARGET (when behind schedule with time remaining < 70%) ----
+  // Chỉ fire khi đã qua >30% chu kỳ AND PnL pct < target × elapsed_pct (proportional progress)
+  if (M.m33 && M.m22.pBull_final >= 0.30) {
+    const elapsedFrac = cycle.daysElapsed / 365;
+    const targetProgress = elapsedFrac; // proportional: at 50% time, should be at 50% × target_pct
+    const currentProgress = (M.m33.current_pnl / M.m33.target_pnl);
+    const isBehind = elapsedFrac > 0.30 && currentProgress < targetProgress * 0.85;
+    if (isBehind && M.m33.best) {
+      const best = M.m33.best;
+      const baseline = M.m33.scenarios[0];
+      const liftPctPoints = best.p_hit - baseline.p_hit;
+      return {
+        priority: 3, severity: 'HIGH', icon: '🎯', color: '#a78bfa',
+        title: `KẾ HOẠCH ĐẠT TARGET — ${best.name}`,
+        coin: null, amount: null, deadline: `${M.m33.days_remaining} NGÀY`,
+        action_steps: [
+          ...best.steps,
+          `📊 Sau plan này: P(hit ${state.target_pct}%) ≈ <b>${best.p_hit.toFixed(1)}%</b> (baseline ${baseline.p_hit.toFixed(1)}% · lift +${liftPctPoints.toFixed(1)}pp)`,
+          `Expected extra PnL: ${fmt$(best.expected_pnl)} vs gap cần ${fmt$(M.m33.gap_pnl)}`,
+        ],
+        rationale: [
+          `True PnL hiện tại ${fmt$(M.m33.current_pnl)} (${fmtPct(M.m1.cost > 0 ? M.m33.current_pnl/M.m1.cost*100 : 0)}) trên cost basis ${fmt$(M.m1.cost)}`,
+          `Mục tiêu ${state.target_pct}% = ${fmt$(M.m33.target_pnl)} · còn cách ${fmt$(M.m33.gap_pnl)} (${(currentProgress*100).toFixed(0)}% target hit)`,
+          `Thời gian: ${cycle.daysElapsed}/365 ngày đã qua (${(elapsedFrac*100).toFixed(0)}%) → cần proportional progress ${(targetProgress*100).toFixed(0)}% nhưng mới ${(currentProgress*100).toFixed(0)}%`,
+          `Đánh giá 4 scenarios:${M.m33.scenarios.map(s => ` ${s.name.split(' — ')[0]} P(hit) ${s.p_hit.toFixed(0)}% (risk ${s.risk})`).join(' ·')}`,
+          `Best path: <b>${best.name}</b> với P(hit) ${best.p_hit.toFixed(1)}% (risk ${best.risk})`,
+        ],
+        blocks: best.risk === 'very high' ? ['⚠️ Plan này có risk rất cao — chỉ thực hiện nếu anh chấp nhận capital loss tới 30%'] : [],
+        sources_fired: ['M33 Path-to-Target', 'M32 DCA Capacity', 'M21 Kelly', 'M28 Funding'],
+      };
     }
   }
 
@@ -1578,7 +1635,10 @@ function buildMaster(s) {
   M.m22 = m22_regime(s.market, M.m27, M.m30, M.m31);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
-  // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28 etc) ===
+  // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
+  M.m32 = m32_dca_capacity(M.holdings);
+  M.m33 = m33_path_to_target(M);
+  // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28, m32, m33) ===
   M.m23 = m23_unified_decision(M, s);
   // === M24/M26 require M23 first ===
   M.m24 = m24_pnl_attribution(M, s);
@@ -2270,6 +2330,173 @@ function m26_mark_executed(decisionId, status) {
     }
     localStorage.setItem('decisionLog', JSON.stringify(log));
   } catch (e) { console.warn('[M26] mark executed failed:', e); }
+}
+
+// ===================== M32: DCA CAPACITY CHECK =====================
+// Kiểm tra USDT/USDC trong spot có đủ để duy trì Pool DCA đến cuối chu kỳ không
+function m32_dca_capacity(holdings) {
+  const cycle = getCycleProgress();
+  const dailyDCA = (state.funding_yearly || 3650) / 365;
+  const daysRemaining = cycle.daysRemaining;
+  const requiredUSD = dailyDCA * daysRemaining;
+  // USDT/USDC sẵn sàng làm funding cho DCA
+  const usdtAvail = (holdings.USDT?.qty || 0) + (holdings.USDC?.qty || 0);
+  const runwayDays = dailyDCA > 0 ? usdtAvail / dailyDCA : 0;
+  const shortageUSD = Math.max(0, requiredUSD - usdtAvail);
+  const sufficient = usdtAvail >= requiredUSD;
+  let severity, action;
+  if (sufficient) {
+    severity = 'OK'; action = 'Đủ vốn DCA đến cuối chu kỳ';
+  } else if (runwayDays >= daysRemaining * 0.7) {
+    severity = 'WARNING'; action = `Sắp hết — cần nạp ${fmt$(shortageUSD)} trong ${Math.floor(runwayDays * 0.7)} ngày tới`;
+  } else if (runwayDays >= 30) {
+    severity = 'HIGH'; action = `Thiếu ${fmt$(shortageUSD)} — nạp gấp để không gián đoạn DCA`;
+  } else {
+    severity = 'CRITICAL'; action = `Chỉ còn ${runwayDays.toFixed(1)} ngày DCA — NẠP NGAY ${fmt$(shortageUSD)}`;
+  }
+  return {
+    daily_dca: dailyDCA,
+    days_remaining: daysRemaining,
+    required_usd: requiredUSD,
+    available_usd: usdtAvail,
+    runway_days: runwayDays,
+    shortage_usd: shortageUSD,
+    sufficient, severity, action,
+  };
+}
+
+// ===================== M33: PATH-TO-TARGET ACHIEVEMENT PLAN =====================
+// Tính 4 scenarios tối ưu để hit target PnL trong số ngày còn lại
+// Output: best combo + concrete steps
+function m33_path_to_target(M) {
+  const pnl = computeTruePnL(M);
+  const cycle = getCycleProgress();
+  const dcaCap = m32_dca_capacity(M.holdings);
+  const dailyDCA = dcaCap.daily_dca;
+  const daysRemaining = cycle.daysRemaining;
+  const targetPnL = pnl.target_pnl;
+  const currentPnL = pnl.true_pnl;
+  const gapPnL = targetPnL - currentPnL;
+  const cost = pnl.cost;
+  const sigma = (state.coinalyze?.btc_realized_vol_annual_pct ?? 65) / 100;
+  const T = Math.max(0.01, daysRemaining / 365);
+  const btcPrice = M.holdings.BTC.price;
+  const portBeta = 0.85;
+
+  // Helper: P(hit) for given expected PnL & vol
+  // Assume PnL_EOY ~ N(expected_return, sigma_eoy)
+  function probHit(expectedExtraPnL, sigmaUSD) {
+    if (sigmaUSD <= 0) return expectedExtraPnL >= gapPnL ? 1 : 0;
+    const z = (gapPnL - currentPnL - expectedExtraPnL) / sigmaUSD;
+    return 1 - 0.5 * (1 + erf(z / Math.sqrt(2)));
+  }
+  // Cheap erf approximation
+  function erf(x) {
+    const t = 1 / (1 + 0.3275911 * Math.abs(x));
+    const y = 1 - (((((1.061405429*t - 1.453152027)*t + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t * Math.exp(-x*x));
+    return x >= 0 ? y : -y;
+  }
+
+  // Sigma USD: scale market value by annual vol × √T
+  const baseVolUSD = cost * sigma * Math.sqrt(T) * portBeta;
+
+  // === SCENARIOS ===
+  // A. BASELINE: hold + current DCA pace
+  const scenA_extraDCA = dailyDCA * daysRemaining;
+  const scenA_btcDriftPnL = cost * 0.30 * T * portBeta; // assume BTC 30%/yr drift
+  const scenA_extraPnL = scenA_btcDriftPnL + scenA_extraDCA * 0.05 * T; // DCA gain assumes ~5% on new capital
+  const scenA = {
+    name: 'BASELINE — HODL + DCA hiện tại',
+    extra_dca: scenA_extraDCA,
+    extra_leverage: 0, extra_squeeze: 0,
+    expected_pnl: scenA_extraPnL,
+    p_hit: probHit(scenA_extraPnL, baseVolUSD) * 100,
+    risk: 'low',
+    steps: [`Tiếp tục Pool DCA $${dailyDCA.toFixed(2)}/d`, 'Hold tất cả crypto', 'Không hành động gì thêm'],
+  };
+
+  // B. ACCELERATED DCA: 3x pace ($30/d instead of $10/d)
+  const scenB_dcaPace = dailyDCA * 3;
+  const scenB_extraDCA = scenB_dcaPace * daysRemaining;
+  const scenB_btcDriftPnL = scenA_btcDriftPnL;
+  const scenB_extraPnL = scenB_btcDriftPnL + scenB_extraDCA * 0.08 * T;
+  const scenB_capitalNeeded = scenB_extraDCA - dcaCap.available_usd;
+  const scenB = {
+    name: 'ACCELERATED — Tăng DCA pace 3× ($30/d)',
+    extra_dca: scenB_extraDCA,
+    extra_leverage: 0, extra_squeeze: 0,
+    expected_pnl: scenB_extraPnL,
+    p_hit: probHit(scenB_extraPnL, baseVolUSD * 1.1) * 100,
+    risk: 'medium',
+    capital_need: Math.max(0, scenB_capitalNeeded),
+    steps: [
+      `Tăng Pool DCA từ $${dailyDCA.toFixed(2)}/d lên $${scenB_dcaPace.toFixed(2)}/d`,
+      `Nạp thêm ${fmt$(Math.max(0, scenB_capitalNeeded))} USDT trong 30 ngày tới`,
+      'Hold tất cả crypto',
+    ],
+  };
+
+  // C. LEVERAGE BOOST: vay thêm 50% loan capacity để dip-buy BTC
+  const loanRoom = Math.max(0, M.m7.soft - M.loan);
+  const extraLoan = Math.min(loanRoom * 0.5, cost * 0.30);
+  const loanInterestRate = 0.09; // 9% APR
+  const scenC_extraBtcExposure = extraLoan / btcPrice;
+  const scenC_btcDriftPnL = scenA_btcDriftPnL + (extraLoan * 0.30 * T) - (extraLoan * loanInterestRate * T);
+  const scenC_extraPnL = scenC_btcDriftPnL + scenA_extraDCA * 0.05 * T;
+  const scenC = {
+    name: 'LEVERAGE — Vay $X mua thêm BTC',
+    extra_dca: scenA_extraDCA,
+    extra_leverage: extraLoan, extra_squeeze: 0,
+    expected_pnl: scenC_extraPnL,
+    p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100, // higher vol due to leverage
+    risk: 'high',
+    steps: [
+      `Vay ${fmt$(extraLoan)} USDT (Flexible Loan) collateral BTC`,
+      `Mua ${fmtQty(scenC_extraBtcExposure)} BTC tại giá hiện tại`,
+      `Hold + giữ Pool DCA bình thường`,
+      `⚠️ Chi phí lãi vay ${fmt$(extraLoan * loanInterestRate * T)} cho phần còn lại của chu kỳ`,
+    ],
+  };
+
+  // D. FULL SEND: ACCELERATED DCA + LEVERAGE + Squeeze
+  const squeezePerPlay = M.m21?.quarter_kelly_pct > 0 ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
+  const playsPerMonth = 2;
+  const totalPlays = Math.floor(daysRemaining / 30) * playsPerMonth;
+  const squeezeEVPerPlay = squeezePerPlay * 0.03; // 3% avg return per play (conservative)
+  const scenD_squeezePnL = totalPlays * squeezeEVPerPlay;
+  const scenD_extraPnL = scenC_extraPnL + (scenB_extraDCA - scenA_extraDCA) * 0.08 * T + scenD_squeezePnL;
+  const scenD_capNeeded = scenB_capitalNeeded;
+  const scenD = {
+    name: 'FULL SEND — DCA 3× + Leverage + Squeeze',
+    extra_dca: scenB_extraDCA,
+    extra_leverage: extraLoan, extra_squeeze: totalPlays,
+    expected_pnl: scenD_extraPnL,
+    p_hit: probHit(scenD_extraPnL, baseVolUSD * 1.4) * 100,
+    risk: 'very high',
+    capital_need: scenD_capNeeded,
+    steps: [
+      `Tăng DCA 3× lên $${scenB_dcaPace.toFixed(2)}/d (cần nạp ${fmt$(scenD_capNeeded)})`,
+      `Vay ${fmt$(extraLoan)} mua thêm BTC dip`,
+      `Thực hiện ${totalPlays} squeeze long futures plays (Kelly sized ${fmt$(squeezePerPlay)})`,
+      `⚠️ Stop-loss BTC ${fmt$(state.bep_threshold)} là backstop hard`,
+    ],
+  };
+
+  const scenarios = [scenA, scenB, scenC, scenD];
+  // Best scenario = highest P(hit)
+  const best = scenarios.reduce((a, b) => b.p_hit > a.p_hit ? b : a);
+
+  return {
+    target_pnl: targetPnL,
+    current_pnl: currentPnL,
+    gap_pnl: gapPnL,
+    days_remaining: daysRemaining,
+    btc_drift_assumed: '30%/yr',
+    base_vol_usd: baseVolUSD,
+    scenarios,
+    best,
+    dca_capacity: dcaCap,
+  };
 }
 
 function computeCurrentWeights(holdings) {
