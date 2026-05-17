@@ -1318,26 +1318,55 @@ function m23_unified_decision(M, s) {
     }
   }
 
-  // ---- P4: REGIME EXTREME BEAR (Bayesian P(bull) < 30%) ----
-  if (M.m22.pBull_final < 0.30) {
+  // ---- P4a: CAPITULATION (true extreme bear) ----
+  // Chỉ pause DCA hoàn toàn khi market thật sự crash (P(bull)<15% + F&G<=20 + momentum<-10%)
+  if (M.m22.pBull_final < 0.15 && fg <= 20 && (s.market.ret_30d || 0) < -10) {
     return {
-      priority: 3, severity: 'HIGH', icon: '🐻', color: '#fb923c',
-      title: 'BẢO TOÀN VỐN — TẠM DỪNG DCA MỚI, TĂNG USDC',
-      coin: 'USDC', amount: null, deadline: 'TUẦN NÀY',
+      priority: 3, severity: 'CRITICAL', icon: '🚨', color: '#ef4444',
+      title: 'CAPITULATION — TẠM DỪNG DCA, CHUẨN BỊ DEFENSIVE',
+      coin: 'USDC', amount: null, deadline: 'HÔM NAY',
       action_steps: [
-        `1. Tắt Auto-Invest tạm thời (Binance → Earn → Auto-Invest → Pause)`,
-        `2. Chuẩn bị stop-loss BTC ${fmt$(s.bep_threshold)} (giảm ${((btcP-s.bep_threshold)/btcP*100).toFixed(1)}% từ giá hiện tại)`,
-        `3. Cân nhắc trả ${fmt$(Math.min(M.loan*0.30, M.m1.net*0.10))} loan để giảm leverage`,
-        `4. Chờ tín hiệu: F&G ≥ 40 hoặc P(bull) ≥ 50% để resume`,
+        `1. PAUSE Auto-Invest tạm thời (Binance → Earn → Auto-Invest → Pause). Lý do: thị trường đang capitulation thật sự`,
+        `2. Kích hoạt stop-loss BTC ${fmt$(s.bep_threshold)} (giảm ${((btcP-s.bep_threshold)/btcP*100).toFixed(1)}% từ giá hiện tại)`,
+        `3. Trả ${fmt$(Math.min(M.loan*0.30, M.m1.net*0.10))} loan để giảm leverage`,
+        `4. Cân nhắc bán 10-20% spot về USDC (nếu rỗng buffer)`,
+        `5. Chờ tín hiệu phục hồi: F&G ≥ 30 hoặc P(bull) ≥ 35% để resume DCA`,
       ],
       rationale: [
-        `Bayesian P(bull│F&G+200WMA+momentum) = ${(M.m22.pBull_final*100).toFixed(1)}% < 30%`,
-        `Regime: ${M.m22.regime.replace(/_/g, ' ')}`,
-        `Prior 200WMA: ${(M.m22.prior*100).toFixed(0)}% · F&G ${fg} → likelihood bear`,
-        `Momentum 30d: ${(s.market.ret_30d||0).toFixed(1)}%`,
+        `Bayesian P(bull) = ${(M.m22.pBull_final*100).toFixed(1)}% < 15% (CAPITULATION zone)`,
+        `F&G ${fg} ≤ 20 (Extreme Fear)`,
+        `Momentum 30d ${(s.market.ret_30d||0).toFixed(1)}% < −10% (đang crash)`,
+        `3/3 điều kiện capitulation đồng thuận → core DCA strategy tạm pause để bảo toàn vốn cho chu kỳ sau`,
       ],
-      blocks: ['⚠️ Tăng leverage', '⚠️ Mua thêm coin underwater khi chưa có signal đảo chiều'],
-      sources_fired: ['M22 Bayesian Regime', 'M17 Portfolio risk', 'F&G CoinGlass'],
+      blocks: ['❌ Mọi mua mới', '❌ Tăng leverage', '❌ Hold DCA cố chấp khi thị trường crash'],
+      sources_fired: ['M22 Bayesian Regime extreme', 'F&G CoinGlass extreme', 'Momentum signal'],
+    };
+  }
+
+  // ---- P4b: CAUTIOUS BEAR (P(bull) < 35% but NOT capitulation) ----
+  // CHIẾN LƯỢC DCA = mua đều khi F&G thấp. KHÔNG pause DCA trong vùng Fear normal.
+  // Chỉ khóa leverage/dip-buy để tránh amplify nếu thị trường xấu thêm.
+  if (M.m22.pBull_final < 0.35) {
+    return {
+      priority: 3, severity: 'MEDIUM', icon: '🐻', color: '#fb923c',
+      title: 'DCA THẬN TRỌNG — TIẾP TỤC POOL, KHÔNG LEVERAGE',
+      coin: null, amount: null, deadline: 'GIAI ĐOẠN BEAR',
+      action_steps: [
+        `1. ✅ TIẾP TỤC Pool DCA bình thường (Auto-Invest CHẠY) — F&G ${fg} = vùng Fear, entry tốt theo philosophy DCA`,
+        `2. ❌ KHÔNG vay thêm loan để dip-buy (đợi tín hiệu rõ ràng hơn)`,
+        `3. ❌ KHÔNG mở vị thế Squeeze long futures trong giai đoạn này`,
+        `4. ✅ Giữ stop-loss BTC ${fmt$(s.bep_threshold)} làm bottom backstop`,
+        `5. Theo dõi: nếu P(bull) rơi xuống <15% + F&G ≤ 20 + momentum < -10% → upgrade lên P4a CAPITULATION`,
+      ],
+      rationale: [
+        `Bayesian P(bull) = ${(M.m22.pBull_final*100).toFixed(1)}% (trong khoảng 15-35% = cautious bear)`,
+        `Prior 200WMA: ${(M.m22.prior*100).toFixed(0)}% · F&G ${fg} = Fear nhưng chưa Extreme`,
+        `Momentum 30d: ${(s.market.ret_30d||0).toFixed(1)}% (chưa crashing)`,
+        `<b>DCA philosophy</b>: F&G ${fg} historically là vùng entry tốt — pause sẽ làm mất cơ hội average down`,
+        `Chỉ khóa các action AMPLIFY risk (leverage, futures long) để tránh tăng loss nếu xấu thêm`,
+      ],
+      blocks: ['⚠️ Vay thêm để dip-buy', '⚠️ Squeeze long futures', '⚠️ Đè BTC anchor xuống Markowitz tangency thấp hơn'],
+      sources_fired: ['M22 Bayesian Regime cautious', 'DCA philosophy override'],
     };
   }
 
