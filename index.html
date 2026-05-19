@@ -1765,6 +1765,8 @@ function buildMaster(s) {
   M.m22 = m22_regime(s.market, M.m27, M.m30, M.m31);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
+  // M34 Volatility State Machine: classify {QUIET/NORMAL/EXPANDING/PANIC/EUPHORIA}
+  try { M.m34 = m34_vol_state(s.market, state.coinalyze, M.m17, state.klineHistory); } catch (e) { console.error('[M34] failed:', e); M.m34 = null; }
   // M35 Survival Mode: cross-cutting safety override (must run BEFORE m23 cascade)
   try { M.m35 = m35_survival_mode(M, s.market); } catch (e) { console.error('[M35] failed:', e); M.m35 = null; }
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
@@ -1773,6 +1775,8 @@ function buildMaster(s) {
   // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28, m32, m33) ===
   try {
     M.m23 = m23_unified_decision(M, s);
+    // Attach decision confidence score (M34 vol + multi-signal agreement)
+    M.m23 = attachDecisionConfidence(M.m23, M);
   } catch (e) {
     console.error('[M23] cascade failed:', e);
     M.m23 = {
@@ -2475,6 +2479,153 @@ function m35_survival_mode(M, market) {
     triggers,
     checks,
   };
+}
+
+// ===================== M34: VOLATILITY STATE MACHINE =====================
+// Classify market vol regime → tune action size + risk gate.
+// 5 states: QUIET / NORMAL / EXPANDING / PANIC / EUPHORIA
+// A signal "BTC dip -8%" có meaning RẤT KHÁC nhau ở từng state.
+function m34_vol_state(market, coinalyze, m17, klineHistory) {
+  // Source 1: realized vol annual %/yr (from Coinalyze if available)
+  const realizedVol = coinalyze?.btc_realized_vol_annual_pct;
+  // Source 2: GARCH conditional vol từ M17
+  const garchVol = m17?.garch_vol_annual_pct;
+  // Source 3: funding stddev (large funding swings = vol expansion)
+  const fundingStd = market?.funding_stddev_7d ?? null;
+  // Source 4: BTC gap intensity từ klineHistory (gap > 5% = panic candle)
+  let gapIntensity = 0;
+  const btcCl = klineHistory?.BTC;
+  if (btcCl && btcCl.length >= 30) {
+    const recent30 = btcCl.slice(-30);
+    let bigMoves = 0;
+    for (let i = 1; i < recent30.length; i++) {
+      const r = Math.abs(recent30[i] / recent30[i-1] - 1) * 100;
+      if (r > 5) bigMoves++;
+    }
+    gapIntensity = bigMoves / 30; // 0-1 fraction
+  }
+  // Source 5: BTC 24h move magnitude
+  const move24h = Math.abs(market?.btc_24h ?? 0);
+
+  // Composite vol score (0-100)
+  // baseline anchored ở 65%/yr (long-run BTC vol)
+  const volScore = Math.max(0, Math.min(100,
+    (realizedVol != null ? Math.min(100, realizedVol) * 0.45 : 50 * 0.45) +
+    (garchVol != null ? Math.min(100, garchVol) * 0.25 : 50 * 0.25) +
+    (gapIntensity * 100 * 0.20) +
+    (move24h * 4 * 0.10) // 5%→20, capped via min(100)
+  ));
+
+  // State classification
+  let state, color, sizeMultiplier, description;
+  if (volScore < 30) {
+    state = 'QUIET'; color = '#06b6d4'; sizeMultiplier = 1.2;
+    description = 'Vol thấp · range-bound · có thể tăng size, breakout signal stronger';
+  } else if (volScore < 55) {
+    state = 'NORMAL'; color = '#10b981'; sizeMultiplier = 1.0;
+    description = 'Vol bình thường · size baseline · cascade vận hành standard';
+  } else if (volScore < 75) {
+    state = 'EXPANDING'; color = '#f59e0b'; sizeMultiplier = 0.7;
+    description = 'Vol tăng · regime đang shift · giảm size 30%, tighten stops';
+  } else if (volScore < 90) {
+    state = 'PANIC'; color = '#ef4444'; sizeMultiplier = 0.4;
+    description = 'Vol panic · drawdown cascade risk · giảm size 60%, defensive';
+  } else {
+    state = 'EUPHORIA'; color = '#a78bfa'; sizeMultiplier = 0.5;
+    description = 'Vol euphoric · top setup likely · giảm size 50%, prepare TP';
+  }
+
+  return {
+    state, color, vol_score: volScore, size_multiplier: sizeMultiplier, description,
+    sources: {
+      realized_vol_pct: realizedVol,
+      garch_vol_pct: garchVol,
+      gap_intensity_pct: gapIntensity * 100,
+      move_24h_abs_pct: move24h,
+      funding_std: fundingStd,
+    },
+  };
+}
+
+// ===================== M23 DECISION CONFIDENCE SCORE =====================
+// Multi-factor score 0-100 → tier {HIGH/MID/LOW} → size adjustment + instruction
+// Goal: tránh blind execution khi signal conflict (vd pBull=58% nhưng funding overheated)
+function attachDecisionConfidence(decision, M) {
+  if (!decision) return decision;
+  const factors = [];
+  let score = 70; // baseline neutral
+
+  // F1: Multi-source confirmation (more sources fired = more agreement)
+  const sourceCount = (decision.sources_fired || []).length;
+  if (sourceCount >= 5) { score += 15; factors.push(`+15 multi-source (${sourceCount} sources)`); }
+  else if (sourceCount >= 3) { score += 5; factors.push(`+5 ${sourceCount} sources`); }
+  else if (sourceCount <= 1) { score -= 10; factors.push(`−10 sparse signal (${sourceCount} source)`); }
+
+  // F2: M34 vol regime penalty (aggressive priorities risky in PANIC/EUPHORIA)
+  const aggressivePriorities = [3, 4, 6, 7]; // TP, M33 path, squeeze
+  const defensivePriorities = [0, 1, 2]; // survival, liq, stop-loss
+  const isAggressive = aggressivePriorities.includes(decision.priority);
+  const isDefensive = defensivePriorities.includes(decision.priority);
+  if (M.m34) {
+    if (M.m34.state === 'PANIC' || M.m34.state === 'EUPHORIA') {
+      if (isAggressive) { score -= 20; factors.push(`−20 M34 ${M.m34.state} + aggressive action`); }
+      else if (isDefensive) { score += 8; factors.push(`+8 M34 ${M.m34.state} + defensive`); }
+    } else if (M.m34.state === 'EXPANDING') {
+      score -= 10; factors.push('−10 M34 EXPANDING (regime shifting)');
+    } else if (M.m34.state === 'QUIET' && isAggressive) {
+      score += 5; factors.push('+5 M34 QUIET (favorable entry)');
+    }
+  }
+
+  // F3: M35 partial active (1-2 triggers but not gated yet → warning)
+  if (M.m35 && !M.m35.active && M.m35.trigger_count >= 1) {
+    const penalty = 5 * M.m35.trigger_count;
+    score -= penalty;
+    factors.push(`−${penalty} M35 partial (${M.m35.trigger_count}/5 triggers)`);
+  }
+
+  // F4: pBull conviction alignment for aggressive priorities
+  if (isAggressive && M.m22?.pBull_final != null) {
+    const pBull = M.m22.pBull_final;
+    if (decision.priority === 7 && pBull < 0.50) {
+      score -= 10; factors.push(`−10 P7 squeeze + pBull ${(pBull*100).toFixed(0)}% (weak conviction)`);
+    }
+    if (decision.priority === 5 && pBull > 0.55) {
+      score += 5; factors.push(`+5 P5 dip + pBull ${(pBull*100).toFixed(0)}% (bull confirms)`);
+    }
+  }
+
+  // F5: Correlation high gate for aggressive
+  if (M.m25?.regime === 'HIGH_CORRELATION' && isAggressive) {
+    score -= 5; factors.push('−5 M25 high correlation (diversification weakening)');
+  }
+
+  // F6: Kelly clamp active means edge being throttled — slightly lower confidence on P7
+  if (decision.priority === 7 && M.m21?.quarter_kelly_clamped) {
+    score -= 5; factors.push('−5 M21 Kelly clamp active (edge truncated)');
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  let tier, color, sizeAdjustment, instruction;
+  if (score >= 75) {
+    tier = 'HIGH'; color = '#10b981'; sizeAdjustment = 1.0;
+    instruction = 'Execute size đề xuất, confidence cao';
+  } else if (score >= 50) {
+    tier = 'MID'; color = '#f59e0b'; sizeAdjustment = 0.7;
+    instruction = 'Giảm size 30% so với đề xuất, verify spread/orderbook trước khi enter';
+  } else {
+    tier = 'LOW'; color = '#ef4444'; sizeAdjustment = 0.4;
+    instruction = 'Giảm size 60% HOẶC delay 4-12h để reconfirm trong tick sau';
+  }
+
+  decision.confidence = {score, tier, color, factors, size_adjustment: sizeAdjustment, instruction};
+
+  // Auto-append confidence note vào rationale
+  if (decision.rationale) {
+    decision.rationale.push(`<b>Decision Confidence ${tier}</b> (${score}/100) — ${instruction}`);
+  }
+
+  return decision;
 }
 
 // ===================== H6: VOLATILITY-ADJUSTED KELLY =====================
