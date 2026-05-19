@@ -1207,6 +1207,15 @@ function m21_kelly_sizing(futures) {
   const shrinkage = Math.min(1, Math.max(0.1, n / 10));
   const adjusted_kelly = Math.max(0, full_kelly * shrinkage);
 
+  // === Hard NAV cap (crypto regime shift protection) ===
+  // Quarter Kelly + shrinkage giảm size khi sample nhỏ, NHƯNG nếu chuỗi thắng ngắn
+  // mà Bayesian update bias lên p_post cao → quarter_kelly có thể > 8% NAV (nguy hiểm).
+  // Clamp cứng 6% NAV: above this point, additional Kelly edge bị truncate.
+  const KELLY_MAX_NAV_PCT = 6.0;
+  const raw_quarter = adjusted_kelly * 25;
+  const clamped_quarter = Math.min(raw_quarter, KELLY_MAX_NAV_PCT);
+  const clamp_active = raw_quarter > KELLY_MAX_NAV_PCT;
+
   return {
     available: true,
     method: n >= 5 ? 'sample-based' : `Bayesian (Beta(2,2) prior + ${n} obs)`,
@@ -1221,8 +1230,11 @@ function m21_kelly_sizing(futures) {
     kelly_high_pct: kelly_high * 100,
     shrinkage,
     adjusted_kelly_pct: adjusted_kelly * 100,
-    quarter_kelly_pct: adjusted_kelly * 25,
-    half_kelly_pct: adjusted_kelly * 50,
+    quarter_kelly_pct: clamped_quarter,       // ← clamp applied (used downstream)
+    quarter_kelly_raw_pct: raw_quarter,        // unclamped reference
+    quarter_kelly_clamped: clamp_active,
+    nav_cap_pct: KELLY_MAX_NAV_PCT,
+    half_kelly_pct: Math.min(adjusted_kelly * 50, KELLY_MAX_NAV_PCT * 2),
     expectation_per_trade: (futures?.avg_win > 0 && futures?.avg_loss > 0)
       ? p_post * futures.avg_win - (1 - p_post) * futures.avg_loss : null,
     uncertain: n < 5,
@@ -1350,6 +1362,31 @@ function m23_unified_decision(M, s) {
   const btcP = s.holdings.BTC.price;
   const sma20 = s.market.btc_sma20 || (s.market.btc_200wma ? s.market.btc_200wma * 1.15 : btcP);
   const cycle = getCycleProgress();
+
+  // ---- P0: SURVIVAL MODE — cross-cutting catastrophic gate ----
+  // Fires BEFORE P1 when ≥3/5 catastrophic conditions active.
+  // EXCEPTION: P1 liquidation risk overrides Survival (must repay regardless).
+  if (M.m35?.active && M.m7.over_hard <= 0) {
+    const survival = M.m35;
+    const repayHint = M.loan > M.m7.soft ? `Trả ${fmt$(M.loan - M.m7.soft)} loan về dưới soft cap` : 'Loan đã dưới soft cap';
+    const usdcHint = M.m1.equity_ratio < 65 ? 'Shift 10-20% holdings → USDC để giảm beta' : 'Equity ratio OK, không cần shift USDC ngay';
+    return {
+      priority: 0, severity: 'CRITICAL', icon: '🛡️', color: '#dc2626',
+      title: `SURVIVAL MODE ${survival.severity} — ${survival.trigger_count}/5 catastrophic triggers`,
+      coin: 'USDC', amount: null, deadline: 'NGAY',
+      action_steps: [
+        `🛑 FREEZE: KHÔNG vay thêm · KHÔNG mở futures · KHÔNG dip-buy leverage`,
+        `1. ${repayHint}`,
+        `2. ${usdcHint}`,
+        `3. Pause Pool DCA aggressive — chỉ giữ pace tối thiểu $5/d cho đến khi ≥2 triggers clear`,
+        `4. Đặt stop-loss BTC ${fmt$(s.bep_threshold)} hard backstop`,
+        `5. Monitor 5 triggers · resume normal cascade khi count rơi xuống < 3`,
+      ],
+      rationale: survival.checks.map(c => `${c.triggered ? '🔴' : '🟢'} ${c.name}: ${c.info}`),
+      blocks: ['❌ MỌI lệnh mua mới', '❌ MỌI futures long', '❌ Vay tăng leverage', '❌ Dip-buy aggressive', '❌ Squeeze plays'],
+      sources_fired: ['M35 Survival Mode', ...survival.triggers],
+    };
+  }
 
   // ---- P1: LIQUIDATION RISK (vượt hard cap) ----
   if (M.m7.over_hard > 0) {
@@ -1728,6 +1765,8 @@ function buildMaster(s) {
   M.m22 = m22_regime(s.market, M.m27, M.m30, M.m31);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
+  // M35 Survival Mode: cross-cutting safety override (must run BEFORE m23 cascade)
+  try { M.m35 = m35_survival_mode(M, s.market); } catch (e) { console.error('[M35] failed:', e); M.m35 = null; }
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
   try { M.m32 = m32_dca_capacity(M.holdings); } catch (e) { console.error('[M32] failed:', e); M.m32 = null; }
   try { M.m33 = m33_path_to_target(M); } catch (e) { console.error('[M33] failed:', e); M.m33 = null; }
@@ -2376,6 +2415,66 @@ function m25_correlation_regime(m19) {
     action = 'Diversification tốt, có thể tăng vị thế';
   }
   return {avgRho, regime, color, action, count, sample_size: symbols.length};
+}
+
+// ===================== M35: SURVIVAL MODE (cross-cutting safety override) =====================
+// Composite catastrophic-condition detector. Fires BEFORE M23 P1.
+// Logic: ≥3 of 5 catastrophic triggers active → freeze leverage/aggressive, allow only repay + USDC shift.
+// Exception: nếu loan over hard cap (P1 liquidation) → vẫn fire P1 dù đang Survival.
+function m35_survival_mode(M, market) {
+  const checks = [];
+  const triggers = [];
+
+  // Trigger 1: Correlation crisis (M25 avgRho ≥ 0.85) — diversification failing
+  const corrCrisis = M.m25?.regime === 'CORRELATION_CRISIS';
+  checks.push({name: 'M25 correlation crisis', triggered: corrCrisis,
+    info: M.m25 ? `avg ρ ${M.m25.avgRho.toFixed(2)} ${corrCrisis ? '≥ 0.85 (CRISIS)' : '< 0.85'}` : 'M25 N/A'});
+  if (corrCrisis) triggers.push('M25_CORR_CRISIS');
+
+  // Trigger 2: Regime collapse (M22 pBull < 20%) — deep bear conviction
+  const pBull = M.m22?.pBull_final ?? 0.5;
+  const regimeCollapse = pBull < 0.20;
+  checks.push({name: 'M22 regime collapse', triggered: regimeCollapse,
+    info: `pBull ${(pBull*100).toFixed(0)}% ${regimeCollapse ? '< 20% (collapse)' : '≥ 20%'}`});
+  if (regimeCollapse) triggers.push('M22_REGIME_COLLAPSE');
+
+  // Trigger 3: Volatility panic (realized vol > 90%/yr) — extreme volatility
+  const realizedVol = state.coinalyze?.btc_realized_vol_annual_pct;
+  const volPanic = realizedVol != null && realizedVol > 90;
+  checks.push({name: 'Volatility panic', triggered: volPanic,
+    info: realizedVol != null ? `BTC realized vol ${realizedVol.toFixed(0)}%/yr ${volPanic ? '> 90% (panic)' : '≤ 90%'}` : 'realized vol N/A'});
+  if (volPanic) triggers.push('VOL_PANIC');
+
+  // Trigger 4: Drawdown breach (M17 maxDD > 20%) — historical capital loss zone
+  const ddPct = M.m17?.maxDD_pct ?? 0;
+  const ddBreach = ddPct > 20;
+  checks.push({name: 'Drawdown > 20%', triggered: ddBreach,
+    info: M.m17 ? `M17 maxDD ${ddPct.toFixed(1)}% ${ddBreach ? '> 20%' : '≤ 20%'}` : 'M17 N/A'});
+  if (ddBreach) triggers.push('DD_BREACH');
+
+  // Trigger 5: Funding inversion (longs overheated paying) — squeeze setup INVERTED for our side
+  const fundingNow = state.coinalyze?.funding_current ?? market.funding_btc_pct ?? 0;
+  const m28Overheated = M.m28?.grade === 'OVERHEATED_LONGS';
+  const fundingInv = fundingNow > 0.015 || m28Overheated;
+  checks.push({name: 'Funding inversion', triggered: fundingInv,
+    info: `funding ${(fundingNow*100).toFixed(3)}%/8h ${fundingInv ? `> 0.015% OR M28=OVERHEATED` : 'OK'}`});
+  if (fundingInv) triggers.push('FUNDING_INVERSION');
+
+  const triggerCount = triggers.length;
+  const active = triggerCount >= 3;
+  let severity;
+  if (triggerCount >= 4) severity = 'EXTREME';
+  else if (triggerCount >= 3) severity = 'HIGH';
+  else if (triggerCount >= 2) severity = 'WATCH';
+  else severity = 'IDLE';
+
+  return {
+    active, severity,
+    trigger_count: triggerCount,
+    trigger_total: 5,
+    triggers,
+    checks,
+  };
 }
 
 // ===================== H6: VOLATILITY-ADJUSTED KELLY =====================
