@@ -1,0 +1,12 @@
+{
+  "name": "crypto-portfolio-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/engine.test.mjs",
+    "test:watch": "node --test --watch tests/engine.test.mjs",
+    "test:verbose": "node --test --test-reporter=spec tests/engine.test.mjs"
+  },
+  "description": "Test suite cho cascade logic. Pure functions extracted to engine-pure.mjs để testable ngoài browser."
+}

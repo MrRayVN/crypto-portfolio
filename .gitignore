@@ -1,4 +1,4 @@
-﻿# Ignore everything by default in this repo
+# Ignore everything by default in this repo
 *
 # Allow only the deployable files
 !index.html
@@ -8,3 +8,8 @@
 !CLAUDE.md
 !DECISIONS.md
 !SESSION_CONTEXT.md
+# Test infrastructure (Node native runner, no deps)
+!package.json
+!engine-pure.mjs
+!tests/
+!tests/*.mjs
