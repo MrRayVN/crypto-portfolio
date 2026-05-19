@@ -8,6 +8,7 @@ import {
   TH, m1, m7_loan, kellyClamp, KELLY_MAX_NAV_PCT,
   m34VolState, m35Survival, computeConfidenceTier,
   adjustTpMultForVol, shouldDeferOnBigCandle, entropyRegime,
+  m36CumulativeTarget, softTPFires, activeHedgeFires,
 } from '../engine-pure.mjs';
 
 // ===================== M1 PORTFOLIO =====================
@@ -286,6 +287,159 @@ describe('Decision Entropy regime classification', () => {
   test('Top 40% → DIVERGENT (force HOLD)', () => {
     assert.equal(entropyRegime(40).regime, 'DIVERGENT');
     assert.equal(entropyRegime(40).bias_hold, true);
+  });
+});
+
+// ===================== M36 CUMULATIVE TARGET =====================
+describe('M36 Cumulative Target Tracker', () => {
+  test('Year 1 (no history) → required = annual target', () => {
+    const r = m36CumulativeTarget({ annualTargetPct: 35, yearHistory: [], currentPnLPct: 0 });
+    assert.equal(r.current_year_n, 1);
+    assert.equal(r.n_years_completed, 0);
+    // Ideal (1.35)^1 = 1.35 → 35%
+    assert.ok(Math.abs(r.cumulative_ideal_pct - 35) < 0.001);
+    assert.ok(Math.abs(r.required_current_year_pct - 35) < 0.001);
+  });
+
+  test('Year 2 after Year 1 at +50% → required current lower (catch-up)', () => {
+    const r = m36CumulativeTarget({
+      annualTargetPct: 35,
+      yearHistory: [{ year: 2025, actual_pnl_pct: 50 }],
+      currentPnLPct: 0,
+    });
+    // Ideal Year-2 cum = 1.35² = 1.8225 → 82.25%
+    // Prior actual = 1.50 → required current = 1.8225/1.50 - 1 = 0.215 = 21.5%
+    assert.ok(Math.abs(r.cumulative_ideal_pct - 82.25) < 0.01);
+    assert.ok(Math.abs(r.required_current_year_pct - 21.5) < 0.5);
+  });
+
+  test('Year 2 after Year 1 at -20% → required current much higher (recovery)', () => {
+    const r = m36CumulativeTarget({
+      annualTargetPct: 35,
+      yearHistory: [{ year: 2025, actual_pnl_pct: -20 }],
+      currentPnLPct: 0,
+    });
+    // Required = 1.8225 / 0.80 - 1 = 1.278 - 1 = 0.278 = 127.8%
+    assert.ok(r.required_current_year_pct > 100);
+  });
+
+  test('AHEAD status when PnL >> required', () => {
+    const r = m36CumulativeTarget({
+      annualTargetPct: 35, yearHistory: [], currentPnLPct: 45,
+    });
+    assert.equal(r.status, 'AHEAD');
+  });
+
+  test('SEVERELY_BEHIND when PnL << required', () => {
+    const r = m36CumulativeTarget({
+      annualTargetPct: 35, yearHistory: [], currentPnLPct: 5,
+    });
+    assert.equal(r.status, 'SEVERELY_BEHIND');
+  });
+
+  test('Cumulative actual compounds correctly across multiple years', () => {
+    const r = m36CumulativeTarget({
+      annualTargetPct: 35,
+      yearHistory: [
+        { actual_pnl_pct: 40 },
+        { actual_pnl_pct: -10 },
+      ],
+      currentPnLPct: 20,
+    });
+    // (1.40 × 0.90 × 1.20) − 1 = 1.512 − 1 = 51.2%
+    assert.ok(Math.abs(r.cumulative_actual_pct - 51.2) < 0.5);
+  });
+});
+
+// ===================== P3-SOFT GATE =====================
+describe('P3-SOFT partial TP gate', () => {
+  test('Fires when price ∈ [avg×1.25, avg×1.40) + F&G ≥ 55 + bull ≥ 5', () => {
+    const fires = softTPFires({ price: 130, avg: 100, fg: 60, bullTotal: 6 });
+    assert.equal(fires, true);
+  });
+
+  test('Does NOT fire if price ≥ avg×1.40 (full TP1 takes over)', () => {
+    const fires = softTPFires({ price: 145, avg: 100, fg: 60, bullTotal: 6 });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if price < avg×1.25 (gain too small)', () => {
+    const fires = softTPFires({ price: 120, avg: 100, fg: 60, bullTotal: 6 });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if F&G < 55', () => {
+    const fires = softTPFires({ price: 130, avg: 100, fg: 50, bullTotal: 6 });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if bull_total < 5', () => {
+    const fires = softTPFires({ price: 130, avg: 100, fg: 60, bullTotal: 3 });
+    assert.equal(fires, false);
+  });
+
+  test('Returns false if avg missing/zero', () => {
+    assert.equal(softTPFires({ price: 100, avg: 0, fg: 60, bullTotal: 6 }), false);
+    assert.equal(softTPFires({ price: 100, fg: 60, bullTotal: 6 }), false);
+  });
+});
+
+// ===================== P4c ACTIVE HEDGE GATE =====================
+describe('P4c Active Hedge gate (short BTC perp in bear)', () => {
+  test('Fires khi pBull ∈ [0.15, 0.30) + M28 OVERHEATED + no crisis + stress safe', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.22, m28Grade: 'OVERHEATED_LONGS',
+      m25Regime: 'NORMAL', stress30Equity: 45,
+    });
+    assert.equal(fires, true);
+  });
+
+  test('NO_EDGE grade also fires', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.20, m28Grade: 'NO_EDGE',
+      m25Regime: 'HIGH_CORRELATION', stress30Equity: 50,
+    });
+    assert.equal(fires, true);
+  });
+
+  test('Does NOT fire if pBull < PBULL_CAPITULATION (P4a takes over)', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.10, m28Grade: 'OVERHEATED_LONGS',
+      m25Regime: 'NORMAL', stress30Equity: 50,
+    });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if pBull ≥ 0.30 (bullish enough, no hedge needed)', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.35, m28Grade: 'OVERHEATED_LONGS',
+      m25Regime: 'NORMAL', stress30Equity: 50,
+    });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if M25 CORRELATION_CRISIS (no hedge edge)', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.22, m28Grade: 'OVERHEATED_LONGS',
+      m25Regime: 'CORRELATION_CRISIS', stress30Equity: 50,
+    });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if stress at -30% drop pushes equity below 40%', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.22, m28Grade: 'OVERHEATED_LONGS',
+      m25Regime: 'NORMAL', stress30Equity: 35,
+    });
+    assert.equal(fires, false);
+  });
+
+  test('Does NOT fire if M28 grade healthy (no funding edge)', () => {
+    const fires = activeHedgeFires({
+      pBull: 0.22, m28Grade: 'NEUTRAL',
+      m25Regime: 'NORMAL', stress30Equity: 50,
+    });
+    assert.equal(fires, false);
   });
 });
 

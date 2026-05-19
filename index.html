@@ -1476,6 +1476,53 @@ function m23_unified_decision(M, s) {
     }
   }
 
+  // ---- P3.1: SOFT-TP partial profit-taking (sideways/mild bull) ----
+  // Fires khi giá chạm avg × 1.25 (giữa baseline và full TP1=1.40) + F&G ≥ 55 + bull ≥ 5
+  // Mục tiêu: bank một phần gain trong sideways, không chờ full TP tiers
+  // CHỈ fire nếu giá CHƯA chạm full TP1 (tránh double-trigger với P3 above)
+  for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
+    const h = s.holdings[sym];
+    if (!h?.avg || h.avg <= 0) continue;
+    const softTPPrice = h.avg * 1.25;
+    const fullTP1Price = h.avg * 1.40;
+    const softFired = h.price >= softTPPrice && h.price < fullTP1Price
+                    && fg >= TH.FG_NEUTRAL_HIGH    // ≥ 55
+                    && M.m9.bull_total >= 5;
+    if (softFired) {
+      const sellPct = 10;
+      const sellQty = h.qty * sellPct / 100;
+      const sellUsd = sellQty * h.price;
+      // Find worst underwater coin để rotate 60% of proceeds
+      let worstUnderwater = '', worstBep = 0;
+      for (const a of ['LINK', 'BNB', 'WBETH', 'BTC']) {
+        if (a === sym) continue; // không rotate vào chính nó
+        const bep = M.m2[a]?.bep_gap || 0;
+        if (bep > worstBep) { worstBep = bep; worstUnderwater = a; }
+      }
+      const rotateToUnderwater = worstUnderwater ? sellUsd * 0.60 : 0;
+      const rotateToUSDC = sellUsd - rotateToUnderwater;
+      return {
+        priority: 2.5, severity: 'MEDIUM', icon: '🎯', color: '#84cc16',
+        title: `SOFT-TP ${sym} — Bán ${sellPct}% (${fmtQty(sellQty)} ${sym} ≈ ${fmt$(sellUsd)})`,
+        coin: sym, amount: sellUsd, deadline: 'TRONG 48 GIỜ',
+        action_steps: [
+          `1. Binance Spot → ${sym}/USDT → Bán market ${fmtQty(sellQty)} ${sym} (~${fmt$(sellUsd)})`,
+          worstUnderwater ? `2. Rotate 60% (${fmt$(rotateToUnderwater)}) → mua ${worstUnderwater} (BEP gap ${worstBep.toFixed(1)}% underwater, lower avg)` : `2. Toàn bộ proceeds → USDC Earn`,
+          `3. Rotate 40% (${fmt$(rotateToUSDC)}) → USDC Flexible Earn 5.5% APR (buffer + dry powder)`,
+          `4. Sau P3-SOFT, vẫn giữ ${(100-sellPct)}% qty ${sym} chờ full TP1 ($${fullTP1Price.toFixed(0)}+) hoặc tiers cao hơn`,
+        ],
+        rationale: [
+          `${sym} ${fmt$(h.price)} ≥ soft-TP ${fmt$(softTPPrice)} (avg × 1.25) NHƯNG < full TP1 ${fmt$(fullTP1Price)} (avg × 1.40)`,
+          `F&G ${fg} ≥ 55 (mild bullish/neutral-high) + Bull total ${M.m9.bull_total} ≥ 5`,
+          `Logic: bank một phần gain trong sideways/mild bull thay vì chờ full TP — prevent giveback nếu rollover bear`,
+          worstUnderwater ? `Rotate 60% sang ${worstUnderwater} (worst BEP gap ${worstBep.toFixed(1)}%) → effective cost basis improvement` : 'Không có underwater coin → toàn bộ vào USDC Earn',
+        ],
+        blocks: [],
+        sources_fired: ['P3-SOFT partial TP', 'M2 BEP rotation', 'F&G neutral-high gate'],
+      };
+    }
+  }
+
   // ---- P3.0: DCA CAPACITY — folded into M33 scenarios (loan-funded by default) ----
   // M32 still tracked for capacity diagnostics; shortage_until_deposit auto-added to M33 loan amounts.
 
@@ -1511,6 +1558,9 @@ function m23_unified_decision(M, s) {
             `<b>Bootstrap MC (${M.m33.bootstrap.sims} sims)</b>: P(hit) ${M.m33.bootstrap.p_hit_bootstrap.toFixed(1)}% vs erf parametric ${M.m33.bootstrap.p_hit_erf.toFixed(1)}% (fat-tail penalty ${M.m33.bootstrap.fat_tail_penalty_pct.toFixed(1)}pp)`,
             `Tail risk: CVaR 5% = ${fmt$(M.m33.bootstrap.cvar_5pct)} · Expected MaxDD ${M.m33.bootstrap.expected_maxDD_pct.toFixed(1)}% · Worst-case DD ${M.m33.bootstrap.worst_maxDD_pct.toFixed(1)}%`,
           ] : []),
+          ...(M.m36 ? [
+            `<b>M36 Cumulative (Year ${M.m36.current_year_n})</b>: ${M.m36.narrative}`,
+          ] : []),
         ],
         blocks: best.risk === 'very high' ? ['⚠️ Plan này có risk rất cao — chỉ thực hiện nếu anh chấp nhận capital loss tới 30%'] : [],
         sources_fired: ['M33 Path-to-Target', 'M32 DCA Capacity', 'M21 Kelly', 'M28 Funding'],
@@ -1543,7 +1593,48 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P4b: CAUTIOUS BEAR (P(bull) < 35% but NOT capitulation) ----
+  // ---- P4c: ACTIVE HEDGE — Short BTC perp trong bear với overheated longs ----
+  // Fires khi: bear conviction (pBull < 0.30 nhưng chưa capitulation),
+  //            M28 longs overheated (funding squeeze ngược chiều mình),
+  //            M25 NOT correlation crisis (correlations còn divergent = hedge có edge),
+  //            M.stress -30% drop equity ≥ 40% (đủ buffer để hold hedge)
+  // Mục tiêu: protect cost basis spot bằng small short, market-neutralize partial exposure
+  const m25Crisis = M.m25?.regime === 'CORRELATION_CRISIS';
+  const m28OverheatedActive = M.m28?.grade === 'OVERHEATED_LONGS' || M.m28?.grade === 'NO_EDGE';
+  const stress30 = M.stress?.[2]; // index 2 = -30% drop
+  const stressSafeForHedge = !stress30 || stress30.equity >= 40;
+  if (M.m22.pBull_final < 0.30
+      && M.m22.pBull_final >= TH.PBULL_CAPITULATION
+      && m28OverheatedActive
+      && !m25Crisis
+      && stressSafeForHedge) {
+    const hedgeSize = M.m1.net * 0.015; // 1.5% NAV
+    return {
+      priority: 4.5, severity: 'MEDIUM', icon: '🛡️', color: '#a78bfa',
+      title: `ACTIVE HEDGE — SHORT BTC PERP ${fmt$(hedgeSize)}`,
+      coin: 'BTC', amount: hedgeSize, deadline: 'TRONG 24 GIỜ',
+      action_steps: [
+        `1. Binance Futures → BTCUSDT Perp → SHORT 2× leverage`,
+        `2. Margin: ${fmt$(hedgeSize)} (1.5% NAV) · Notional ${fmt$(hedgeSize * 2)}`,
+        `3. SL +5% (BTC ${fmt$(btcP * 1.05)} — cut nếu bear thesis sai)`,
+        `4. TP −10% (BTC ${fmt$(btcP * 0.90)} — close hedge khi bear confirm)`,
+        `5. Close hedge khi: M28 grade rời OVERHEATED_LONGS HOẶC pBull > 0.40 HOẶC funding flip âm`,
+        `6. Mục đích: protect spot cost basis trong bear regime overheated, market-neutral partial`,
+      ],
+      rationale: [
+        `M22 BEAR pBull ${(M.m22.pBull_final*100).toFixed(1)}% trong khoảng 15-30% (bear conviction nhưng chưa capitulation)`,
+        `M28 grade ${M.m28.grade} — longs overheated, funding pay longs cao → squeeze setup ngược chiều mình (anti-edge for our long spot)`,
+        `M25 ${M.m25?.regime || 'N/A'} — correlations còn divergent, hedge có edge (không phải crisis)`,
+        stress30 ? `M.stress -30% drop: equity ${stress30.equity.toFixed(1)}% ≥ 40% (đủ buffer)` : 'M.stress data N/A',
+        `Sizing 1.5% NAV = small hedge, prevent over-hedge nếu bear thesis sai`,
+        `Asymmetric payoff: lose 5% × 1.5% NAV = 0.075% downside, gain 10% × 1.5% NAV × 2 lev = 0.3% upside`,
+      ],
+      blocks: ['❌ Long futures', '❌ Add spot leverage', '❌ Increase DCA pace'],
+      sources_fired: ['M22 bear conviction', 'M28 overheated longs', 'M25 not-crisis', 'M.stress safe buffer'],
+    };
+  }
+
+  // ---- P4b: CAUTIOUS BEAR (P(bull) < 35% but NOT capitulation, không có hedge edge) ----
   // CHIẾN LƯỢC DCA = mua đều khi F&G thấp. KHÔNG pause DCA trong vùng Fear normal.
   // Chỉ khóa leverage/dip-buy để tránh amplify nếu thị trường xấu thêm.
   if (M.m22.pBull_final < 0.35) {
@@ -1794,6 +1885,11 @@ function buildMaster(s) {
   try { M.m34 = m34_vol_state(s.market, state.coinalyze, M.m17, state.klineHistory); } catch (e) { console.error('[M34] failed:', e); M.m34 = null; }
   // M35 Survival Mode: cross-cutting safety override (must run BEFORE m23 cascade)
   try { M.m35 = m35_survival_mode(M, s.market); } catch (e) { console.error('[M35] failed:', e); M.m35 = null; }
+  // M36 Cumulative Target Tracker: multi-year compounding awareness
+  try {
+    const pnl = computeTruePnL(M);
+    M.m36 = m36_cumulative_target(s, pnl.true_pnl_pct);
+  } catch (e) { console.error('[M36] failed:', e); M.m36 = null; }
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
   try { M.m32 = m32_dca_capacity(M.holdings); } catch (e) { console.error('[M32] failed:', e); M.m32 = null; }
   try { M.m33 = m33_path_to_target(M); } catch (e) { console.error('[M33] failed:', e); M.m33 = null; }
@@ -2576,6 +2672,66 @@ function m34_vol_state(market, coinalyze, m17, klineHistory) {
       move_24h_abs_pct: move24h,
       funding_std: fundingStd,
     },
+  };
+}
+
+// ===================== M36: CUMULATIVE TARGET TRACKER =====================
+// Multi-year compounding awareness. Honest framing: 35%/year single-year hit khó,
+// nhưng 35% CUMULATIVE qua N năm khả thi nếu Year 1 underperform thì Year 2+ catch up.
+// year_history stored in localStorage as [{year, target_pct, actual_pnl_pct}]
+// Current year = Year N+1 (incomplete, tracked via state.target_anchor + current PnL)
+function m36_cumulative_target(s, currentPnLPct) {
+  const yearHistory = JSON.parse(localStorage.getItem('yearHistory') || '[]');
+  const annualTargetPct = s.target_pct || 35;
+  const nCompleted = yearHistory.length;
+  const N = nCompleted + 1; // current year is +1
+
+  // Compound ideal: (1 + target/100)^N
+  const ideal_multiplier = Math.pow(1 + annualTargetPct/100, N);
+
+  // Cumulative actual: ∏(1 + prior_actual/100) × (1 + current_pnl/100)
+  let prior_multiplier = 1;
+  for (const y of yearHistory) {
+    prior_multiplier *= (1 + (y.actual_pnl_pct || 0)/100);
+  }
+  const actual_multiplier = prior_multiplier * (1 + currentPnLPct/100);
+
+  // Required for current year to put cumulative on track:
+  // ideal_multiplier = prior_multiplier × (1 + required_current/100)
+  const required_current_multiplier = ideal_multiplier / Math.max(prior_multiplier, 0.001);
+  const required_current_pct = (required_current_multiplier - 1) * 100;
+
+  // Shortfall in pp (current PnL vs required)
+  const shortfall_pp = required_current_pct - currentPnLPct;
+
+  // Status classification
+  let status, color, narrative;
+  if (currentPnLPct >= required_current_pct * 1.05) {
+    status = 'AHEAD'; color = '#10b981';
+    narrative = `Year ${N}: PnL ${currentPnLPct.toFixed(1)}% > required ${required_current_pct.toFixed(1)}% (>5% lead). Cumulative ${((actual_multiplier-1)*100).toFixed(1)}% trên ideal ${((ideal_multiplier-1)*100).toFixed(1)}%.`;
+  } else if (currentPnLPct >= required_current_pct * 0.90) {
+    status = 'ON_TRACK'; color = '#84cc16';
+    narrative = `Year ${N}: PnL ${currentPnLPct.toFixed(1)}% gần required ${required_current_pct.toFixed(1)}% (±10%). On track multi-year.`;
+  } else if (currentPnLPct >= required_current_pct * 0.50) {
+    status = 'BEHIND'; color = '#f59e0b';
+    narrative = `Year ${N}: PnL ${currentPnLPct.toFixed(1)}% < required ${required_current_pct.toFixed(1)}% (shortfall ${shortfall_pp.toFixed(1)}pp). Year ${N+1} sẽ cần ${(required_current_pct + shortfall_pp * 1.1).toFixed(0)}%+ để catch up.`;
+  } else {
+    status = 'SEVERELY_BEHIND'; color = '#ef4444';
+    narrative = `Year ${N}: PnL ${currentPnLPct.toFixed(1)}% ≪ required ${required_current_pct.toFixed(1)}%. Cumulative cần aggressive multi-year compensation hoặc capital injection.`;
+  }
+
+  return {
+    annual_target_pct: annualTargetPct,
+    n_years_completed: nCompleted,
+    current_year_n: N,
+    year_history: yearHistory,
+    cumulative_ideal_pct: (ideal_multiplier - 1) * 100,
+    cumulative_actual_pct: (actual_multiplier - 1) * 100,
+    cumulative_ideal_multiplier: ideal_multiplier,
+    cumulative_actual_multiplier: actual_multiplier,
+    required_current_year_pct: required_current_pct,
+    shortfall_pp,
+    status, color, narrative,
   };
 }
 

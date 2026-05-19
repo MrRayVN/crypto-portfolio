@@ -160,3 +160,48 @@ export function entropyRegime(topPct) {
   if (topPct >= 50) return { regime: 'MIXED', bias_hold: true };
   return { regime: 'DIVERGENT', bias_hold: true };
 }
+
+// ===================== M36: Cumulative Target Tracker =====================
+export function m36CumulativeTarget({ annualTargetPct = 35, yearHistory = [], currentPnLPct = 0 }) {
+  const nCompleted = yearHistory.length;
+  const N = nCompleted + 1;
+  const ideal_multiplier = Math.pow(1 + annualTargetPct / 100, N);
+  let prior_multiplier = 1;
+  for (const y of yearHistory) prior_multiplier *= (1 + (y.actual_pnl_pct || 0) / 100);
+  const actual_multiplier = prior_multiplier * (1 + currentPnLPct / 100);
+  const required_current_multiplier = ideal_multiplier / Math.max(prior_multiplier, 0.001);
+  const required_current_pct = (required_current_multiplier - 1) * 100;
+  const shortfall_pp = required_current_pct - currentPnLPct;
+  let status;
+  if (currentPnLPct >= required_current_pct * 1.05) status = 'AHEAD';
+  else if (currentPnLPct >= required_current_pct * 0.90) status = 'ON_TRACK';
+  else if (currentPnLPct >= required_current_pct * 0.50) status = 'BEHIND';
+  else status = 'SEVERELY_BEHIND';
+  return {
+    current_year_n: N, n_years_completed: nCompleted,
+    cumulative_ideal_pct: (ideal_multiplier - 1) * 100,
+    cumulative_actual_pct: (actual_multiplier - 1) * 100,
+    required_current_year_pct: required_current_pct,
+    shortfall_pp, status,
+  };
+}
+
+// ===================== P3-SOFT Gate (partial TP lower tier) =====================
+// Fires khi: price ∈ [avg×1.25, avg×1.40), F&G ≥ 55, bull_total ≥ 5
+export function softTPFires({ price, avg, fg, bullTotal }) {
+  if (!avg || avg <= 0) return false;
+  const softLow = avg * 1.25;
+  const fullTP1 = avg * 1.40;
+  return price >= softLow && price < fullTP1 && fg >= TH.FG_NEUTRAL_HIGH && bullTotal >= 5;
+}
+
+// ===================== P4c Active Hedge Gate =====================
+// Fires khi: bear pBull ∈ [PBULL_CAPITULATION, 0.30), M28 overheated/no_edge,
+//            NOT correlation crisis, stress at -30% drop equity ≥ 40%
+export function activeHedgeFires({ pBull, m28Grade, m25Regime, stress30Equity }) {
+  const inBearWindow = pBull < 0.30 && pBull >= TH.PBULL_CAPITULATION;
+  const fundingBad = m28Grade === 'OVERHEATED_LONGS' || m28Grade === 'NO_EDGE';
+  const notCorrCrisis = m25Regime !== 'CORRELATION_CRISIS';
+  const stressSafe = stress30Equity == null || stress30Equity >= 40;
+  return inBearWindow && fundingBad && notCorrCrisis && stressSafe;
+}
