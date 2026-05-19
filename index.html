@@ -1800,9 +1800,12 @@ function buildMaster(s) {
   // === M23 UNIFIED DECISION — must run AFTER all other modules (uses m28, m32, m33) ===
   try {
     M.m23 = m23_unified_decision(M, s);
-    // Attach decision confidence score (M34 vol + multi-signal agreement)
+    // 1. Confidence score (multi-signal agreement)
     M.m23 = attachDecisionConfidence(M.m23, M);
-    // Attach execution checklist (cooldown, slippage, spread, size adjust)
+    // 2. Decision entropy — perturb inputs N=50, measure cascade stability
+    //    Nếu MIXED/DIVERGENT → bias confidence xuống + force HOLD bias
+    M.m23 = attachDecisionEntropy(M.m23, M, s);
+    // 3. Execution checklist (reads final confidence after entropy bias)
     M.m23 = attachExecutionChecklist(M.m23, M);
   } catch (e) {
     console.error('[M23] cascade failed:', e);
@@ -2669,34 +2672,81 @@ function attachExecutionChecklist(decision, M) {
   if (!needsChecklist) return decision;
 
   const checks = [];
-  // Cooldown: check M26 decision log cho last same-priority decision
-  // (fetch trực tiếp vì M.m26_log set sau m23 trong buildMaster)
+  const market = state.market || {};
+  const btcPrice = state.holdings?.BTC?.price ?? 0;
+  const ca = state.coinalyze || {};
+
+  // === Pre-trade guards (skip entry conditions) ===
+  // Big-candle guard: KHÔNG entry sau move lớn 24h (FOMO/panic timing)
+  const move24h = Math.abs(market.btc_24h ?? 0);
+  const bigCandle = move24h > 5;
+  if (bigCandle && decision.priority !== 1 && decision.priority !== 2) {
+    checks.push(`🚫 BIG-CANDLE GUARD: BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% > ±5% → DEFER 4-12h, đợi consolidation (skip nếu P1/P2 liq/stop-loss)`);
+  } else if (move24h >= 3) {
+    checks.push(`⚠️ BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% — entry chấp nhận được nhưng tighten stops`);
+  } else {
+    checks.push(`✅ BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% — entry timing OK (consolidation)`);
+  }
+
+  // ATR-equivalent: realized vol per day
+  const realizedVolAnn = ca.btc_realized_vol_annual_pct;
+  if (realizedVolAnn != null) {
+    const dailyAtrPct = realizedVolAnn / Math.sqrt(365);
+    const atrGate = dailyAtrPct > 9;
+    checks.push(`📈 Daily ATR proxy: ${dailyAtrPct.toFixed(1)}% ${atrGate ? '> 9% (EXTREME — defer entry)' : '≤ 9% OK'}`);
+  }
+
+  // === P7-specific funding check ===
+  if (decision.priority === 7) {
+    const fundingNow = ca.funding_current ?? market.funding_btc_pct ?? 0;
+    const fundingPctPer8h = fundingNow * 100;
+    const fundingOK = fundingPctPer8h < 0.03;
+    checks.push(`💰 Funding now ${fundingPctPer8h.toFixed(4)}%/8h ${fundingOK ? '< 0.03% squeeze entry OK' : '≥ 0.03% — longs đã đắt, defer'}`);
+  }
+
+  // === Cooldown (M26 log) ===
   try {
     const log = (typeof m26_get_log === 'function') ? m26_get_log() : [];
     const lastSame = log.filter(e => e.priority === decision.priority).pop();
     if (lastSame) {
       const hoursSince = (Date.now() - lastSame.ts) / 3600000;
       if (hoursSince < 4) {
-        checks.push(`⏱️ Cooldown WARN: same P${decision.priority} fired ${hoursSince.toFixed(1)}h ago — đợi ${(4-hoursSince).toFixed(1)}h trước khi re-execute`);
+        checks.push(`⏱️ Cooldown WARN: same P${decision.priority} fired ${hoursSince.toFixed(1)}h ago — đợi ${(4-hoursSince).toFixed(1)}h`);
       } else {
         checks.push(`⏱️ Cooldown OK: last P${decision.priority} ${hoursSince.toFixed(1)}h ago (≥4h)`);
       }
+    } else {
+      checks.push(`⏱️ Cooldown N/A: P${decision.priority} chưa fire trong recent log`);
     }
   } catch (e) { /* ignore */ }
 
-  // Slippage hint dựa trên M34 vol state
+  // === Spread check reminder ===
+  checks.push(`📊 Spread check: Binance orderbook BBO > 0.08% → LIMIT, ≤ 0.08% → market OK`);
+
+  // === Slippage estimate (vol state + size tier) ===
   if (M.m34) {
-    const slip = M.m34.state === 'PANIC' ? '1.0-2.0%' : M.m34.state === 'EUPHORIA' ? '0.5-1.5%' :
-                 M.m34.state === 'EXPANDING' ? '0.3-0.8%' : M.m34.state === 'QUIET' ? '0.05-0.2%' : '0.1-0.5%';
-    checks.push(`💧 Slippage estimate (M34 ${M.m34.state}): ${slip} — ${M.m34.state === 'PANIC' || M.m34.state === 'EUPHORIA' ? 'CONSIDER LIMIT order' : 'market acceptable'}`);
+    const stateName = M.m34.state;
+    const baseSlip = stateName === 'PANIC' ? 1.5 : stateName === 'EUPHORIA' ? 1.0 :
+                     stateName === 'EXPANDING' ? 0.5 : stateName === 'QUIET' ? 0.1 : 0.3;
+    // Size tier based on decision.amount vs NET
+    const net = M.m1?.net ?? 1;
+    const amt = decision.amount ?? 0;
+    const sizePct = net > 0 ? (amt / net) * 100 : 0;
+    let sizeTier, sizeMultSlip, sizeHint;
+    if (sizePct < 2) { sizeTier = 'SMALL'; sizeMultSlip = 1.0; sizeHint = 'single market order OK'; }
+    else if (sizePct < 5) { sizeTier = 'MEDIUM'; sizeMultSlip = 1.5; sizeHint = 'consider split 2 entries'; }
+    else { sizeTier = 'LARGE'; sizeMultSlip = 2.5; sizeHint = 'SPLIT 3-4 entries hoặc LIMIT laddered'; }
+    const estSlip = baseSlip * sizeMultSlip;
+    if (amt > 0) {
+      checks.push(`💧 Slippage est: ${estSlip.toFixed(2)}% (M34 ${stateName} × size ${sizeTier} ${sizePct.toFixed(1)}% NET) → ${sizeHint}`);
+    } else {
+      checks.push(`💧 Slippage est (no size): ${baseSlip.toFixed(2)}% baseline (M34 ${stateName})`);
+    }
   }
 
-  // Spread check reminder
-  checks.push(`📊 Trước khi execute: check Binance orderbook BBO spread > 0.05% → dùng LIMIT, ≤ 0.05% → market OK`);
-
-  // Confidence-aware size hint
+  // === Confidence-aware size adjustment ===
   if (decision.confidence && decision.confidence.size_adjustment < 1.0) {
-    checks.push(`📐 Size adjustment ${decision.confidence.tier}: nhân kích thước đề xuất × ${decision.confidence.size_adjustment.toFixed(1)} (${decision.confidence.instruction})`);
+    checks.push(`📐 Size adjustment ${decision.confidence.tier}: × ${decision.confidence.size_adjustment.toFixed(1)} → ${decision.confidence.instruction}`);
   }
 
   if (checks.length > 0) {
@@ -2704,6 +2754,93 @@ function attachExecutionChecklist(decision, M) {
     decision.action_steps.push('⚙️ <b>EXECUTION CHECKLIST</b>:');
     decision.action_steps.push(...checks);
   }
+  return decision;
+}
+
+// ===================== DECISION ENTROPY =====================
+// Quantify how stable M23 cascade output is to small INPUT perturbations.
+// Process: N=50 sims, perturb {fg ±3, btcP ±1%, ret_30d ±2pp, pBull ±0.05},
+// run m23 cascade mỗi sim, count action distribution.
+// Output: top_pct, entropy bits (Shannon), regime.
+// Low confidence regime (top_pct < 70% OR entropy > 1.5 bits) → bias HOLD.
+function computeDecisionEntropy(M, s, n_sims = 50) {
+  if (!M.m23) return null;
+  const counts = {}; // priority → count
+  const baseFg = s.market.fg_cg ?? 50;
+  const baseBtc = s.holdings.BTC.price;
+  const baseRet30 = s.market.ret_30d ?? 0;
+  const basePbull = M.m22?.pBull_final ?? 0.5;
+
+  for (let i = 0; i < n_sims; i++) {
+    // Build perturbed shallow copies (deep enough cho m23 access pattern)
+    const sP = {...s,
+      market: {...s.market,
+        fg_cg: Math.max(0, Math.min(100, baseFg + (Math.random() - 0.5) * 6)),
+        ret_30d: baseRet30 + (Math.random() - 0.5) * 4,
+      },
+      holdings: {...s.holdings, BTC: {...s.holdings.BTC, price: baseBtc * (1 + (Math.random() - 0.5) * 0.02)}},
+    };
+    const MP = {...M,
+      holdings: {...M.holdings, BTC: {...M.holdings.BTC, price: sP.holdings.BTC.price}},
+      m22: {...M.m22, pBull_final: Math.max(0.05, Math.min(0.95, basePbull + (Math.random() - 0.5) * 0.10))},
+    };
+    try {
+      const decision = m23_unified_decision(MP, sP);
+      const key = `P${decision.priority}`;
+      counts[key] = (counts[key] || 0) + 1;
+    } catch (e) {
+      counts['ERROR'] = (counts['ERROR'] || 0) + 1;
+    }
+  }
+
+  // Distribution + entropy
+  const distribution = {};
+  let entropy = 0;
+  let topPriority = null, topCount = 0;
+  for (const k in counts) {
+    const p = counts[k] / n_sims;
+    distribution[k] = p;
+    if (p > 0) entropy -= p * Math.log2(p);
+    if (counts[k] > topCount) { topCount = counts[k]; topPriority = k; }
+  }
+  const topPct = (topCount / n_sims) * 100;
+
+  // Regime classification
+  let regime, color, biasHold;
+  if (topPct >= 90) { regime = 'CONVERGED'; color = '#10b981'; biasHold = false; }
+  else if (topPct >= 70) { regime = 'ROBUST'; color = '#84cc16'; biasHold = false; }
+  else if (topPct >= 50) { regime = 'MIXED'; color = '#f59e0b'; biasHold = true; }
+  else { regime = 'DIVERGENT'; color = '#ef4444'; biasHold = true; }
+
+  return {
+    n_sims, distribution, entropy_bits: entropy, top_priority: topPriority, top_pct: topPct,
+    regime, color, bias_hold: biasHold,
+    verdict: regime === 'CONVERGED' ? `${topPriority} chiếm ${topPct.toFixed(0)}% — strategy robust` :
+             regime === 'ROBUST' ? `${topPriority} chiếm ${topPct.toFixed(0)}% — đủ confident` :
+             regime === 'MIXED' ? `Top ${topPriority} chỉ ${topPct.toFixed(0)}% — bias HOLD đề xuất` :
+             `Distribution scatter (top ${topPct.toFixed(0)}%) — LOW CONFIDENCE, force HOLD`,
+  };
+}
+
+// Wrap m23 output: nếu entropy regime = MIXED/DIVERGENT → downgrade to HOLD bias
+function attachDecisionEntropy(decision, M, s) {
+  if (!decision) return decision;
+  try {
+    const entropy = computeDecisionEntropy(M, s, 50);
+    if (!entropy) return decision;
+    decision.entropy = entropy;
+    // Auto-append entropy note vào rationale
+    if (decision.rationale) {
+      decision.rationale.push(`<b>Decision Entropy ${entropy.regime}</b> (top ${decision.entropy.top_priority} ${entropy.top_pct.toFixed(0)}% · H=${entropy.entropy_bits.toFixed(2)} bits · ${entropy.n_sims} sims) — ${entropy.verdict}`);
+    }
+    // Bias adjustment: nếu MIXED/DIVERGENT, downgrade confidence + force size further
+    if (entropy.bias_hold && decision.confidence) {
+      decision.confidence.score = Math.max(0, decision.confidence.score - 15);
+      decision.confidence.size_adjustment = Math.min(decision.confidence.size_adjustment, 0.3);
+      decision.confidence.factors.push(`−15 entropy ${entropy.regime} (top ${entropy.top_pct.toFixed(0)}% < 70% → HOLD bias)`);
+      decision.confidence.instruction = `⚠️ Entropy ${entropy.regime}: cascade không converge khi perturb input nhẹ. Giảm size còn 30% baseline HOẶC delay 6-12h.`;
+    }
+  } catch (e) { console.warn('[entropy] failed:', e.message); }
   return decision;
 }
 
