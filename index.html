@@ -1802,6 +1802,8 @@ function buildMaster(s) {
     M.m23 = m23_unified_decision(M, s);
     // Attach decision confidence score (M34 vol + multi-signal agreement)
     M.m23 = attachDecisionConfidence(M.m23, M);
+    // Attach execution checklist (cooldown, slippage, spread, size adjust)
+    M.m23 = attachExecutionChecklist(M.m23, M);
   } catch (e) {
     console.error('[M23] cascade failed:', e);
     M.m23 = {
@@ -2653,6 +2655,115 @@ function attachDecisionConfidence(decision, M) {
   return decision;
 }
 
+// ===================== EXECUTION CHECKLIST (read-only dashboard guard) =====================
+// Add execution guards vào action_steps cho actions involving trading:
+// - Spread check (orderbook BBO)
+// - Cooldown từ last same-priority execution (anti-overtrade)
+// - Volatility-state-aware slippage estimate
+// - Market vs limit suggestion
+function attachExecutionChecklist(decision, M) {
+  if (!decision || !decision.action_steps) return decision;
+  // Only apply cho priorities cần trade (skip pure monitoring)
+  const tradingPriorities = [1, 2, 3, 4, 5, 7, 8.5];
+  const needsChecklist = tradingPriorities.some(p => decision.priority === p || decision.priority === Math.floor(p));
+  if (!needsChecklist) return decision;
+
+  const checks = [];
+  // Cooldown: check M26 decision log cho last same-priority decision
+  // (fetch trực tiếp vì M.m26_log set sau m23 trong buildMaster)
+  try {
+    const log = (typeof m26_get_log === 'function') ? m26_get_log() : [];
+    const lastSame = log.filter(e => e.priority === decision.priority).pop();
+    if (lastSame) {
+      const hoursSince = (Date.now() - lastSame.ts) / 3600000;
+      if (hoursSince < 4) {
+        checks.push(`⏱️ Cooldown WARN: same P${decision.priority} fired ${hoursSince.toFixed(1)}h ago — đợi ${(4-hoursSince).toFixed(1)}h trước khi re-execute`);
+      } else {
+        checks.push(`⏱️ Cooldown OK: last P${decision.priority} ${hoursSince.toFixed(1)}h ago (≥4h)`);
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  // Slippage hint dựa trên M34 vol state
+  if (M.m34) {
+    const slip = M.m34.state === 'PANIC' ? '1.0-2.0%' : M.m34.state === 'EUPHORIA' ? '0.5-1.5%' :
+                 M.m34.state === 'EXPANDING' ? '0.3-0.8%' : M.m34.state === 'QUIET' ? '0.05-0.2%' : '0.1-0.5%';
+    checks.push(`💧 Slippage estimate (M34 ${M.m34.state}): ${slip} — ${M.m34.state === 'PANIC' || M.m34.state === 'EUPHORIA' ? 'CONSIDER LIMIT order' : 'market acceptable'}`);
+  }
+
+  // Spread check reminder
+  checks.push(`📊 Trước khi execute: check Binance orderbook BBO spread > 0.05% → dùng LIMIT, ≤ 0.05% → market OK`);
+
+  // Confidence-aware size hint
+  if (decision.confidence && decision.confidence.size_adjustment < 1.0) {
+    checks.push(`📐 Size adjustment ${decision.confidence.tier}: nhân kích thước đề xuất × ${decision.confidence.size_adjustment.toFixed(1)} (${decision.confidence.instruction})`);
+  }
+
+  if (checks.length > 0) {
+    decision.action_steps.push('');
+    decision.action_steps.push('⚙️ <b>EXECUTION CHECKLIST</b>:');
+    decision.action_steps.push(...checks);
+  }
+  return decision;
+}
+
+// ===================== M29 SENSITIVITY TEST =====================
+// Randomize core TH constants ±20% qua N perturbations, report P(hit) stability.
+// Strategy unstable if 1σ of perturbed P(hit) > 15pp.
+// Run lazy: chỉ tính khi user click trong M29 backtest UI (expensive).
+function m29_sensitivity_test(state, M, n_perturbations = 20) {
+  const baseP = M.m29?.p_hit;
+  if (!baseP || baseP === undefined) return {available: false, reason: 'M29 baseline P(hit) chưa có'};
+  // Capture original TH values to restore
+  const original = {
+    FG_EXTREME_FEAR: TH.FG_EXTREME_FEAR, FG_NEUTRAL_LOW: TH.FG_NEUTRAL_LOW, FG_GREED: TH.FG_GREED,
+    PBULL_DIP_BUY_MIN: TH.PBULL_DIP_BUY_MIN, PBULL_BULL_TILT: TH.PBULL_BULL_TILT,
+    DIP_SMA_PCT: TH.DIP_SMA_PCT, POOL_DRIFT_FIRE: TH.POOL_DRIFT_FIRE,
+  };
+  const pHits = [];
+  try {
+    for (let i = 0; i < n_perturbations; i++) {
+      // Perturb each TH ±20%
+      const jitter = () => 0.80 + Math.random() * 0.40;
+      TH.FG_EXTREME_FEAR = Math.round(original.FG_EXTREME_FEAR * jitter());
+      TH.FG_NEUTRAL_LOW = Math.round(original.FG_NEUTRAL_LOW * jitter());
+      TH.FG_GREED = Math.round(original.FG_GREED * jitter());
+      TH.PBULL_DIP_BUY_MIN = Math.max(0.05, Math.min(0.95, original.PBULL_DIP_BUY_MIN * jitter()));
+      TH.PBULL_BULL_TILT = Math.max(0.05, Math.min(0.95, original.PBULL_BULL_TILT * jitter()));
+      TH.DIP_SMA_PCT = Math.max(0.80, Math.min(0.99, original.DIP_SMA_PCT * jitter()));
+      TH.POOL_DRIFT_FIRE = original.POOL_DRIFT_FIRE * jitter();
+      const result = m29_backtest(state.klineHistory, state, {
+        initialNet: state.target_anchor || 3300,
+        dailyDCA: (state.funding_yearly || 3650) / 365,
+      });
+      if (result?.p_hit !== undefined) pHits.push(result.p_hit);
+    }
+  } finally {
+    // Restore
+    Object.assign(TH, original);
+  }
+  if (pHits.length === 0) return {available: false, reason: 'Perturbation runs failed'};
+  const mean = pHits.reduce((a,b)=>a+b, 0) / pHits.length;
+  const variance = pHits.reduce((a,b)=>a+(b-mean)*(b-mean), 0) / pHits.length;
+  const std = Math.sqrt(variance);
+  const minP = Math.min(...pHits);
+  const maxP = Math.max(...pHits);
+  const stable = std <= 15;
+  return {
+    available: true,
+    n_perturbations,
+    baseline_p_hit: baseP,
+    perturbed_mean: mean,
+    perturbed_std: std,
+    perturbed_min: minP,
+    perturbed_max: maxP,
+    stable,
+    verdict: stable
+      ? `✅ STABLE — σ ${std.toFixed(1)}pp ≤ 15pp threshold (strategy robust to TH ±20%)`
+      : `⚠️ UNSTABLE — σ ${std.toFixed(1)}pp > 15pp (over-fitted; consider widening tolerances)`,
+  };
+}
+
 // ===================== H6: VOLATILITY-ADJUSTED KELLY =====================
 // Scale Kelly down when realized vol exceeds long-run baseline
 function adjustKellyForVol(baseKellyPct, realizedVolAnnual, baselineVol = 65) {
@@ -3428,6 +3539,7 @@ const colorPnl = x => x >= 0 ? 'var(--green)' : 'var(--red)';
 // ===================== RENDER =====================
 function render() {
   const M = buildMaster(state);
+  state._lastM = M; // cache để sensitivity test + diagnostics có thể reach
   const stColor = M.m9.stance_color;
 
   // === COMPACT STICKY HEADER TICKERS ===
@@ -5390,8 +5502,41 @@ function renderBacktest(M) {
       ${b.p_hit >= 50 ? '✅' : b.p_hit >= 30 ? '⚠️' : '🚨'} <b>Verdict</b>: Backtest cho thấy M23 cascade có P(hit ${b.target_pct}%) = <b>${b.p_hit.toFixed(1)}%</b> trên ${b.windows} historical 365d windows. ${b.p_hit >= 50 ? 'Strategy ổn, tiếp tục thực hiện.' : b.p_hit >= 30 ? 'Strategy cận biên — cần thêm capital hoặc adjust cascade.' : 'Strategy chưa đủ — cần thêm leverage, DCA cao hơn, hoặc giảm target.'}
       <br><br><b>Caveat</b>: Backtest dùng F&G proxy (RSI), không cover P7 funding squeeze. Real-world P(hit) có thể cao hơn nhờ M28+ M21 boost.
     </div>
+    <details style="margin-top:0.875rem">
+      <summary style="cursor:pointer;font-family:var(--display);font-size:0.85rem;font-weight:600;color:var(--muted);padding:0.5rem">▶ 🧪 Sensitivity Test — verify strategy không over-fit TH constants (click để chạy)</summary>
+      <div style="margin-top:0.5rem" id="sensitivity-result">
+        <button onclick="runSensitivityTest()" style="padding:0.5rem 1rem;background:var(--purple);color:white;border:none;border-radius:6px;cursor:pointer;font-family:var(--display);font-weight:600">Run 20× perturbation (±20% trên 7 TH constants)</button>
+        <div style="font-size:0.78rem;color:var(--muted);margin-top:0.5rem;line-height:1.5">Test randomize TH (FG_*, PBULL_*, DIP_SMA_PCT, POOL_DRIFT_FIRE) ±20% và replay M29. Nếu σ P(hit) > 15pp → strategy over-fit. Mất ~10-20s.</div>
+      </div>
+    </details>
   </div>`;
 }
+
+// Sensitivity test runner (window-scoped để onclick reach được)
+window.runSensitivityTest = function() {
+  const target = document.getElementById('sensitivity-result');
+  if (!target) return;
+  target.innerHTML = '<div style="color:var(--text2);font-style:italic">⏳ Đang chạy 20 perturbations... có thể mất 10-20s</div>';
+  setTimeout(() => {
+    try {
+      const M = state._lastM;
+      const result = m29_sensitivity_test(state, M, 20);
+      if (!result.available) { target.innerHTML = `<div class="warning-bar">⚠️ ${result.reason}</div>`; return; }
+      const verdictClass = result.stable ? 'safety-bar' : 'warning-bar';
+      target.innerHTML = `<div class="${verdictClass}" style="margin-top:0.5rem">
+        ${result.verdict}<br><br>
+        <b>Stats trên ${result.n_perturbations} runs</b>:<br>
+        • Baseline P(hit): ${result.baseline_p_hit.toFixed(1)}%<br>
+        • Mean perturbed: ${result.perturbed_mean.toFixed(1)}%<br>
+        • σ (stddev): ${result.perturbed_std.toFixed(1)}pp<br>
+        • Range: [${result.perturbed_min.toFixed(1)}%, ${result.perturbed_max.toFixed(1)}%]<br>
+        • Threshold: σ ≤ 15pp = stable
+      </div>`;
+    } catch (e) {
+      target.innerHTML = `<div class="danger-bar">❌ Sensitivity test failed: ${e.message}</div>`;
+    }
+  }, 50);
+};
 
 // ===================== M27 On-Chain Signals UI (H3) =====================
 function renderOnChainSignals(M) {
