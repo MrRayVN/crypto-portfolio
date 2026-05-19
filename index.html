@@ -2487,11 +2487,13 @@ function m35_survival_mode(M, market) {
   if (ddBreach) triggers.push('DD_BREACH');
 
   // Trigger 5: Funding inversion (longs overheated paying) — squeeze setup INVERTED for our side
+  // Threshold 0.001 raw decimal = 0.1%/8h (achievable extremum). 0.015 cũ là 1.5% never-fire bug.
+  // OR via M28 grade detection (self-consistent với squeeze_score logic).
   const fundingNow = state.coinalyze?.funding_current ?? market.funding_btc_pct ?? 0;
-  const m28Overheated = M.m28?.grade === 'OVERHEATED_LONGS';
-  const fundingInv = fundingNow > 0.015 || m28Overheated;
+  const m28Overheated = M.m28?.grade === 'OVERHEATED_LONGS' || M.m28?.grade === 'NO_EDGE';
+  const fundingInv = fundingNow > 0.001 || m28Overheated;
   checks.push({name: 'Funding inversion', triggered: fundingInv,
-    info: `funding ${(fundingNow*100).toFixed(3)}%/8h ${fundingInv ? `> 0.015% OR M28=OVERHEATED` : 'OK'}`});
+    info: `funding ${(fundingNow*100).toFixed(3)}% (raw ${fundingNow.toFixed(5)}) ${fundingInv ? `> 0.001 OR M28=${M.m28?.grade}` : 'OK'}`});
   if (fundingInv) triggers.push('FUNDING_INVERSION');
 
   const triggerCount = triggers.length;
@@ -2591,18 +2593,25 @@ function attachDecisionConfidence(decision, M) {
   else if (sourceCount >= 3) { score += 5; factors.push(`+5 ${sourceCount} sources`); }
   else if (sourceCount <= 1) { score -= 10; factors.push(`−10 sparse signal (${sourceCount} source)`); }
 
-  // F2: M34 vol regime penalty (aggressive priorities risky in PANIC/EUPHORIA)
-  const aggressivePriorities = [3, 4, 6, 7]; // TP, M33 path, squeeze
-  const defensivePriorities = [0, 1, 2]; // survival, liq, stop-loss
-  const isAggressive = aggressivePriorities.includes(decision.priority);
-  const isDefensive = defensivePriorities.includes(decision.priority);
+  // F2: M34 vol regime penalty
+  // Phân biệt rõ:
+  //   - leverage_increase (BUY/long-add): P3.5 path, P5 dip-buy, P7 squeeze → risky trong PANIC/EUPHORIA
+  //   - tp_exits (SELL profit): P3 TP triggers → tốt trong EUPHORIA (chốt đỉnh), KHÔNG penalize
+  //   - defensive (force-execute): P0 survival, P1 liq, P2 stop-loss → trợ giúp khi PANIC
+  //   - rebalance/yield (neutral): P6, P8, P8.5 → không price-sensitive
+  const leverageIncrease = [3.5, 5, 7].includes(decision.priority);
+  const tpExits = [3].includes(decision.priority);
+  const isDefensive = [0, 1, 2].includes(decision.priority);
   if (M.m34) {
-    if (M.m34.state === 'PANIC' || M.m34.state === 'EUPHORIA') {
-      if (isAggressive) { score -= 20; factors.push(`−20 M34 ${M.m34.state} + aggressive action`); }
-      else if (isDefensive) { score += 8; factors.push(`+8 M34 ${M.m34.state} + defensive`); }
+    if (M.m34.state === 'PANIC') {
+      if (leverageIncrease) { score -= 20; factors.push(`−20 M34 PANIC + leverage-increase action`); }
+      else if (isDefensive) { score += 8; factors.push(`+8 M34 PANIC + defensive (force execute)`); }
+    } else if (M.m34.state === 'EUPHORIA') {
+      if (leverageIncrease) { score -= 20; factors.push(`−20 M34 EUPHORIA + leverage-increase (top setup)`); }
+      else if (tpExits) { score += 10; factors.push(`+10 M34 EUPHORIA + TP exit (chốt đỉnh)`); }
     } else if (M.m34.state === 'EXPANDING') {
-      score -= 10; factors.push('−10 M34 EXPANDING (regime shifting)');
-    } else if (M.m34.state === 'QUIET' && isAggressive) {
+      if (leverageIncrease) { score -= 10; factors.push('−10 M34 EXPANDING (regime shifting)'); }
+    } else if (M.m34.state === 'QUIET' && leverageIncrease) {
       score += 5; factors.push('+5 M34 QUIET (favorable entry)');
     }
   }
@@ -2614,19 +2623,22 @@ function attachDecisionConfidence(decision, M) {
     factors.push(`−${penalty} M35 partial (${M.m35.trigger_count}/5 triggers)`);
   }
 
-  // F4: pBull conviction alignment for aggressive priorities
-  if (isAggressive && M.m22?.pBull_final != null) {
+  // F4: pBull conviction alignment for leverage-increase priorities
+  if (leverageIncrease && M.m22?.pBull_final != null) {
     const pBull = M.m22.pBull_final;
     if (decision.priority === 7 && pBull < 0.50) {
       score -= 10; factors.push(`−10 P7 squeeze + pBull ${(pBull*100).toFixed(0)}% (weak conviction)`);
     }
+    // P5 dip-buy: M23 fires at pBull > 0.40. Bonus chỉ khi > 0.55 (strong bull confirms)
     if (decision.priority === 5 && pBull > 0.55) {
       score += 5; factors.push(`+5 P5 dip + pBull ${(pBull*100).toFixed(0)}% (bull confirms)`);
+    } else if (decision.priority === 5 && pBull < 0.50) {
+      score -= 5; factors.push(`−5 P5 dip + pBull ${(pBull*100).toFixed(0)}% (marginal conviction)`);
     }
   }
 
-  // F5: Correlation high gate for aggressive
-  if (M.m25?.regime === 'HIGH_CORRELATION' && isAggressive) {
+  // F5: Correlation high gate for leverage-increase (diversification weakening)
+  if (M.m25?.regime === 'HIGH_CORRELATION' && leverageIncrease) {
     score -= 5; factors.push('−5 M25 high correlation (diversification weakening)');
   }
 
@@ -2636,26 +2648,31 @@ function attachDecisionConfidence(decision, M) {
   }
 
   score = Math.max(0, Math.min(100, score));
-  let tier, color, sizeAdjustment, instruction;
-  if (score >= 75) {
-    tier = 'HIGH'; color = '#10b981'; sizeAdjustment = 1.0;
-    instruction = 'Execute size đề xuất, confidence cao';
-  } else if (score >= 50) {
-    tier = 'MID'; color = '#f59e0b'; sizeAdjustment = 0.7;
-    instruction = 'Giảm size 30% so với đề xuất, verify spread/orderbook trước khi enter';
-  } else {
-    tier = 'LOW'; color = '#ef4444'; sizeAdjustment = 0.4;
-    instruction = 'Giảm size 60% HOẶC delay 4-12h để reconfirm trong tick sau';
-  }
-
-  decision.confidence = {score, tier, color, factors, size_adjustment: sizeAdjustment, instruction};
+  const tierInfo = computeConfidenceTier(score);
+  decision.confidence = {score, ...tierInfo, factors};
 
   // Auto-append confidence note vào rationale
   if (decision.rationale) {
-    decision.rationale.push(`<b>Decision Confidence ${tier}</b> (${score}/100) — ${instruction}`);
+    decision.rationale.push(`<b>Decision Confidence ${tierInfo.tier}</b> (${score}/100) — ${tierInfo.instruction}`);
   }
 
   return decision;
+}
+
+// Shared tier classifier — used by both attachDecisionConfidence + entropy bias
+function computeConfidenceTier(score) {
+  if (score >= 75) return {
+    tier: 'HIGH', color: '#10b981', size_adjustment: 1.0,
+    instruction: 'Execute size đề xuất, confidence cao'
+  };
+  if (score >= 50) return {
+    tier: 'MID', color: '#f59e0b', size_adjustment: 0.7,
+    instruction: 'Giảm size 30% so với đề xuất, verify spread/orderbook trước khi enter'
+  };
+  return {
+    tier: 'LOW', color: '#ef4444', size_adjustment: 0.4,
+    instruction: 'Giảm size 60% HOẶC delay 4-12h để reconfirm trong tick sau'
+  };
 }
 
 // ===================== EXECUTION CHECKLIST (read-only dashboard guard) =====================
@@ -2678,10 +2695,16 @@ function attachExecutionChecklist(decision, M) {
 
   // === Pre-trade guards (skip entry conditions) ===
   // Big-candle guard: KHÔNG entry sau move lớn 24h (FOMO/panic timing)
+  // CHỈ áp dụng cho LEVERAGE INCREASE actions (buy/long): P3.5 path scenarios, P5 dip-buy, P7 squeeze.
+  // P1 repay, P2 stop-loss, P3 TP (sell), P6 rebalance, P8 tilt, P8.5 yield → KHÔNG defer (selling on up = good, no price expo)
   const move24h = Math.abs(market.btc_24h ?? 0);
   const bigCandle = move24h > 5;
-  if (bigCandle && decision.priority !== 1 && decision.priority !== 2) {
-    checks.push(`🚫 BIG-CANDLE GUARD: BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% > ±5% → DEFER 4-12h, đợi consolidation (skip nếu P1/P2 liq/stop-loss)`);
+  const leverageIncreaseActions = [3.5, 5, 7];
+  const isLeverageIncrease = leverageIncreaseActions.includes(decision.priority);
+  if (bigCandle && isLeverageIncrease) {
+    checks.push(`🚫 BIG-CANDLE GUARD: BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% > ±5% → DEFER 4-12h, đợi consolidation (P${decision.priority} leverage-increase)`);
+  } else if (bigCandle) {
+    checks.push(`ℹ️ BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% > ±5% nhưng P${decision.priority} không phải leverage-increase → OK execute`);
   } else if (move24h >= 3) {
     checks.push(`⚠️ BTC 24h ${(market.btc_24h ?? 0).toFixed(1)}% — entry chấp nhận được nhưng tighten stops`);
   } else {
@@ -2835,10 +2858,16 @@ function attachDecisionEntropy(decision, M, s) {
     }
     // Bias adjustment: nếu MIXED/DIVERGENT, downgrade confidence + force size further
     if (entropy.bias_hold && decision.confidence) {
-      decision.confidence.score = Math.max(0, decision.confidence.score - 15);
-      decision.confidence.size_adjustment = Math.min(decision.confidence.size_adjustment, 0.3);
+      const newScore = Math.max(0, decision.confidence.score - 15);
+      decision.confidence.score = newScore;
       decision.confidence.factors.push(`−15 entropy ${entropy.regime} (top ${entropy.top_pct.toFixed(0)}% < 70% → HOLD bias)`);
-      decision.confidence.instruction = `⚠️ Entropy ${entropy.regime}: cascade không converge khi perturb input nhẹ. Giảm size còn 30% baseline HOẶC delay 6-12h.`;
+      // Recompute tier sau score adjustment
+      const newTier = computeConfidenceTier(newScore);
+      decision.confidence.tier = newTier.tier;
+      decision.confidence.color = newTier.color;
+      // Take stricter của 2 (tier-based vs entropy hard cap 0.3)
+      decision.confidence.size_adjustment = Math.min(newTier.size_adjustment, 0.3);
+      decision.confidence.instruction = `⚠️ Entropy ${entropy.regime} → tier ${newTier.tier}: cascade không converge khi perturb input nhẹ. Giảm size còn ${(decision.confidence.size_adjustment*100).toFixed(0)}% baseline HOẶC delay 6-12h.`;
     }
   } catch (e) { console.warn('[entropy] failed:', e.message); }
   return decision;
@@ -3348,12 +3377,11 @@ function m33_path_to_target(M) {
   };
 
   const scenarios = [scenA, scenB, scenC, scenD];
-  // Best scenario = highest P(hit)
-  const best = scenarios.reduce((a, b) => b.p_hit > a.p_hit ? b : a);
 
-  // === BOOTSTRAP MC reality check cho BEST scenario ===
+  // === BOOTSTRAP MC cho TẤT CẢ scenarios (consistent ranking) ===
   // erf probHit giả định Normal — crypto fat-tail nên optimistic. Bootstrap qua
   // historical BTC returns cho p_hit chân thực + tail risk (CVaR 5%, expected DD).
+  // Chạy cho ALL 4 scenarios → re-rank best by bootstrap (not parametric).
   let bootstrap = null;
   try {
     const btcCl = state.klineHistory?.BTC;
@@ -3363,54 +3391,75 @@ function m33_path_to_target(M) {
         if (btcCl[i-1] > 0) returns.push(btcCl[i] / btcCl[i-1] - 1);
       }
       const sims = 1000;
-      const finalPnLs = [];
-      const finalDDs = [];
-      const dailyDCAB = best.extra_dca / Math.max(1, daysRemaining);
-      const leverageNetPerDay = (best.extra_leverage || 0) * (0.30 * portBeta - 0.09) / 365;
-      const squeezeEV = (best.extra_squeeze || 0) * (best.squeeze_size_per_play || 0) * 0.03;
-      for (let s = 0; s < sims; s++) {
-        let value = cost; // start market value
-        let runningCost = cost;
-        let maxVal = value;
-        let maxDD = 0;
-        for (let d = 0; d < daysRemaining; d++) {
-          const r = returns[Math.floor(Math.random() * returns.length)] * portBeta;
-          value *= (1 + r);
-          value += dailyDCAB + leverageNetPerDay;
-          runningCost += dailyDCAB;
-          if (value > maxVal) maxVal = value;
-          const dd = maxVal > 0 ? (maxVal - value) / maxVal : 0;
-          if (dd > maxDD) maxDD = dd;
+      // Helper: bootstrap stats cho 1 scenario
+      const runBootstrap = (scen) => {
+        const finalPnLs = [];
+        const finalDDs = [];
+        const dailyDCAB = scen.extra_dca / Math.max(1, daysRemaining);
+        const leverageNetPerDay = (scen.extra_leverage || 0) * (0.30 * portBeta - 0.09) / 365;
+        const squeezeEV = (scen.extra_squeeze || 0) * (scen.squeeze_size_per_play || 0) * 0.03;
+        for (let s = 0; s < sims; s++) {
+          let value = cost;
+          let runningCost = cost;
+          let maxVal = value;
+          let maxDD = 0;
+          for (let d = 0; d < daysRemaining; d++) {
+            const r = returns[Math.floor(Math.random() * returns.length)] * portBeta;
+            value *= (1 + r);
+            value += dailyDCAB + leverageNetPerDay;
+            runningCost += dailyDCAB;
+            if (value > maxVal) maxVal = value;
+            const dd = maxVal > 0 ? (maxVal - value) / maxVal : 0;
+            if (dd > maxDD) maxDD = dd;
+          }
+          if (squeezeEV > 0) value += (Math.random() < 0.55 ? squeezeEV : -squeezeEV * 0.5);
+          finalPnLs.push(value - runningCost);
+          finalDDs.push(maxDD);
         }
-        // Squeeze EV with Bernoulli outcome (55% win prob assumed)
-        if (squeezeEV > 0) value += (Math.random() < 0.55 ? squeezeEV : -squeezeEV * 0.5);
-        finalPnLs.push(value - runningCost);
-        finalDDs.push(maxDD);
-      }
-      finalPnLs.sort((a,b) => a - b);
-      finalDDs.sort((a,b) => b - a); // worst DD first
-      const hits = finalPnLs.filter(p => p >= targetPnL).length;
-      const cvarCutoff = Math.floor(sims * 0.05);
-      const cvar5 = finalPnLs.slice(0, cvarCutoff).reduce((a,b)=>a+b, 0) / cvarCutoff;
-      bootstrap = {
-        sims,
-        p_hit_bootstrap: hits / sims * 100,
-        p_hit_erf: best.p_hit,
-        fat_tail_penalty_pct: best.p_hit - (hits / sims * 100), // positive = erf optimistic
-        expected_pnl: finalPnLs.reduce((a,b)=>a+b, 0) / sims,
-        pnl_5pct: finalPnLs[cvarCutoff],
-        pnl_50pct: finalPnLs[Math.floor(sims * 0.50)],
-        pnl_95pct: finalPnLs[Math.floor(sims * 0.95)],
-        cvar_5pct: cvar5,
-        expected_maxDD_pct: (finalDDs.reduce((a,b)=>a+b, 0) / sims) * 100,
-        worst_maxDD_pct: finalDDs[0] * 100,
+        finalPnLs.sort((a,b) => a - b);
+        finalDDs.sort((a,b) => b - a);
+        const hits = finalPnLs.filter(p => p >= targetPnL).length;
+        const cvarCutoff = Math.max(1, Math.floor(sims * 0.05));
+        return {
+          p_hit_bootstrap: hits / sims * 100,
+          expected_pnl: finalPnLs.reduce((a,b)=>a+b, 0) / sims,
+          pnl_5pct: finalPnLs[cvarCutoff],
+          pnl_50pct: finalPnLs[Math.floor(sims * 0.50)],
+          pnl_95pct: finalPnLs[Math.floor(sims * 0.95)],
+          cvar_5pct: finalPnLs.slice(0, cvarCutoff).reduce((a,b)=>a+b, 0) / cvarCutoff,
+          expected_maxDD_pct: (finalDDs.reduce((a,b)=>a+b, 0) / sims) * 100,
+          worst_maxDD_pct: finalDDs[0] * 100,
+        };
       };
-      // Update best.p_hit to bootstrap (more honest)
-      best.p_hit_parametric = best.p_hit;
-      best.p_hit = bootstrap.p_hit_bootstrap;
-      best.bootstrap = bootstrap;
+      // Run bootstrap cho ALL scenarios + attach (re-ranking consistent với fat-tail reality)
+      for (const scen of scenarios) {
+        const b = runBootstrap(scen);
+        scen.p_hit_parametric = scen.p_hit;
+        scen.p_hit = b.p_hit_bootstrap;          // PRIMARY p_hit giờ là bootstrap
+        scen.bootstrap = b;
+      }
     }
   } catch (e) { console.warn('[M33 bootstrap] failed:', e.message); }
+
+  // Best scenario = highest p_hit (sau bootstrap nếu có, fallback erf)
+  const best = scenarios.reduce((a, b) => b.p_hit > a.p_hit ? b : a);
+  // Surface bootstrap top-level cho M23 P3.5 rationale (back-compat)
+  if (best.bootstrap) {
+    bootstrap = {
+      sims: 1000,
+      p_hit_bootstrap: best.bootstrap.p_hit_bootstrap,
+      p_hit_erf: best.p_hit_parametric,
+      fat_tail_penalty_pct: best.p_hit_parametric - best.bootstrap.p_hit_bootstrap,
+      expected_pnl: best.bootstrap.expected_pnl,
+      pnl_5pct: best.bootstrap.pnl_5pct,
+      pnl_50pct: best.bootstrap.pnl_50pct,
+      pnl_95pct: best.bootstrap.pnl_95pct,
+      cvar_5pct: best.bootstrap.cvar_5pct,
+      expected_maxDD_pct: best.bootstrap.expected_maxDD_pct,
+      worst_maxDD_pct: best.bootstrap.worst_maxDD_pct,
+      rerank_changed: scenarios.map(s => s.name.split(' — ')[0]).join(',') !== ['BASELINE','DOUBLED DCA','LEVERAGE','FULL SEND'].join(','),
+    };
+  }
 
   return {
     target_pnl: targetPnL,
