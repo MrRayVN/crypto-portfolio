@@ -520,16 +520,31 @@ function m2(holdings, gross) {
   return out;
 }
 
-function m3_tp(holdings, fg, bullPts) {
+// Compute volatility-adjusted TP multiplier per asset.
+// Higher vol asset (vd LINK ~100%/yr vs BTC ~55%/yr) → TP fires xa hơn (relative move bigger),
+// nhưng softly scaled để vẫn realistic. Formula: adjusted = 1 + (base-1) × volScale
+// where volScale = clamp((assetVol/btcVol)^0.5, 0.85, 1.35)
+function adjustTpMultForVol(baseMult, assetVol, btcVol) {
+  if (!assetVol || !btcVol || assetVol <= 0 || btcVol <= 0) return baseMult;
+  const ratio = assetVol / btcVol;
+  const volScale = Math.max(0.85, Math.min(1.35, Math.pow(ratio, 0.5)));
+  return 1 + (baseMult - 1) * volScale;
+}
+
+function m3_tp(holdings, fg, bullPts, assetVols) {
   const out = {};
+  const btcVol = assetVols?.BTC ?? 65; // baseline default
   for (const sym of ['BTC','WBETH','BNB','LINK']) {
     if (!holdings[sym] || !holdings[sym].avg) continue;
+    const symVol = assetVols?.[sym] ?? btcVol;
     out[sym] = TP_TIERS.map(tier => {
-      const trigger = holdings[sym].avg * tier.mult;
+      const adjustedMult = adjustTpMultForVol(tier.mult, symVol, btcVol);
+      const trigger = holdings[sym].avg * adjustedMult;
       const p_ok = holdings[sym].price >= trigger;
       const fg_ok = fg >= tier.fg;
       const bull_ok = bullPts >= tier.bull;
-      return {...tier, trigger, p_ok, fg_ok, bull_ok, fires: p_ok && fg_ok && bull_ok};
+      return {...tier, mult: adjustedMult, base_mult: tier.mult, vol_scale: adjustedMult / tier.mult,
+              trigger, p_ok, fg_ok, bull_ok, fires: p_ok && fg_ok && bull_ok};
     });
   }
   return out;
@@ -1492,6 +1507,10 @@ function m23_unified_decision(M, s) {
           `Thời gian: ${cycle.daysElapsed}/365 ngày đã qua (${(elapsedFrac*100).toFixed(0)}%) → cần proportional progress ${(targetProgress*100).toFixed(0)}% nhưng mới ${(currentProgress*100).toFixed(0)}%`,
           `Đánh giá 4 scenarios:${M.m33.scenarios.map(s => ` ${s.name.split(' — ')[0]} P(hit) ${s.p_hit.toFixed(0)}% (risk ${s.risk})`).join(' ·')}`,
           `Best path: <b>${best.name}</b> với P(hit) ${best.p_hit.toFixed(1)}% (risk ${best.risk})`,
+          ...(M.m33.bootstrap ? [
+            `<b>Bootstrap MC (${M.m33.bootstrap.sims} sims)</b>: P(hit) ${M.m33.bootstrap.p_hit_bootstrap.toFixed(1)}% vs erf parametric ${M.m33.bootstrap.p_hit_erf.toFixed(1)}% (fat-tail penalty ${M.m33.bootstrap.fat_tail_penalty_pct.toFixed(1)}pp)`,
+            `Tail risk: CVaR 5% = ${fmt$(M.m33.bootstrap.cvar_5pct)} · Expected MaxDD ${M.m33.bootstrap.expected_maxDD_pct.toFixed(1)}% · Worst-case DD ${M.m33.bootstrap.worst_maxDD_pct.toFixed(1)}%`,
+          ] : []),
         ],
         blocks: best.risk === 'very high' ? ['⚠️ Plan này có risk rất cao — chỉ thực hiện nếu anh chấp nhận capital loss tới 30%'] : [],
         sources_fired: ['M33 Path-to-Target', 'M32 DCA Capacity', 'M21 Kelly', 'M28 Funding'],
@@ -1743,7 +1762,7 @@ function buildMaster(s) {
   M.stress = m8_stress(M.m1.gross, s.loan, h);
   M.plan_changes = m12b_diff(s.prev, s.pool.plan_alloc, s.loan, s.market.fg_cg);
   M.m9 = m9_signals(s.market, M.m1, M.plan_changes, state.coinalyze);
-  M.m3 = m3_tp(h, s.market.fg_cg, M.m9.bull_total);
+  // m3_tp moved AFTER M18 (needs per-asset vols for dynamic TP)
   M.funding = m16_funding(h, s.funding_yearly, s.target_pct);
   M.target = {
     anchor: s.target_anchor,
@@ -1756,6 +1775,12 @@ function buildMaster(s) {
   const curWeights = computeCurrentWeights(h);
   M.m17 = m17_portfolio_risk(state.accountSnapshot, state.klineHistory, curWeights, s.market.betas);
   M.m18 = m18_asset_risk(state.klineHistory);
+  // m3_tp uses M18 annual vols cho per-asset dynamic TP multipliers
+  const assetVols = M.m18 ? {
+    BTC: M.m18.BTC?.annVol, WBETH: M.m18.WBETH?.annVol,
+    BNB: M.m18.BNB?.annVol, LINK: M.m18.LINK?.annVol,
+  } : null;
+  M.m3 = m3_tp(h, s.market.fg_cg, M.m9.bull_total, assetVols);
   M.m19 = m19_correlation_matrix(state.klineHistory);
   M.m20 = m20_markowitz_optimize(state.klineHistory, curWeights);
   M.m21 = m21_kelly_sizing(state.futures);
@@ -3078,6 +3103,67 @@ function m33_path_to_target(M) {
   // Best scenario = highest P(hit)
   const best = scenarios.reduce((a, b) => b.p_hit > a.p_hit ? b : a);
 
+  // === BOOTSTRAP MC reality check cho BEST scenario ===
+  // erf probHit giả định Normal — crypto fat-tail nên optimistic. Bootstrap qua
+  // historical BTC returns cho p_hit chân thực + tail risk (CVaR 5%, expected DD).
+  let bootstrap = null;
+  try {
+    const btcCl = state.klineHistory?.BTC;
+    if (btcCl && btcCl.length >= 60) {
+      const returns = [];
+      for (let i = 1; i < btcCl.length; i++) {
+        if (btcCl[i-1] > 0) returns.push(btcCl[i] / btcCl[i-1] - 1);
+      }
+      const sims = 1000;
+      const finalPnLs = [];
+      const finalDDs = [];
+      const dailyDCAB = best.extra_dca / Math.max(1, daysRemaining);
+      const leverageNetPerDay = (best.extra_leverage || 0) * (0.30 * portBeta - 0.09) / 365;
+      const squeezeEV = (best.extra_squeeze || 0) * (best.squeeze_size_per_play || 0) * 0.03;
+      for (let s = 0; s < sims; s++) {
+        let value = cost; // start market value
+        let runningCost = cost;
+        let maxVal = value;
+        let maxDD = 0;
+        for (let d = 0; d < daysRemaining; d++) {
+          const r = returns[Math.floor(Math.random() * returns.length)] * portBeta;
+          value *= (1 + r);
+          value += dailyDCAB + leverageNetPerDay;
+          runningCost += dailyDCAB;
+          if (value > maxVal) maxVal = value;
+          const dd = maxVal > 0 ? (maxVal - value) / maxVal : 0;
+          if (dd > maxDD) maxDD = dd;
+        }
+        // Squeeze EV with Bernoulli outcome (55% win prob assumed)
+        if (squeezeEV > 0) value += (Math.random() < 0.55 ? squeezeEV : -squeezeEV * 0.5);
+        finalPnLs.push(value - runningCost);
+        finalDDs.push(maxDD);
+      }
+      finalPnLs.sort((a,b) => a - b);
+      finalDDs.sort((a,b) => b - a); // worst DD first
+      const hits = finalPnLs.filter(p => p >= targetPnL).length;
+      const cvarCutoff = Math.floor(sims * 0.05);
+      const cvar5 = finalPnLs.slice(0, cvarCutoff).reduce((a,b)=>a+b, 0) / cvarCutoff;
+      bootstrap = {
+        sims,
+        p_hit_bootstrap: hits / sims * 100,
+        p_hit_erf: best.p_hit,
+        fat_tail_penalty_pct: best.p_hit - (hits / sims * 100), // positive = erf optimistic
+        expected_pnl: finalPnLs.reduce((a,b)=>a+b, 0) / sims,
+        pnl_5pct: finalPnLs[cvarCutoff],
+        pnl_50pct: finalPnLs[Math.floor(sims * 0.50)],
+        pnl_95pct: finalPnLs[Math.floor(sims * 0.95)],
+        cvar_5pct: cvar5,
+        expected_maxDD_pct: (finalDDs.reduce((a,b)=>a+b, 0) / sims) * 100,
+        worst_maxDD_pct: finalDDs[0] * 100,
+      };
+      // Update best.p_hit to bootstrap (more honest)
+      best.p_hit_parametric = best.p_hit;
+      best.p_hit = bootstrap.p_hit_bootstrap;
+      best.bootstrap = bootstrap;
+    }
+  } catch (e) { console.warn('[M33 bootstrap] failed:', e.message); }
+
   return {
     target_pnl: targetPnL,
     current_pnl: currentPnL,
@@ -3087,6 +3173,7 @@ function m33_path_to_target(M) {
     base_vol_usd: baseVolUSD,
     scenarios,
     best,
+    bootstrap,
     dca_capacity: dcaCap,
   };
 }
