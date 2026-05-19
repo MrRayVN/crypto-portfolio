@@ -1514,10 +1514,14 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40) ----
+  // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40 + stress-safe) ----
   const dipPct = sma20 > 0 ? (1 - btcP / sma20) * 100 : 0;
   const loanCapacityRemaining = M.m7.soft - M.loan;
-  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < TH.FG_NEUTRAL_LOW && M.m22.pBull_final > TH.PBULL_DIP_BUY_MIN) {
+  // M8 stress gate: skip dip-buy if even a -20% BTC drop would push equity below MMR floor
+  // (M.stress[1] = -20% scenario; equity must stay >= 50% to avoid liquidation cascade)
+  const stress20 = M.stress?.[1];
+  const stressSafe = !stress20 || stress20.equity >= 50;
+  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < TH.FG_NEUTRAL_LOW && M.m22.pBull_final > TH.PBULL_DIP_BUY_MIN && stressSafe) {
     const buyAmount = Math.min(loanCapacityRemaining * 0.5, M.m1.net * 0.05);
     return {
       priority: 4, severity: 'HIGH', icon: '🎯', color: '#10b981',
@@ -1534,9 +1538,10 @@ function m23_unified_decision(M, s) {
         `Loan capacity còn ${fmt$(loanCapacityRemaining)} (soft cap)`,
         `F&G ${fg} < 40 (Fear zone — contrarian buy)`,
         `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 40% — không phải extreme bear`,
+        stress20 ? `M8 stress -20% drop: equity sẽ giữ ${stress20.equity.toFixed(1)}% ≥ 50% (safe để add leverage)` : 'M8 stress data N/A',
       ],
       blocks: [],
-      sources_fired: ['Dip Ladder (Lever #1)', 'M7 Loan Framework', 'M22 Regime'],
+      sources_fired: ['Dip Ladder (Lever #1)', 'M7 Loan Framework', 'M22 Regime', 'M8 Stress Test'],
     };
   }
 
@@ -2673,7 +2678,20 @@ function m33_path_to_target(M) {
   scenC_steps.push(`   • Loan sau plan = ${fmt$(M.loan + scenC_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)}`);
   scenC_steps.push(`   • Liq distance hiện tại ${M.m7.liq_dist.toFixed(1)}% (đảm bảo > 30%)`);
   scenC_steps.push(`   • LTV sau plan ≤ ${((M.loan + scenC_totalLoan) / M.m1.gross * 100).toFixed(1)}%`);
+  if (!riskGateOK && riskWarning) {
+    scenC_steps.push(`   ⚠️ M17 risk gate: ${riskWarning} → risk tier upgraded to <b>${scenC_risk}</b>`);
+  }
+  // M20 Markowitz validation: confirm BTC dip-buy aligned with tangency portfolio
+  if (m20?.tangency_weights && purp_btc_dip > 0) {
+    const btcIdx = m20.assets.indexOf('BTC');
+    const btcTangencyPct = (m20.tangency_weights[btcIdx] * 100);
+    const aligned = btcTangencyPct >= 30;
+    scenC_steps.push(`   • M20 Markowitz: BTC tangency weight ${btcTangencyPct.toFixed(0)}% ${aligned ? '✅ BTC dip-buy aligned với optimal portfolio' : '⚠️ tangency suggest tilt khác — consider alt'} (Sharpe ${m20.tangency_sharpe?.toFixed(2) || 'N/A'})`);
+  }
 
+  // Risk tier demotion: if M17 risk gate fails (Sharpe<0 or MaxDD>35%), upgrade risk one tier
+  const scenC_baseRisk = scenC_totalLoan > maxSafeLoanTotal * 0.7 ? 'high' : 'medium';
+  const scenC_risk = !riskGateOK ? (scenC_baseRisk === 'medium' ? 'high' : 'very high') : scenC_baseRisk;
   const scenC = {
     name: `LEVERAGE — Vay ${fmt$(scenC_totalLoan)} (mỗi $ có purpose cụ thể)`,
     extra_dca: scenA_extraDCA,
@@ -2681,7 +2699,7 @@ function m33_path_to_target(M) {
     extra_squeeze: 0,
     expected_pnl: scenC_extraPnL,
     p_hit: probHit(scenC_extraPnL, baseVolUSD * 1.3) * 100,
-    risk: scenC_totalLoan > maxSafeLoanTotal * 0.7 ? 'high' : 'medium',
+    risk: scenC_risk,
     capital_need: 0,
     dca_loan: purp_dca_fund,
     leverage_amount: purp_btc_dip,
@@ -2781,8 +2799,10 @@ function m33_path_to_target(M) {
   scenD_steps.push(`🛡️ SAFETY: Loan sau plan ${fmt$(M.loan + scenD_totalLoan)} / max safe ${fmt$(maxSafeLoanTotal)} · LTV ${((M.loan + scenD_totalLoan) / M.m1.gross * 100).toFixed(1)}% · Liq dist ${M.m7.liq_dist.toFixed(1)}%`);
   scenD_steps.push(`Stop-loss BTC ${fmt$(state.bep_threshold)} hard backstop`);
   scenD_steps.push(``);
-  scenD_steps.push(`📋 MODULES ÁP DỤNG: M17 risk · M18 OU z-score (pick ${bestDipCoin}) · M21 Kelly · M22 regime · M25 correlation · M28 squeeze score · M32 DCA capacity · M33 path scenarios`);
+  scenD_steps.push(`📋 MODULES ÁP DỤNG: M8 stress (P5 gate) · M17 risk gate · M18 OU z-score (pick ${bestDipCoin}) · M20 Markowitz (tangency align) · M21 Kelly · M22 regime · M25 correlation · M28 squeeze score · M32 DCA capacity · M33 path scenarios`);
 
+  // scenD = FULL SEND: high risk by default, upgrade to "very high" if M17 risk gate fails
+  const scenD_risk = !riskGateOK ? 'very high' : 'high';
   const scenD = {
     name: `FULL SEND — Vay ${fmt$(scenD_totalLoan)} (BTC dip + DCA fund) + ${totalPlays} squeeze plays`,
     extra_dca: scenA_extraDCA,
@@ -2790,7 +2810,7 @@ function m33_path_to_target(M) {
     extra_squeeze: totalPlays,
     expected_pnl: scenD_extraPnL_v2,
     p_hit: probHit(scenD_extraPnL_v2, baseVolUSD * 1.4) * 100,
-    risk: 'high',
+    risk: scenD_risk,
     capital_need: 0,
     dca_loan: purp_dca_fund,
     leverage_amount: purp_btc_dip,
