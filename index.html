@@ -426,8 +426,10 @@ let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
 // Avoid divergent thresholds across modules (audit C5/C6/C9 fix)
 const TH = {
   // F&G zones
-  FG_EXTREME_FEAR: 15,      // M23 P2 stop-loss + P4a capitulation
+  FG_EXTREME_FEAR: 15,      // M23 P2 stop-loss + P4a capitulation strict gate
+  FG_CAPITULATION: 20,      // M23 P4a (with P(bull)<15 + momentum<-10%)
   FG_FEAR: 30,              // M23 P4b boundary, dip-buy gates
+  FG_DIP_BUY_T2: 35,        // dip-buy T2 ladder gate
   FG_NEUTRAL_LOW: 40,       // entry threshold cho dip-buy in M23 P5
   FG_NEUTRAL_HIGH: 55,      // standard "neutral" upper
   FG_GREED: 65,             // TP1 gate
@@ -438,6 +440,12 @@ const TH = {
   PBULL_DIP_BUY_MIN: 0.40,  // M23 P5 needs P(bull) > 40%
   PBULL_SQUEEZE_MIN: 0.45,  // M23 P7 squeeze needs P(bull) > 45%
   PBULL_BULL_TILT: 0.55,    // M23 P8 bull tilt
+  // Momentum (ret_30d) capitulation gate
+  MOMENTUM_CAPITULATION: -10, // -10% 30d return → P4a fires
+  // Dip-buy params
+  DIP_SMA_PCT: 0.92,        // BTC < SMA20 × 0.92 → significant dip
+  DIP_SMA_PCT_T1: 0.97,     // T1 ladder (-3% from SMA20)
+  DIP_BUY_LTV_MAX: 0.65,    // dip-buy requires LTV ≤ 65%
   // Pool plan health
   POOL_DRIFT_FIRE: 15,      // M23 P6 fires
   POOL_DRIFT_WARN: 8,       // mild drift warning
@@ -445,6 +453,7 @@ const TH = {
   SQUEEZE_LEVERAGE: 3,      // ALL modules use 3x (synced)
   SQUEEZE_SCORE_FIRE: 60,   // M28 score gate
   SQUEEZE_FUNDING_NEGATIVE: -0.005, // funding ≤ -0.5% per 8h
+  SQUEEZE_NET_PCT: 0.05,    // squeeze margin = 5% NET
   // Loan safe caps
   LOAN_LTV_TARGET: 0.60,
   LTV_ACCEPTABLE: 0.55,
@@ -469,7 +478,7 @@ const TP_TIERS = [
   {name:'TP4', mult:3.50, fg:90, bull:25, sell:10},
 ];
 const G9_CAP = 35.0, G9_GRACE = 1.0;
-const LIQ_SOFT = 0.60, LIQ_ACCEPT = 0.55, LIQ_HARD = 0.50, EFFECTIVE_MMR = 0.90;
+// Loan LTV thresholds + MMR — single source TH.LOAN_LTV_TARGET / LTV_ACCEPTABLE / LTV_HARD_FLOOR / EFFECTIVE_MMR
 const STANCE_BANDS = [
   [8, 'BULL', '#22c55e'],
   [3, 'MODERATE_BULLISH', '#84cc16'],
@@ -527,11 +536,11 @@ function m3_tp(holdings, fg, bullPts) {
 }
 
 function m7_loan(gross, loan, btcPrice) {
-  const soft = gross * (1-LIQ_SOFT) * EFFECTIVE_MMR;
-  const accept = gross * (1-LIQ_ACCEPT) * EFFECTIVE_MMR;
-  const hard = gross * (1-LIQ_HARD) * EFFECTIVE_MMR;
+  const soft = gross * (1-TH.LOAN_LTV_TARGET) * TH.EFFECTIVE_MMR;
+  const accept = gross * (1-TH.LTV_ACCEPTABLE) * TH.EFFECTIVE_MMR;
+  const hard = gross * (1-TH.LTV_HARD_FLOOR) * TH.EFFECTIVE_MMR;
   const liq_dist = gross>0 ? (gross-loan)/gross*100 : 0;
-  const btc_liq = btcPrice * (loan / (gross * EFFECTIVE_MMR));
+  const btc_liq = btcPrice * (loan / (gross * TH.EFFECTIVE_MMR));
   return {loan, soft, accept, hard, liq_dist, btc_liq,
     over_soft: loan-soft, over_accept: loan-accept, over_hard: loan-hard,
     repay_to_soft: Math.max(0, loan-soft),
@@ -572,8 +581,8 @@ function g9(holdings, poolValue, poolAlloc, net) {
 function m9_signals(market, m1obj, planChanges, coinalyze) {
   const bull = [], bear = [];
   const fg = market.fg_cg;
-  if (fg < 40) bull.push([`F&G CG ${fg} (Fear) — contrarian buy zone`, 2]);
-  else if (fg < 55) bull.push([`F&G CG ${fg} (Cautious)`, 1]);
+  if (fg < TH.FG_NEUTRAL_LOW) bull.push([`F&G CG ${fg} (Fear) — contrarian buy zone`, 2]);
+  else if (fg < TH.FG_NEUTRAL_HIGH) bull.push([`F&G CG ${fg} (Cautious)`, 1]);
   else if (fg > 70) bear.push([`F&G CG ${fg} (Greed) — froth risk`, -2]);
   if (market.ret_90d > 10) bull.push([`BTC 90d ${market.ret_90d.toFixed(2)}%`, 1]);
   if (market.ret_30d > 5) bull.push([`BTC 30d ${market.ret_30d.toFixed(2)}%`, 1]);
@@ -1364,7 +1373,7 @@ function m23_unified_decision(M, s) {
   }
 
   // ---- P2: STOP-LOSS TRIGGERED (BTC < threshold + F&G extreme fear) ----
-  if (btcP < s.bep_threshold && fg <= 15) {
+  if (btcP < s.bep_threshold && fg <= TH.FG_EXTREME_FEAR) {
     const sellPct = 30;
     const btcSell = s.holdings.BTC.qty * sellPct / 100;
     return {
@@ -1455,7 +1464,7 @@ function m23_unified_decision(M, s) {
 
   // ---- P4a: CAPITULATION (true extreme bear) ----
   // Chỉ pause DCA hoàn toàn khi market thật sự crash (P(bull)<15% + F&G<=20 + momentum<-10%)
-  if (M.m22.pBull_final < 0.15 && fg <= 20 && (s.market.ret_30d || 0) < -10) {
+  if (M.m22.pBull_final < TH.PBULL_CAPITULATION && fg <= TH.FG_CAPITULATION && (s.market.ret_30d || 0) < TH.MOMENTUM_CAPITULATION) {
     return {
       priority: 3, severity: 'CRITICAL', icon: '🚨', color: '#ef4444',
       title: 'CAPITULATION — TẠM DỪNG DCA, CHUẨN BỊ DEFENSIVE',
@@ -1508,7 +1517,7 @@ function m23_unified_decision(M, s) {
   // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40) ----
   const dipPct = sma20 > 0 ? (1 - btcP / sma20) * 100 : 0;
   const loanCapacityRemaining = M.m7.soft - M.loan;
-  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < 40 && M.m22.pBull_final > 0.40) {
+  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < TH.FG_NEUTRAL_LOW && M.m22.pBull_final > TH.PBULL_DIP_BUY_MIN) {
     const buyAmount = Math.min(loanCapacityRemaining * 0.5, M.m1.net * 0.05);
     return {
       priority: 4, severity: 'HIGH', icon: '🎯', color: '#10b981',
@@ -1597,7 +1606,7 @@ function m23_unified_decision(M, s) {
   }
 
   // ---- P8: BULL + UNDERWATER COIN (tilt Pool to underwater) ----
-  if (M.m22.pBull_final > 0.55) {
+  if (M.m22.pBull_final > TH.PBULL_BULL_TILT) {
     let worstUnderwater = '', worstBep = 0;
     for (const a of ['LINK', 'BNB', 'WBETH', 'BTC']) {
       const bep = M.m2[a]?.bep_gap || 0;
@@ -2076,29 +2085,30 @@ function m29_backtest(klineHistory, state, opts = {}) {
       // === M23 cascade simplified ===
       let action = 'P9_DEFAULT';
 
-      // P1 Liquidation
-      if (loan > gross * 0.40 * 0.90) {
-        const repay = Math.min(usdc, loan - gross * 0.40 * 0.90);
+      // P1 Liquidation (LTV beyond hard floor — gross × (1−LTV_HARD_FLOOR) × MMR is max safe debt)
+      const hardDebtCap = gross * (1 - TH.LTV_HARD_FLOOR) * TH.EFFECTIVE_MMR;
+      if (loan > hardDebtCap) {
+        const repay = Math.min(usdc, loan - hardDebtCap);
         usdc -= repay; loan -= repay;
         action = 'P1_REPAY';
       }
       // P2 Stop-loss
-      else if (btcP < 65000 && fg <= 15) {
+      else if (btcP < TH.BTC_STOPLOSS_DEFAULT && fg <= TH.FG_EXTREME_FEAR) {
         const sellQty = qtyBTC * 0.30;
         usdc += sellQty * btcP;
         qtyBTC -= sellQty;
         action = 'P2_STOPLOSS';
       }
       // P3 TP fired (need avg cost — approximate with running avg)
-      else if (btcP > refPrice * 1.40 && fg >= 65 && pBull_final > 0.55) {
+      else if (btcP > refPrice * 1.40 && fg >= TH.FG_GREED && pBull_final > TH.PBULL_BULL_TILT) {
         const sellQty = qtyBTC * 0.15;
         cashFromTP += sellQty * btcP * 0.60;
         usdc += sellQty * btcP * 0.40;
         qtyBTC -= sellQty;
         action = 'P3_TP';
       }
-      // P4 Bear regime
-      else if (pBull_final < 0.30) {
+      // P4 Bear regime (cautious bear boundary)
+      else if (pBull_final < TH.PBULL_CAUTIOUS_BEAR) {
         // Reduce risk: 10% spot → USDC, no DCA boost
         if (qtyAlt > 0) {
           const sellAlt = qtyAlt * 0.10;
@@ -2107,8 +2117,8 @@ function m29_backtest(klineHistory, state, opts = {}) {
         }
         action = 'P4_BEAR';
       }
-      // P5 Dip buy
-      else if (sma20 && btcP < sma20 * 0.92 && loan < gross * 0.40 * 0.50 && fg < 40 && pBull_final > 0.40) {
+      // P5 Dip buy — loan capacity check: needs <50% of soft cap = loan < gross*(1-LTV_TARGET)*0.5
+      else if (sma20 && btcP < sma20 * TH.DIP_SMA_PCT && loan < gross * (1-TH.LOAN_LTV_TARGET) * 0.50 && fg < TH.FG_NEUTRAL_LOW && pBull_final > TH.PBULL_DIP_BUY_MIN) {
         const buyAmt = Math.min(usdc * 0.30, gross * 0.05);
         if (buyAmt > 50) {
           qtyBTC += buyAmt / btcP;
@@ -2117,7 +2127,7 @@ function m29_backtest(klineHistory, state, opts = {}) {
         }
       }
       // P8 Bull underwater (tilt to BTC if bull)
-      else if (pBull_final > 0.55) {
+      else if (pBull_final > TH.PBULL_BULL_TILT) {
         action = 'P8_BULL_TILT';
       }
 
@@ -3162,9 +3172,9 @@ function render() {
     + safeRender('DecisionLog', renderDecisionLog);
   document.getElementById('panel-quantum').innerHTML = quantumHTML;
 
-  // SETTINGS: validation appended after static settings cards
+  // SETTINGS: validation appended after static settings cards (wrap in safeRender)
   const settingsExtra = document.getElementById('settings-extra');
-  if (settingsExtra) settingsExtra.innerHTML = renderValidation(M);
+  if (settingsExtra) settingsExtra.innerHTML = safeRender('Validation', renderValidation);
 
   // Active actions count badge on Strategy tab
   const actionsCount = (strategyHTML.match(/border-left:4px solid var\(/g) || []).length;
@@ -3637,7 +3647,7 @@ function renderExpertPlaybook(M) {
 
   // === Action 6: Cash reserve management ===
   const cashPct = (state.holdings.USDC.value || 0) / M.m1.gross * 100;
-  if (cashPct < 2 && fg < 40) {
+  if (cashPct < 2 && fg < TH.FG_NEUTRAL_LOW) {
     addAction(3, '⚠ ADVISORY', `Build cash reserve khi F&G Fear`, `Cash ${cashPct.toFixed(1)}% < 2% target`, `Convert ~$100 từ underwater alt (LINK/BNB) sang USDC để có ammo dip-buy T3 nếu BTC < $72K`, 0, 0.3, 'low (just liquidity prep)', 'Dry powder for deeper dips. Insurance cost.');
   }
 
@@ -4426,7 +4436,7 @@ function renderLoan(M) {
   ];
   let rows = '';
   for (const r of ratios) {
-    const liq = state.holdings.BTC.price * (r.size / (M.m1.gross * EFFECTIVE_MMR));
+    const liq = state.holdings.BTC.price * (r.size / (M.m1.gross * TH.EFFECTIVE_MMR));
     const c = r.eq >= 60 ? 'var(--green)' : (r.eq >= 55 ? 'var(--yellow)' : (r.eq >= 50 ? 'var(--orange)' : 'var(--red)'));
     rows += `<tr ${r.label.includes('CURRENT')?'style="background:rgba(249,115,22,0.05)"':''}><td><b>${r.label}</b></td><td>${M.m1.net>0 ? (r.size/M.m1.net*100).toFixed(1)+'%' : '—'}</td><td style="color:${c}">${r.eq.toFixed(2)}%</td><td>${fmt$(liq,0)}</td></tr>`;
   }
@@ -4604,31 +4614,6 @@ function renderSignals(M) {
       <div style="font-family:var(--display);font-weight:700;color:var(--red);margin-bottom:0.4rem">🐻 Bear factors</div>
       ${bearRows || '<div style="color:var(--muted);font-size:0.85rem">none</div>'}
     </div>
-  </div>`;
-}
-
-function renderJourney(M) {
-  const p = state.prev;
-  const rows = [
-    ['BTC price', fmt$(p.btc_price), fmt$(state.holdings.BTC.price), state.holdings.BTC.price - p.btc_price],
-    ['F&G CG', p.fg, state.market.fg_cg, state.market.fg_cg - p.fg],
-    ['Gross', fmt$(p.gross), fmt$(M.m1.gross), M.m1.gross - p.gross],
-    ['Loan', fmt$(p.loan), fmt$(M.loan), M.loan - p.loan],
-    ['NET', fmt$(p.net), fmt$(M.m1.net), M.m1.net - p.net],
-    ['Pool value', fmt$(p.pool_value), fmt$(state.pool.value), state.pool.value - p.pool_value],
-    ['Pool LINK', p.pool_alloc.LINK+'%', state.pool.plan_alloc.LINK+'%', state.pool.plan_alloc.LINK - p.pool_alloc.LINK + 'pp'],
-    ['Pool BTC', p.pool_alloc.BTC+'%', state.pool.plan_alloc.BTC+'%', state.pool.plan_alloc.BTC - p.pool_alloc.BTC + 'pp'],
-  ];
-  let html = '';
-  for (const r of rows) {
-    const d = typeof r[3] === 'number' ? r[3] : parseFloat(r[3]);
-    const c = d > 0 ? 'var(--green)' : (d < 0 ? 'var(--red)' : 'var(--muted)');
-    const display = typeof r[3] === 'number' ? (d>=0?'+':'')+r[3].toFixed(2) : r[3];
-    html += `<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td class="mono" style="color:${c}">${display}</td></tr>`;
-  }
-  return `<div id="journey" class="section-title">🛤️ Hành Trình (trước → hiện tại)</div>
-  <div class="card">
-  <table><thead><tr><th>Metric</th><th>Prev</th><th>Current</th><th>Δ</th></tr></thead><tbody>${html}</tbody></table>
   </div>`;
 }
 
@@ -4924,48 +4909,48 @@ function renderQuantumPlaybook(M) {
   const actions = [];
   const r17 = M.m17, r18 = M.m18, r20 = M.m20, r21 = M.m21, r22 = M.m22;
 
-  // Action 1: Regime-based
+  // Signal 1: Regime status (info-only — actions ở M23, rule #12)
   if (r22.regime === 'BEAR_HIGH_CONVICTION') {
-    actions.push({prio:1, color:'var(--red)', title:'🚨 BEAR regime cao — bảo toàn vốn',
-      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% < 30%. Khuyến nghị: (1) tăng USDC weight 5-10pp; (2) chuẩn bị stop-loss BTC ${fmt$(state.bep_threshold)}; (3) giảm pool DCA về 50% normal.`});
+    actions.push({prio:1, color:'var(--red)', title:'🚨 BEAR regime cao — signal status',
+      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% < 30%. M22 detect bear conviction cao. Stop-loss BTC reference ${fmt$(state.bep_threshold)}. → M23 cascade sẽ chọn P2/P4a/P4b tùy F&G + momentum.`});
   } else if (r22.regime === 'BULL_HIGH_CONVICTION') {
-    actions.push({prio:1, color:'var(--green)', title:'✅ BULL regime cao — tăng cường execution',
-      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% ≥ 70%. Khuyến nghị: (1) full DCA chứa loan; (2) chuẩn bị TP triggers; (3) cân nhắc nhập thêm spot dip.`});
+    actions.push({prio:1, color:'var(--green)', title:'✅ BULL regime cao — signal status',
+      detail:`P(bull)=${(r22.pBull_final*100).toFixed(0)}% ≥ 70%. M22 detect bull conviction cao. → M23 cascade sẽ ưu tiên P3/P5/P8 tùy giá vs avg + dip vs SMA20.`});
   }
 
-  // Action 2: Sharpe-based
+  // Signal 2: Sharpe diagnostic (info-only)
   if (r17 && r17.sharpe < 0.5 && r17.sample_size >= 30) {
     actions.push({prio:2, color:'var(--orange)', title:'⚠️ Sharpe thấp — risk-adjusted return kém',
-      detail:`Sharpe ${r17.sharpe.toFixed(2)} < 0.5 (target ≥1). Strategy đang chịu volatility quá cao so với return. Cân nhắc: giảm leverage hoặc shift về Min-Variance weights.`});
+      detail:`Sharpe ${r17.sharpe.toFixed(2)} < 0.5 (target ≥1). Strategy chịu volatility cao so với return. → M23 cascade tự điều chỉnh khi P(bull) giảm.`});
   }
 
-  // Action 3: MaxDD warning
+  // Signal 3: MaxDD diagnostic (info-only)
   if (r17 && r17.maxDD_pct > 25) {
     actions.push({prio:2, color:'var(--orange)', title:`📉 MaxDD ${r17.maxDD_pct.toFixed(1)}% — vượt comfort zone`,
-      detail:`Historical max drawdown ${r17.maxDD_pct.toFixed(1)}% vượt 25%. Nếu repeat → có thể vi phạm stop-loss psychology. Cân nhắc giảm vol exposure.`});
+      detail:`Historical max drawdown ${r17.maxDD_pct.toFixed(1)}% vượt 25%. Nếu repeat → có thể vi phạm stop-loss psychology. Diagnostic only.`});
   }
 
-  // Action 4: OU mean-reversion buy signals
+  // Signal 4: OU mean-reversion signal (info-only — M23 sẽ consume nếu fire dip-buy)
   if (r18) {
     for (const sym of ['BTC', 'WBETH', 'BNB', 'LINK']) {
       const a = r18[sym];
       if (a && a.ouZ < -2 && a.hurst < 0.5) {
-        actions.push({prio:3, color:'var(--green)', title:`🎯 ${sym} mean-revert buy signal`,
-          detail:`OU Z-score ${a.ouZ.toFixed(2)} < -2 (oversold) + Hurst ${a.hurst.toFixed(2)} < 0.5 (mean-reverting). Statistical edge to buy. Position size: Quarter Kelly cho mỗi tier.`});
+        actions.push({prio:3, color:'var(--green)', title:`🎯 ${sym} mean-revert oversold signal`,
+          detail:`OU Z-score ${a.ouZ.toFixed(2)} < -2 (oversold) + Hurst ${a.hurst.toFixed(2)} < 0.5 (mean-reverting). Statistical signal — M23 P5 sẽ consume nếu các gate khác match (BTC < SMA20 × 0.92, F&G < 40, P(bull) > 40%).`});
       } else if (a && a.ouZ > 2 && a.hurst < 0.5) {
-        actions.push({prio:3, color:'var(--orange)', title:`⚠️ ${sym} overbought mean-revert risk`,
-          detail:`OU Z ${a.ouZ.toFixed(2)} > 2 + Hurst ${a.hurst.toFixed(2)}. Cân nhắc partial TP hoặc tighten stop.`});
+        actions.push({prio:3, color:'var(--orange)', title:`⚠️ ${sym} overbought mean-revert risk signal`,
+          detail:`OU Z ${a.ouZ.toFixed(2)} > 2 + Hurst ${a.hurst.toFixed(2)}. Overbought signal — M23 P3 sẽ consume nếu chạm TP tier + F&G ≥ 65.`});
       }
     }
   }
 
-  // Action 5: Markowitz rebalance — REMOVED (D2 fix): M23 không consume m20, info-only trong Markowitz tab
+  // Signal 5: Markowitz rebalance — REMOVED (D2 fix): M23 không consume m20, info-only trong Markowitz tab
 
-  // Action 6: Kelly futures
+  // Signal 6: Kelly futures sizing (info-only — sizing reference cho M23 P7 squeeze)
   if (r21 && r21.quarter_kelly_pct > 0) {
     const uncertWarn = r21.uncertain ? ` ⚠️ Sample nhỏ (n=${r21.n_trades}) — shrinkage ${(r21.shrinkage*100).toFixed(0)}%.` : '';
-    actions.push({prio:5, color:'var(--purple)', title:`💰 Kelly position size (Bayesian)`,
-      detail:`Quarter Kelly = ${r21.quarter_kelly_pct.toFixed(2)}% NET. Với NET ${fmt$(M.m1.net)} → futures size ${fmt$(M.m1.net * r21.quarter_kelly_pct / 100)}/trade. p_posterior=${r21.p_post_pct.toFixed(0)}%, b=${r21.payoff_ratio.toFixed(2)}.${uncertWarn}`});
+    actions.push({prio:5, color:'var(--purple)', title:`💰 Kelly position size reference`,
+      detail:`Quarter Kelly = ${r21.quarter_kelly_pct.toFixed(2)}% NET. Với NET ${fmt$(M.m1.net)} → reference size ${fmt$(M.m1.net * r21.quarter_kelly_pct / 100)}/trade. p_posterior=${r21.p_post_pct.toFixed(0)}%, b=${r21.payoff_ratio.toFixed(2)}.${uncertWarn} → M23 P7 squeeze sẽ dùng sizing này nếu fire.`});
   }
 
   if (actions.length === 0) {
