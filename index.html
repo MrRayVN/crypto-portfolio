@@ -1403,6 +1403,40 @@ function m23_unified_decision(M, s) {
     };
   }
 
+  // ---- P0.5: DRAWDOWN CIRCUIT BREAKER (severe tiers) ----
+  // Fires khi drawdown ≥ 25% (SCALE_OUT_20 trở lên). Tier WARN/HEDGE_FORCE chỉ block
+  // P5/P7 nhẹ thông qua các gate riêng (xem dưới), không fire P0.5 standalone.
+  if (M.m41?.is_breaker_active && M.m41.drawdown_pct >= 25 && !M.m35?.active) {
+    const dd = M.m41;
+    const usdc_qty = s.holdings.USDC?.qty || 0;
+    const crypto_value = M.m1.gross - usdc_qty;
+    const scale_out_pct = dd.tier === 'SCALE_OUT_40' ? 40 : dd.tier === 'EMERGENCY_LOCK' ? 50 : 20;
+    const scale_out_usd = crypto_value * scale_out_pct / 100;
+    return {
+      priority: 0.5, severity: dd.severity, icon: '📉', color: dd.color,
+      title: `DRAWDOWN BREAKER ${dd.tier} — DD ${dd.drawdown_pct.toFixed(1)}% từ peak ${fmt$(dd.peak_net)}`,
+      coin: null, amount: scale_out_usd, deadline: 'TRONG 24-48 GIỜ',
+      action_steps: [
+        `🚨 Drawdown ${dd.drawdown_pct.toFixed(1)}% từ peak NET ${fmt$(dd.peak_net)} → hiện ${fmt$(dd.current_net)} (mất ${fmt$(dd.drawdown_usd)})`,
+        `1. SCALE OUT ${scale_out_pct}% crypto value (${fmt$(scale_out_usd)}) → USDC Flexible Earn`,
+        `   Ưu tiên bán: loser nhất (BEP gap cao nhất) trước, BTC sau cùng`,
+        `2. Activate Hedge P4c (force fire bất kể gate): Short BTC perp 2× margin ${fmt$(M.m1.net * (dd.tier === 'SCALE_OUT_40' ? 0.03 : 0.015))}`,
+        dd.tier === 'EMERGENCY_LOCK' ? `3. ❌ KHÔNG entry mới đến khi 2 recovery signals: pBull > 0.40 AND drawdown < 30%` : `3. Pause Auto-Invest DCA aggressive — chỉ giữ $5/d minimum`,
+        `4. Repay loan tối thiểu ${fmt$(Math.min(M.loan, M.m1.net * 0.10))} để giảm leverage exposure`,
+        `5. Monitor recovery: resume normal cascade khi drawdown < 15% AND 2 recovery signals`,
+      ],
+      rationale: [
+        `<b>M41 Drawdown Breaker active</b>: ${dd.tier} (${dd.severity})`,
+        `Peak NET tracked: ${fmt$(dd.peak_net)} · Current NET: ${fmt$(dd.current_net)} · Loss: ${fmt$(dd.drawdown_usd)} (${dd.drawdown_pct.toFixed(1)}%)`,
+        `Blocked actions: ${dd.action_block.join(', ')}`,
+        `Allowed: ${dd.allowed_actions}`,
+        `Logic: capital preservation > alpha hunting (doctrine #1). Year-end PnL không bị wipe out bởi 1 event.`,
+      ],
+      blocks: dd.action_block.map(a => `❌ ${a}`),
+      sources_fired: ['M41 Drawdown Circuit Breaker', `Tier ${dd.tier}`],
+    };
+  }
+
   // ---- P1: LIQUIDATION RISK (vượt hard cap) ----
   if (M.m7.over_hard > 0) {
     return {
@@ -1526,6 +1560,43 @@ function m23_unified_decision(M, s) {
   // ---- P3.0: DCA CAPACITY — folded into M33 scenarios (loan-funded by default) ----
   // M32 still tracked for capacity diagnostics; shortage_until_deposit auto-added to M33 loan amounts.
 
+  // ---- P3.7: M37 EXPOSURE REBALANCE — scale crypto/stable theo cycle phase ----
+  // Fires khi delta giữa target và effective crypto pct > 8pp (high priority adjust)
+  // Skip nếu M41 đang fire SCALE_OUT severe (M41 ưu tiên hơn)
+  if (M.m37 && Math.abs(M.m37.delta_pp) >= 8 && !(M.m41?.is_breaker_active && M.m41.drawdown_pct >= 25)) {
+    const isScaleOut = M.m37.exposure_action === 'SCALE_OUT';
+    const absPp = Math.abs(M.m37.delta_pp);
+    const adjustUsd = M.m1.gross * absPp / 100;
+    return {
+      priority: 3.7, severity: 'MEDIUM', icon: isScaleOut ? '📉' : '📈', color: '#06b6d4',
+      title: `${isScaleOut ? 'SCALE OUT' : 'SCALE IN'} CRYPTO ${absPp.toFixed(0)}pp — Phase ${M.m37.phase}`,
+      coin: null, amount: adjustUsd, deadline: 'TRONG 1-3 NGÀY',
+      action_steps: isScaleOut ? [
+        `Phase hiện tại: <b>${M.m37.phase}</b> → target crypto ${M.m37.target_crypto_pct}% vs effective ${M.m37.effective_crypto_pct.toFixed(1)}%`,
+        `1. Bán ${absPp.toFixed(0)}% crypto (${fmt$(adjustUsd)}) — ưu tiên: coin BEP gap thấp nhất (đã lãi nhất)`,
+        `2. Chuyển proceeds → USDC Flexible Earn 5.5% APR (dry powder cho phase sau)`,
+        `3. Order suggestion: chia 2-3 entry (TWAP) để giảm slippage`,
+        `4. Sau scale-out: cập nhật peakNet trong localStorage để M41 tracking đúng`,
+      ] : [
+        `Phase hiện tại: <b>${M.m37.phase}</b> → target crypto ${M.m37.target_crypto_pct}% vs effective ${M.m37.effective_crypto_pct.toFixed(1)}%`,
+        `1. Mua thêm ${absPp.toFixed(0)}% crypto (${fmt$(adjustUsd)}) từ USDC Earn`,
+        `2. Phân bổ theo Pool plan_alloc + tilt sang worst underwater (cải thiện giá vốn)`,
+        `3. Nếu target > 100% → cần vay loan thêm (max safe ${fmt$(M.m7.accept)} accept cap)`,
+        `4. Order suggestion: chia 2-3 entry (TWAP) để giảm slippage`,
+      ],
+      rationale: [
+        `<b>M37 Cycle Phase: ${M.m37.phase}</b>`,
+        M.m37.narrative,
+        `Effective crypto: ${M.m37.effective_crypto_pct.toFixed(1)}% (spot ${M.m37.current_crypto_pct.toFixed(1)}% + leverage ${M.m37.leverage_pct.toFixed(1)}%)`,
+        `Target crypto: ${M.m37.target_crypto_pct}% · Delta: ${M.m37.delta_pp >= 0 ? '+' : ''}${M.m37.delta_pp.toFixed(1)}pp → ${M.m37.exposure_action}`,
+        `Hedge target: ${M.m37.hedge_pct_nav}% NAV (active nếu phase BEAR/EARLY_BEAR/DISTRIBUTION)`,
+        `Doctrine #2: cycle timing > intuition. Edge từ scale-out near top + scale-in near bottom.`,
+      ],
+      blocks: [],
+      sources_fired: ['M37 Cycle Phase', 'M22 Regime', 'M27 On-chain MVRV', 'M28 Funding'],
+    };
+  }
+
   // ---- P3.5: PATH-TO-TARGET — fire aggressively whenever behind target ----
   // Nguyên tắc: "bằng mọi cách hit 35%". P3.5 ưu tiên cao hơn P4b cautious bear.
   // Fire ngay cả khi mới đầu chu kỳ, miễn là có gap > 5% và không trong capitulation extreme.
@@ -1598,16 +1669,18 @@ function m23_unified_decision(M, s) {
   //            M28 longs overheated (funding squeeze ngược chiều mình),
   //            M25 NOT correlation crisis (correlations còn divergent = hedge có edge),
   //            M.stress -30% drop equity ≥ 40% (đủ buffer để hold hedge)
-  // Mục tiêu: protect cost basis spot bằng small short, market-neutralize partial exposure
+  // OR M41 force-fire (drawdown ≥ 15%) — override bình thường gates trong drawdown
   const m25Crisis = M.m25?.regime === 'CORRELATION_CRISIS';
   const m28OverheatedActive = M.m28?.grade === 'OVERHEATED_LONGS' || M.m28?.grade === 'NO_EDGE';
   const stress30 = M.stress?.[2]; // index 2 = -30% drop
   const stressSafeForHedge = !stress30 || stress30.equity >= 40;
-  if (M.m22.pBull_final < 0.30
-      && M.m22.pBull_final >= TH.PBULL_CAPITULATION
-      && m28OverheatedActive
-      && !m25Crisis
-      && stressSafeForHedge) {
+  const m41ForceHedge = M.m41?.drawdown_pct >= 15 && M.m41?.drawdown_pct < 25 && !m25Crisis && stressSafeForHedge;
+  const normalP4c = M.m22.pBull_final < 0.30
+                  && M.m22.pBull_final >= TH.PBULL_CAPITULATION
+                  && m28OverheatedActive
+                  && !m25Crisis
+                  && stressSafeForHedge;
+  if (normalP4c || m41ForceHedge) {
     const hedgeSize = M.m1.net * 0.015; // 1.5% NAV
     return {
       priority: 4.5, severity: 'MEDIUM', icon: '🛡️', color: '#a78bfa',
@@ -1661,14 +1734,15 @@ function m23_unified_decision(M, s) {
     };
   }
 
-  // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40 + stress-safe) ----
+  // ---- P5: DIP BUY OPPORTUNITY (BTC < SMA20 × 0.92 + LTV<65% + F&G<40 + stress-safe + drawdown-safe) ----
   const dipPct = sma20 > 0 ? (1 - btcP / sma20) * 100 : 0;
   const loanCapacityRemaining = M.m7.soft - M.loan;
   // M8 stress gate: skip dip-buy if even a -20% BTC drop would push equity below MMR floor
-  // (M.stress[1] = -20% scenario; equity must stay >= 50% to avoid liquidation cascade)
   const stress20 = M.stress?.[1];
   const stressSafe = !stress20 || stress20.equity >= 50;
-  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < TH.FG_NEUTRAL_LOW && M.m22.pBull_final > TH.PBULL_DIP_BUY_MIN && stressSafe) {
+  // M41 drawdown gate: skip P5 nếu DD ≥ 10% (block leverage trong drawdown)
+  const drawdownSafe = !M.m41 || M.m41.drawdown_pct < 10;
+  if (dipPct > 8 && loanCapacityRemaining > 100 && fg < TH.FG_NEUTRAL_LOW && M.m22.pBull_final > TH.PBULL_DIP_BUY_MIN && stressSafe && drawdownSafe) {
     const buyAmount = Math.min(loanCapacityRemaining * 0.5, M.m1.net * 0.05);
     return {
       priority: 4, severity: 'HIGH', icon: '🎯', color: '#10b981',
@@ -1686,9 +1760,10 @@ function m23_unified_decision(M, s) {
         `F&G ${fg} < 40 (Fear zone — contrarian buy)`,
         `P(bull) ${(M.m22.pBull_final*100).toFixed(0)}% > 40% — không phải extreme bear`,
         stress20 ? `M8 stress -20% drop: equity sẽ giữ ${stress20.equity.toFixed(1)}% ≥ 50% (safe để add leverage)` : 'M8 stress data N/A',
+        M.m41 ? `M41 drawdown ${M.m41.drawdown_pct.toFixed(1)}% < 10% (drawdown-safe gate passed)` : 'M41 N/A',
       ],
       blocks: [],
-      sources_fired: ['Dip Ladder (Lever #1)', 'M7 Loan Framework', 'M22 Regime', 'M8 Stress Test'],
+      sources_fired: ['Dip Ladder (Lever #1)', 'M7 Loan Framework', 'M22 Regime', 'M8 Stress Test', 'M41 Drawdown Breaker'],
     };
   }
 
@@ -1728,10 +1803,12 @@ function m23_unified_decision(M, s) {
   }
 
   // ---- P7: FUNDING SQUEEZE — uses shared computeSqueezeGate (Tactical ARM + M28) ----
+  // M41 drawdown gate: block P7 nếu DD ≥ 10% (no new leverage trong drawdown)
   const m28 = M.m28;
   const squeezeGate = computeSqueezeGate(M);
   const squeezeReady = squeezeGate.ready;
-  if (squeezeReady && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60) {
+  const drawdownSafeForSqueeze = !M.m41 || M.m41.drawdown_pct < 10;
+  if (squeezeReady && fg > 35 && M.m22.pBull_final > 0.45 && M.m1.equity_ratio > 60 && drawdownSafeForSqueeze) {
     const sqAmount = M.m21?.quarter_kelly_pct > 0
       ? M.m1.net * M.m21.quarter_kelly_pct / 100 : M.m1.net * 0.02;
     return {
@@ -1829,16 +1906,22 @@ function m23_unified_decision(M, s) {
       `2. Theo dõi F&G hàng ngày (hiện ${fg}) và BTC price (${fmt$(btcP,0)})`,
       `3. Refresh dashboard mỗi 6-24h để cập nhật signals`,
       `4. PnL status: ${pnlNote}`,
-    ],
+      M.m40 ? `5. <b>M40 nạp tiền</b> (${M.m40.urgency}): ${M.m40.recommendation}` : '',
+      M.m42 && M.m42.urgency !== 'OK' ? `6. <b>M42 stable floor</b>: target ${M.m42.target_stable_pct.toFixed(0)}% vs hiện ${M.m42.current_stable_pct.toFixed(1)}% → ${M.m42.action} ${fmt$(M.m42.adjustment_usd)}` : '',
+      M.m39?.available && M.m39.idle_usdc_usd > 200 ? `7. <b>M39 USDC idle</b>: ${M.m39.recommendation}` : '',
+    ].filter(Boolean),
     rationale: [
       'Không có signal nào kích hoạt trên ngưỡng',
       `Regime ${M.m22.regime.replace(/_/g, ' ')} (P bull ${(M.m22.pBull_final*100).toFixed(0)}%) — không cần can thiệp`,
       `Loan ${fmt$(M.loan)} dưới soft cap ${fmt$(M.m7.soft)} (${M.m7.liq_dist.toFixed(1)}% liq distance)`,
       `Pool plan health: ${planHealth.aligned ? 'aligned' : `drift ${planHealth.maxDiff.toFixed(1)}pp (chưa đến ngưỡng 15pp)`}`,
       `Crypto position: Cost basis ${fmt$(_pnl.cost)} · Market value ${fmt$(_pnl.market_value)} · Unrealized PnL ${fmt$signed(_pnl.unrealized)} (${fmtPct(_pnl.cost > 0 ? _pnl.unrealized/_pnl.cost*100 : 0)})`,
-    ],
+      M.m37 ? `<b>M37 cycle phase ${M.m37.phase}</b>: ${M.m37.narrative}` : '',
+      M.m41 ? `<b>M41 drawdown ${M.m41.drawdown_pct.toFixed(1)}%</b> từ peak ${fmt$(M.m41.peak_net)} (tier ${M.m41.tier})` : '',
+      M.m36 ? `<b>M36 cumulative Year ${M.m36.current_year_n}</b>: ${M.m36.narrative.slice(0, 200)}...` : '',
+    ].filter(Boolean),
     blocks: [],
-    sources_fired: ['All M1-M22 within neutral bands', 'computeTruePnL'],
+    sources_fired: ['All M1-M22 within neutral bands', 'computeTruePnL', 'M37 phase', 'M40 timing', 'M42 floor', 'M41 breaker'],
   };
 }
 
@@ -1890,6 +1973,16 @@ function buildMaster(s) {
     const pnl = computeTruePnL(M);
     M.m36 = m36_cumulative_target(s, pnl.true_pnl_pct);
   } catch (e) { console.error('[M36] failed:', e); M.m36 = null; }
+  // M37 Cycle Phase Detector: classify 7 phases + exposure scaling target
+  try { M.m37 = m37_cycle_phase(M, s); } catch (e) { console.error('[M37] failed:', e); M.m37 = null; }
+  // M40 Tactical Capital Deployment: when to deposit fiat
+  try { M.m40 = m40_deposit_timing(s, M); } catch (e) { console.error('[M40] failed:', e); M.m40 = null; }
+  // M42 Stablecoin Floor: dynamic stable % target theo quarter + M37 phase
+  try { M.m42 = m42_stable_floor(s, M); } catch (e) { console.error('[M42] failed:', e); M.m42 = null; }
+  // M39 Earn Yield Maximization: compare Binance Earn products, recommend allocation
+  try { M.m39 = m39_earn_yield_max(s, M); } catch (e) { console.error('[M39] failed:', e); M.m39 = null; }
+  // M41 Drawdown Circuit Breaker: track peak NET, trigger defensive cascade tại drawdown tiers
+  try { M.m41 = m41_drawdown_breaker(M, s); } catch (e) { console.error('[M41] failed:', e); M.m41 = null; }
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
   try { M.m32 = m32_dca_capacity(M.holdings); } catch (e) { console.error('[M32] failed:', e); M.m32 = null; }
   try { M.m33 = m33_path_to_target(M); } catch (e) { console.error('[M33] failed:', e); M.m33 = null; }
@@ -2672,6 +2765,336 @@ function m34_vol_state(market, coinalyze, m17, klineHistory) {
       move_24h_abs_pct: move24h,
       funding_std: fundingStd,
     },
+  };
+}
+
+// ===================== M39: EARN YIELD MAXIMIZATION =====================
+// Compare Binance Earn products cho USDC/USDT. Hardcoded typical rates (Binance API
+// có thể fetch nhưng cần worker route — keep static reference cho hiện tại).
+// Logic: split idle USDC across products dựa trên liquidity needs.
+function m39_earn_yield_max(s, M) {
+  const totalStable = (s.holdings?.USDC?.qty || 0) + (s.holdings?.USDT?.qty || 0);
+  if (totalStable < 100) return { available: false, reason: 'Stable < $100, không cần optimize' };
+
+  // Known Binance Earn products (typical APRs, có thể change)
+  const products = [
+    { name: 'Flexible USDC', apr: 5.5, liquidity: 'instant', risk: 'none', allocation_pct: 50 },
+    { name: 'Locked 30d USDC', apr: 8.0, liquidity: '30d lock', risk: 'opportunity cost', allocation_pct: 30 },
+    { name: 'Locked 60d USDC', apr: 10.0, liquidity: '60d lock', risk: 'opportunity cost', allocation_pct: 20 },
+  ];
+
+  // Adjust allocation based on M40 deposit timing — nếu BEAR cần liquidity (DCA), tăng Flexible
+  if (M.m40?.multiplier >= 2) {
+    products[0].allocation_pct = 70; // more flexible cho DCA bull
+    products[1].allocation_pct = 20;
+    products[2].allocation_pct = 10;
+  } else if (M.m40?.multiplier === 0) {
+    // EUPHORIA — không nạp, có thể lock lâu hơn cho yield max
+    products[0].allocation_pct = 30;
+    products[1].allocation_pct = 40;
+    products[2].allocation_pct = 30;
+  }
+
+  // Compute weighted APR + USD allocations
+  let weightedApr = 0;
+  let totalApr = 0;
+  const allocations = products.map(p => {
+    const allocUsd = totalStable * p.allocation_pct / 100;
+    const annualYield = allocUsd * p.apr / 100;
+    weightedApr += (p.apr * p.allocation_pct / 100);
+    totalApr += annualYield;
+    return { ...p, allocation_usd: allocUsd, annual_yield_usd: annualYield };
+  });
+
+  // Current state: detect nếu USDC đang idle (giả định: state.income.usdc_on_earn tracked)
+  const usdcOnEarn = state.income?.usdc_on_earn || 0;
+  const usdcIdle = (s.holdings?.USDC?.qty || 0) - usdcOnEarn;
+  const idleUsd = Math.max(0, usdcIdle);
+  const lostYieldPerYear = idleUsd * 5.5 / 100; // tối thiểu Flexible
+
+  return {
+    available: true,
+    total_stable_usd: totalStable,
+    products: allocations,
+    weighted_apr: weightedApr,
+    total_annual_yield_usd: totalApr,
+    baseline_flexible_only_yield: totalStable * 5.5 / 100,
+    optimization_gain_pct: weightedApr - 5.5,
+    optimization_gain_usd: totalApr - (totalStable * 5.5 / 100),
+    idle_usdc_usd: idleUsd,
+    lost_yield_per_year: lostYieldPerYear,
+    recommendation: idleUsd > 200
+      ? `Có ${fmt$(idleUsd)} USDC idle → kích hoạt Flexible ngay (kiếm ${fmt$(lostYieldPerYear)}/yr passive)`
+      : `Stable đã trên Earn, optimization gain ${weightedApr.toFixed(1)}% APR (+${(weightedApr - 5.5).toFixed(1)}pp vs Flexible only)`,
+  };
+}
+
+// ===================== M40: TACTICAL CAPITAL DEPLOYMENT (when to deposit fiat) =====================
+// Recommend deposit intensity multiplier based on F&G + momentum.
+// Anh nạp định kỳ ngày 6 — module này hint nên nạp gấp/chậm theo cycle phase.
+function m40_deposit_timing(s, M) {
+  const fg = s.market?.fg_cg ?? 50;
+  const ret30 = s.market?.ret_30d ?? 0;
+  const ret7 = s.market?.ret_7d ?? 0;
+  const pBull = M.m22?.pBull_final ?? 0.5;
+  const phase = M.m37?.phase ?? 'MID_BULL';
+  const baseMonthly = (s.funding_yearly || 3650) / 12; // default $304/month
+
+  let multiplier, recommendation, urgency, color;
+  // CAPITULATION / extreme bear → 3× deposit (best entry)
+  if (fg <= TH.FG_EXTREME_FEAR && ret30 < TH.MOMENTUM_CAPITULATION) {
+    multiplier = 3.0;
+    urgency = 'KHẨN CẤP NẠP';
+    recommendation = `F&G ${fg} ≤ 15 extreme fear + momentum 30d ${ret30.toFixed(1)}% < -10%. Đây là vùng entry tốt nhất trong cycle. Nạp gấp 3× tháng = ${fmt$(baseMonthly * 3)}.`;
+    color = '#10b981';
+  }
+  // BEAR / cautious bear → 2× deposit (fear DCA)
+  else if (fg < TH.FG_FEAR || phase === 'BEAR' || phase === 'EARLY_BEAR') {
+    multiplier = 2.0;
+    urgency = 'NÊN NẠP THÊM';
+    recommendation = `F&G ${fg} < 30 hoặc phase ${phase}. Vùng Fear là entry tốt theo DCA philosophy. Nạp 2× tháng = ${fmt$(baseMonthly * 2)}.`;
+    color = '#84cc16';
+  }
+  // NEUTRAL (40-60) → 1× baseline
+  else if (fg >= TH.FG_NEUTRAL_LOW && fg <= TH.FG_NEUTRAL_HIGH) {
+    multiplier = 1.0;
+    urgency = 'NẠP CHUẨN';
+    recommendation = `F&G ${fg} neutral. Maintain baseline DCA pace = ${fmt$(baseMonthly)}/tháng.`;
+    color = '#f59e0b';
+  }
+  // GREED zone (60-75) → 0.5× (save cash for top)
+  else if (fg > TH.FG_NEUTRAL_HIGH && fg <= 75) {
+    multiplier = 0.5;
+    urgency = 'NẠP CHẬM';
+    recommendation = `F&G ${fg} greed zone. Save cash, expect distribution. Nạp 0.5× tháng = ${fmt$(baseMonthly * 0.5)}.`;
+    color = '#fb923c';
+  }
+  // EUPHORIA (>75) → 0× (skip, prepare TP)
+  else {
+    multiplier = 0.0;
+    urgency = 'BỎ QUA THÁNG NÀY';
+    recommendation = `F&G ${fg} euphoria. Top setup likely. SKIP deposit này, chuẩn bị TP. Cash từ profit thay vì nạp mới.`;
+    color = '#ef4444';
+  }
+
+  const suggestedAmount = baseMonthly * multiplier;
+  const savedVsBase = baseMonthly - suggestedAmount;
+
+  return {
+    fg, ret30, ret7, pBull, phase,
+    base_monthly: baseMonthly,
+    multiplier, suggested_amount: suggestedAmount,
+    saved_vs_base: savedVsBase,
+    urgency, recommendation, color,
+  };
+}
+
+// ===================== M42: STABLECOIN FLOOR TARGET =====================
+// Dynamic stable% target dựa trên year progress + M37 phase adjustment.
+// Doctrine #2 + #3: mechanical discipline trên cycle phase, không bị FOMO emotional.
+function m42_stable_floor(s, M) {
+  const cycle = getCycleProgress();
+  const yearProgress = cycle.daysElapsed / 365; // 0-1
+  let baseStablePct;
+  // Base curve theo quarter
+  if (yearProgress < 0.25) baseStablePct = 10;      // Q1
+  else if (yearProgress < 0.50) baseStablePct = 15; // Q2
+  else if (yearProgress < 0.75) baseStablePct = 20; // Q3
+  else baseStablePct = 30;                          // Q4
+
+  // M37 phase adjustment
+  const phase = M.m37?.phase ?? 'MID_BULL';
+  let phaseAdjustment;
+  if (phase === 'EARLY_BULL') phaseAdjustment = -5;
+  else if (phase === 'MID_BULL') phaseAdjustment = 0;
+  else if (phase === 'LATE_BULL') phaseAdjustment = +10;
+  else if (phase === 'DISTRIBUTION') phaseAdjustment = +15;
+  else if (phase === 'EARLY_BEAR') phaseAdjustment = +5;
+  else if (phase === 'BEAR') phaseAdjustment = -5;
+  else if (phase === 'CAPITULATION') phaseAdjustment = -10;
+  else phaseAdjustment = 0;
+
+  const targetStablePct = Math.max(5, Math.min(50, baseStablePct + phaseAdjustment));
+
+  // Current stable
+  const stableValue = (s.holdings?.USDC?.value || 0) + (s.holdings?.USDT?.value || 0);
+  const totalValue = M.m1.gross;
+  const currentStablePct = totalValue > 0 ? stableValue / totalValue * 100 : 0;
+  const delta_pp = targetStablePct - currentStablePct;
+
+  let action, urgency;
+  if (Math.abs(delta_pp) < 3) { action = 'HOLD'; urgency = 'OK'; }
+  else if (delta_pp > 5) { action = 'INCREASE_STABLE'; urgency = 'REBALANCE'; }
+  else if (delta_pp > 0) { action = 'INCREASE_STABLE'; urgency = 'MINOR'; }
+  else if (delta_pp < -5) { action = 'DECREASE_STABLE'; urgency = 'REBALANCE'; }
+  else { action = 'DECREASE_STABLE'; urgency = 'MINOR'; }
+
+  return {
+    year_progress_pct: yearProgress * 100,
+    quarter: yearProgress < 0.25 ? 1 : yearProgress < 0.50 ? 2 : yearProgress < 0.75 ? 3 : 4,
+    base_stable_pct: baseStablePct,
+    phase, phase_adjustment: phaseAdjustment,
+    target_stable_pct: targetStablePct,
+    current_stable_pct: currentStablePct,
+    delta_pp, action, urgency,
+    stable_usd: stableValue,
+    target_stable_usd: totalValue * targetStablePct / 100,
+    adjustment_usd: totalValue * Math.abs(delta_pp) / 100,
+  };
+}
+
+// ===================== M37: CYCLE PHASE DETECTOR + EXPOSURE SCALING =====================
+// Phân loại giai đoạn chu kỳ Bitcoin để điều chỉnh tỷ lệ crypto vs stablecoin chủ động.
+// 7 phases (theo doctrine #1 capital preservation):
+//   EARLY_BULL    pBull>0.55 + MVRV<1 + funding<0    → 120% crypto (leverage on)
+//   MID_BULL      pBull>0.55 + MVRV 1-2 + funding~0  → 100%
+//   LATE_BULL     pBull>0.55 + MVRV>2 + funding>0    → 80% (scale-out 20%)
+//   DISTRIBUTION  pBull 0.40-0.55 + MVRV>2.5         → 60% (scale-out major)
+//   EARLY_BEAR    pBull<0.40 + mom<-5%               → 70% + hedge
+//   BEAR          pBull<0.30                         → 80% (DCA opportunity)
+//   CAPITULATION  pBull<0.15 + extreme               → 90% (back-up-truck)
+// Output: phase, target_crypto_pct, exposure_action {NONE/SCALE_OUT/SCALE_IN/HEDGE}
+function m37_cycle_phase(M, s) {
+  const pBull = M.m22?.pBull_final ?? 0.5;
+  const mvrv = state.onchain?.mvrv ?? null;
+  const nupl = state.onchain?.nupl ?? null;
+  const fundingNow = state.coinalyze?.funding_current ?? s.market?.funding_btc_pct ?? 0;
+  const m28Grade = M.m28?.grade ?? null;
+  const ret30 = s.market?.ret_30d ?? 0;
+  const ret90 = s.market?.ret_90d ?? 0;
+  const fg = s.market?.fg_cg ?? 50;
+
+  // Phase classification (priority order — first match wins)
+  let phase, target_crypto_pct, hedge_pct_nav, narrative;
+
+  // CAPITULATION — extreme bear, max accumulate
+  if (pBull < TH.PBULL_CAPITULATION || (fg <= TH.FG_EXTREME_FEAR && ret30 < TH.MOMENTUM_CAPITULATION)) {
+    phase = 'CAPITULATION';
+    target_crypto_pct = 90;
+    hedge_pct_nav = 0; // no hedge — accumulate spot
+    narrative = `Đầu hàng (capitulation): pBull ${(pBull*100).toFixed(0)}% < 15% hoặc F&G ${fg} extreme + momentum crash. Max accumulate spot, no hedge — đáy gần kề.`;
+  }
+  // BEAR — deep bear, DCA opportunity
+  else if (pBull < 0.30 || (pBull < TH.PBULL_CAUTIOUS_BEAR && ret90 < -15)) {
+    phase = 'BEAR';
+    target_crypto_pct = 80;
+    hedge_pct_nav = m28Grade === 'OVERHEATED_LONGS' ? 1.5 : 0;
+    narrative = `Bear sâu: pBull ${(pBull*100).toFixed(0)}% trong [15-30%] hoặc momentum 90d ${ret90.toFixed(1)}% < -15%. DCA tăng dần để cải thiện giá vốn. Hedge ${hedge_pct_nav}% NAV nếu funding overheated.`;
+  }
+  // EARLY_BEAR — bear sớm
+  else if (pBull < TH.PBULL_CAUTIOUS_BEAR && ret30 < -5) {
+    phase = 'EARLY_BEAR';
+    target_crypto_pct = 70;
+    hedge_pct_nav = 1.5;
+    narrative = `Bear sớm: pBull ${(pBull*100).toFixed(0)}% < 35% + momentum 30d ${ret30.toFixed(1)}% < -5%. Scale out 30% sang USDC, bật hedge 1.5% NAV.`;
+  }
+  // DISTRIBUTION — đỉnh xong, cá voi bán
+  else if (pBull >= 0.40 && pBull < TH.PBULL_BULL_TILT
+           && ((mvrv != null && mvrv > 2.5) || fg > 75)) {
+    phase = 'DISTRIBUTION';
+    target_crypto_pct = 60;
+    hedge_pct_nav = 0.5;
+    narrative = `Phân phối (distribution): pBull ${(pBull*100).toFixed(0)}% [40-55%] + MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2.5 hoặc F&G ${fg} > 75. Cá voi đang bán. Scale out 40% sang USDC.`;
+  }
+  // LATE_BULL — bull đỉnh, sắp distribution
+  else if (pBull >= TH.PBULL_BULL_TILT
+           && ((mvrv != null && mvrv > 2) || fundingNow > 0.0003 || fg > 70)) {
+    phase = 'LATE_BULL';
+    target_crypto_pct = 80;
+    hedge_pct_nav = 0;
+    narrative = `Bull muộn: pBull ${(pBull*100).toFixed(0)}% > 55% + (MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2 hoặc funding ${fundingNow.toFixed(4)} > 0.0003 hoặc F&G ${fg} > 70). Soft TP aggressive, scale-out 20% sang USDC.`;
+  }
+  // EARLY_BULL — bull mới, full leverage allowed
+  else if (pBull >= TH.PBULL_BULL_TILT
+           && ((mvrv != null && mvrv < 1.2) || fundingNow < 0)) {
+    phase = 'EARLY_BULL';
+    target_crypto_pct = 120;
+    hedge_pct_nav = 0;
+    narrative = `Bull sớm: pBull ${(pBull*100).toFixed(0)}% > 55% + (MVRV ${mvrv?.toFixed(2) ?? 'N/A'} < 1.2 hoặc funding âm). Full leverage P5/P7 allowed, 120% crypto exposure.`;
+  }
+  // MID_BULL — bull bình thường
+  else {
+    phase = 'MID_BULL';
+    target_crypto_pct = 100;
+    hedge_pct_nav = 0;
+    narrative = `Bull giữa: pBull ${(pBull*100).toFixed(0)}%, MVRV ${mvrv?.toFixed(2) ?? 'N/A'}, F&G ${fg}. Cascade chuẩn — 100% crypto, không scale.`;
+  }
+
+  // Compute current crypto vs stable allocation
+  const stableValue = (s.holdings?.USDC?.value || 0) + (s.holdings?.USDT?.value || 0);
+  const totalValue = M.m1.gross;
+  const current_stable_pct = totalValue > 0 ? stableValue / totalValue * 100 : 0;
+  const current_crypto_pct = 100 - current_stable_pct;
+  // Adjusted for leverage: crypto exposure = current_crypto + loan/gross × 100
+  const leverage_pct = totalValue > 0 ? M.loan / totalValue * 100 : 0;
+  const effective_crypto_pct = current_crypto_pct + leverage_pct;
+
+  // Action delta
+  const delta_pp = target_crypto_pct - effective_crypto_pct;
+  let exposure_action;
+  if (Math.abs(delta_pp) < 5) exposure_action = 'NONE';
+  else if (delta_pp > 0) exposure_action = 'SCALE_IN'; // need more crypto
+  else exposure_action = 'SCALE_OUT'; // need more stable
+
+  return {
+    phase, target_crypto_pct, hedge_pct_nav, narrative,
+    current_crypto_pct, current_stable_pct, leverage_pct, effective_crypto_pct,
+    delta_pp, exposure_action,
+    inputs: { pBull, mvrv, nupl, fundingNow, m28Grade, ret30, ret90, fg },
+  };
+}
+
+// ===================== M41: DRAWDOWN CIRCUIT BREAKER =====================
+// Track peak NET trong localStorage, compute drawdown từ đỉnh, trigger defensive cascade.
+// 5 tier escalation:
+//   -10%: WARN — pause leverage (P5/P7 block)
+//   -15%: HEDGE_FORCE — force P4c hedge (override gate)
+//   -25%: SCALE_OUT_20 — scale out 20% crypto → USDC
+//   -35%: SCALE_OUT_40 — scale out 40% + hedge expand 3% NAV
+//   -50%: EMERGENCY_LOCK — full lockdown, no new entries, hold/repay only
+// Insert as priority 0.5 in M23 cascade (after Survival P0, before P1 liq).
+function m41_drawdown_breaker(M, s) {
+  const currentNet = M.m1.net;
+  let peakNet = parseFloat(localStorage.getItem('peakNet') || '0');
+  // Initialize peak if first run hoặc current > stored peak
+  if (currentNet > peakNet) {
+    peakNet = currentNet;
+    localStorage.setItem('peakNet', String(peakNet));
+  }
+  const drawdownPct = peakNet > 0 ? (peakNet - currentNet) / peakNet * 100 : 0;
+
+  let tier, severity, color, action_block, allowed_actions;
+  if (drawdownPct < 10) {
+    tier = 'NORMAL'; severity = 'IDLE'; color = '#10b981';
+    action_block = []; allowed_actions = 'all';
+  } else if (drawdownPct < 15) {
+    tier = 'WARN'; severity = 'LOW'; color = '#84cc16';
+    action_block = ['P5_dip_buy', 'P7_squeeze']; allowed_actions = 'no_new_leverage';
+  } else if (drawdownPct < 25) {
+    tier = 'HEDGE_FORCE'; severity = 'MEDIUM'; color = '#f59e0b';
+    action_block = ['P5_dip_buy', 'P7_squeeze', 'P3.5_aggressive_path'];
+    allowed_actions = 'force_p4c_hedge';
+  } else if (drawdownPct < 35) {
+    tier = 'SCALE_OUT_20'; severity = 'HIGH'; color = '#fb923c';
+    action_block = ['P5_dip_buy', 'P7_squeeze', 'P3.5_aggressive_path', 'leverage_add'];
+    allowed_actions = 'scale_out_20pct_to_usdc';
+  } else if (drawdownPct < 50) {
+    tier = 'SCALE_OUT_40'; severity = 'CRITICAL'; color = '#ef4444';
+    action_block = ['ALL_LEVERAGE', 'ALL_NEW_ENTRY'];
+    allowed_actions = 'scale_out_40pct_hedge_expand_3pct';
+  } else {
+    tier = 'EMERGENCY_LOCK'; severity = 'EXTREME'; color = '#dc2626';
+    action_block = ['ALL_NEW_ENTRY', 'ALL_LEVERAGE', 'ALL_DCA_AGGRESSIVE'];
+    allowed_actions = 'hold_repay_emergency_only';
+  }
+
+  return {
+    current_net: currentNet,
+    peak_net: peakNet,
+    drawdown_pct: drawdownPct,
+    drawdown_usd: peakNet - currentNet,
+    tier, severity, color, action_block, allowed_actions,
+    is_breaker_active: drawdownPct >= 10,
   };
 }
 

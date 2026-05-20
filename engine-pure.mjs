@@ -205,3 +205,74 @@ export function activeHedgeFires({ pBull, m28Grade, m25Regime, stress30Equity })
   const stressSafe = stress30Equity == null || stress30Equity >= 40;
   return inBearWindow && fundingBad && notCorrCrisis && stressSafe;
 }
+
+// ===================== M41 Drawdown Breaker tier classification =====================
+export function m41Tier(drawdownPct) {
+  if (drawdownPct < 10) return { tier: 'NORMAL', severity: 'IDLE', is_active: false };
+  if (drawdownPct < 15) return { tier: 'WARN', severity: 'LOW', is_active: true };
+  if (drawdownPct < 25) return { tier: 'HEDGE_FORCE', severity: 'MEDIUM', is_active: true };
+  if (drawdownPct < 35) return { tier: 'SCALE_OUT_20', severity: 'HIGH', is_active: true };
+  if (drawdownPct < 50) return { tier: 'SCALE_OUT_40', severity: 'CRITICAL', is_active: true };
+  return { tier: 'EMERGENCY_LOCK', severity: 'EXTREME', is_active: true };
+}
+
+// ===================== M37 Cycle Phase Classifier (simplified pure version) =====================
+export function m37CyclePhase({ pBull, mvrv, nupl, fundingNow, m28Grade, ret30, ret90, fg }) {
+  // CAPITULATION
+  if (pBull < TH.PBULL_CAPITULATION || (fg <= TH.FG_EXTREME_FEAR && ret30 < TH.MOMENTUM_CAPITULATION)) {
+    return { phase: 'CAPITULATION', target_crypto_pct: 90, hedge_pct_nav: 0 };
+  }
+  // BEAR
+  if (pBull < 0.30 || (pBull < TH.PBULL_CAUTIOUS_BEAR && ret90 < -15)) {
+    return {
+      phase: 'BEAR',
+      target_crypto_pct: 80,
+      hedge_pct_nav: m28Grade === 'OVERHEATED_LONGS' ? 1.5 : 0,
+    };
+  }
+  // EARLY_BEAR
+  if (pBull < TH.PBULL_CAUTIOUS_BEAR && ret30 < -5) {
+    return { phase: 'EARLY_BEAR', target_crypto_pct: 70, hedge_pct_nav: 1.5 };
+  }
+  // DISTRIBUTION
+  if (pBull >= 0.40 && pBull < TH.PBULL_BULL_TILT
+      && ((mvrv != null && mvrv > 2.5) || fg > 75)) {
+    return { phase: 'DISTRIBUTION', target_crypto_pct: 60, hedge_pct_nav: 0.5 };
+  }
+  // LATE_BULL
+  if (pBull >= TH.PBULL_BULL_TILT
+      && ((mvrv != null && mvrv > 2) || fundingNow > 0.0003 || fg > 70)) {
+    return { phase: 'LATE_BULL', target_crypto_pct: 80, hedge_pct_nav: 0 };
+  }
+  // EARLY_BULL
+  if (pBull >= TH.PBULL_BULL_TILT
+      && ((mvrv != null && mvrv < 1.2) || fundingNow < 0)) {
+    return { phase: 'EARLY_BULL', target_crypto_pct: 120, hedge_pct_nav: 0 };
+  }
+  // MID_BULL
+  return { phase: 'MID_BULL', target_crypto_pct: 100, hedge_pct_nav: 0 };
+}
+
+// ===================== M40 Deposit Timing Multiplier =====================
+export function m40DepositMultiplier({ fg, ret30, phase }) {
+  if (fg <= TH.FG_EXTREME_FEAR && ret30 < TH.MOMENTUM_CAPITULATION) return 3.0;
+  if (fg < TH.FG_FEAR || phase === 'BEAR' || phase === 'EARLY_BEAR') return 2.0;
+  if (fg >= TH.FG_NEUTRAL_LOW && fg <= TH.FG_NEUTRAL_HIGH) return 1.0;
+  if (fg > TH.FG_NEUTRAL_HIGH && fg <= 75) return 0.5;
+  return 0.0;
+}
+
+// ===================== M42 Stable Floor Target =====================
+export function m42StableTarget({ yearProgress, phase }) {
+  let base;
+  if (yearProgress < 0.25) base = 10;
+  else if (yearProgress < 0.50) base = 15;
+  else if (yearProgress < 0.75) base = 20;
+  else base = 30;
+  const phaseAdj = {
+    EARLY_BULL: -5, MID_BULL: 0, LATE_BULL: 10, DISTRIBUTION: 15,
+    EARLY_BEAR: 5, BEAR: -5, CAPITULATION: -10,
+  };
+  const adjustment = phaseAdj[phase] ?? 0;
+  return Math.max(5, Math.min(50, base + adjustment));
+}

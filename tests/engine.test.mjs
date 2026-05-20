@@ -9,6 +9,7 @@ import {
   m34VolState, m35Survival, computeConfidenceTier,
   adjustTpMultForVol, shouldDeferOnBigCandle, entropyRegime,
   m36CumulativeTarget, softTPFires, activeHedgeFires,
+  m41Tier, m37CyclePhase, m40DepositMultiplier, m42StableTarget,
 } from '../engine-pure.mjs';
 
 // ===================== M1 PORTFOLIO =====================
@@ -440,6 +441,140 @@ describe('P4c Active Hedge gate (short BTC perp in bear)', () => {
       m25Regime: 'NORMAL', stress30Equity: 50,
     });
     assert.equal(fires, false);
+  });
+});
+
+// ===================== M41 DRAWDOWN BREAKER TIERS =====================
+describe('M41 Drawdown Circuit Breaker tier classification', () => {
+  test('DD 5% → NORMAL (not active)', () => {
+    const t = m41Tier(5);
+    assert.equal(t.tier, 'NORMAL');
+    assert.equal(t.is_active, false);
+  });
+
+  test('DD 12% → WARN (active, block leverage)', () => {
+    const t = m41Tier(12);
+    assert.equal(t.tier, 'WARN');
+    assert.equal(t.is_active, true);
+  });
+
+  test('DD 18% → HEDGE_FORCE (force P4c)', () => {
+    assert.equal(m41Tier(18).tier, 'HEDGE_FORCE');
+  });
+
+  test('DD 28% → SCALE_OUT_20', () => {
+    assert.equal(m41Tier(28).tier, 'SCALE_OUT_20');
+  });
+
+  test('DD 40% → SCALE_OUT_40', () => {
+    assert.equal(m41Tier(40).tier, 'SCALE_OUT_40');
+  });
+
+  test('DD 55% → EMERGENCY_LOCK', () => {
+    const t = m41Tier(55);
+    assert.equal(t.tier, 'EMERGENCY_LOCK');
+    assert.equal(t.severity, 'EXTREME');
+  });
+
+  test('Boundary 10% → WARN (inclusive)', () => {
+    assert.equal(m41Tier(10).tier, 'WARN');
+  });
+});
+
+// ===================== M37 CYCLE PHASE =====================
+describe('M37 Cycle Phase classifier', () => {
+  test('Extreme fear + crashing → CAPITULATION', () => {
+    const r = m37CyclePhase({ pBull: 0.10, fg: 12, ret30: -15, ret90: -25 });
+    assert.equal(r.phase, 'CAPITULATION');
+    assert.equal(r.target_crypto_pct, 90);
+  });
+
+  test('Bear with funding overheated → BEAR + hedge', () => {
+    const r = m37CyclePhase({ pBull: 0.25, mvrv: 1.5, m28Grade: 'OVERHEATED_LONGS', ret30: -3, ret90: -10, fg: 30 });
+    assert.equal(r.phase, 'BEAR');
+    assert.equal(r.target_crypto_pct, 80);
+    assert.equal(r.hedge_pct_nav, 1.5);
+  });
+
+  test('Distribution top (MVRV > 2.5 + greed) → DISTRIBUTION', () => {
+    const r = m37CyclePhase({ pBull: 0.50, mvrv: 2.8, fg: 80, ret30: 5, ret90: 30 });
+    assert.equal(r.phase, 'DISTRIBUTION');
+    assert.equal(r.target_crypto_pct, 60);
+  });
+
+  test('Late bull (MVRV > 2 + funding positive) → LATE_BULL', () => {
+    const r = m37CyclePhase({ pBull: 0.65, mvrv: 2.3, fundingNow: 0.0005, fg: 72, ret30: 10, ret90: 40 });
+    assert.equal(r.phase, 'LATE_BULL');
+    assert.equal(r.target_crypto_pct, 80);
+  });
+
+  test('Early bull (low MVRV + negative funding) → EARLY_BULL 120%', () => {
+    const r = m37CyclePhase({ pBull: 0.60, mvrv: 0.9, fundingNow: -0.0002, fg: 50, ret30: 5, ret90: 15 });
+    assert.equal(r.phase, 'EARLY_BULL');
+    assert.equal(r.target_crypto_pct, 120);
+  });
+
+  test('Mid bull default (no extremes) → MID_BULL 100%', () => {
+    const r = m37CyclePhase({ pBull: 0.60, mvrv: 1.5, fundingNow: 0, fg: 60, ret30: 5, ret90: 15 });
+    assert.equal(r.phase, 'MID_BULL');
+    assert.equal(r.target_crypto_pct, 100);
+  });
+});
+
+// ===================== M40 DEPOSIT TIMING =====================
+describe('M40 Tactical Capital Deployment', () => {
+  test('Extreme fear + crash → 3× multiplier', () => {
+    const m = m40DepositMultiplier({ fg: 12, ret30: -15, phase: 'CAPITULATION' });
+    assert.equal(m, 3.0);
+  });
+
+  test('Bear phase → 2×', () => {
+    const m = m40DepositMultiplier({ fg: 35, ret30: -5, phase: 'BEAR' });
+    assert.equal(m, 2.0);
+  });
+
+  test('F&G neutral → 1× baseline', () => {
+    const m = m40DepositMultiplier({ fg: 50, ret30: 0, phase: 'MID_BULL' });
+    assert.equal(m, 1.0);
+  });
+
+  test('F&G greed → 0.5× (save cash)', () => {
+    const m = m40DepositMultiplier({ fg: 70, ret30: 8, phase: 'LATE_BULL' });
+    assert.equal(m, 0.5);
+  });
+
+  test('F&G euphoria → 0× (skip deposit)', () => {
+    const m = m40DepositMultiplier({ fg: 85, ret30: 12, phase: 'DISTRIBUTION' });
+    assert.equal(m, 0.0);
+  });
+});
+
+// ===================== M42 STABLE FLOOR =====================
+describe('M42 Stablecoin Floor Target', () => {
+  test('Q1 + MID_BULL → 10% base', () => {
+    assert.equal(m42StableTarget({ yearProgress: 0.10, phase: 'MID_BULL' }), 10);
+  });
+
+  test('Q4 + MID_BULL → 30%', () => {
+    assert.equal(m42StableTarget({ yearProgress: 0.85, phase: 'MID_BULL' }), 30);
+  });
+
+  test('Q2 + LATE_BULL → 15 + 10 = 25%', () => {
+    assert.equal(m42StableTarget({ yearProgress: 0.40, phase: 'LATE_BULL' }), 25);
+  });
+
+  test('Q3 + CAPITULATION → 20 - 10 = 10%', () => {
+    assert.equal(m42StableTarget({ yearProgress: 0.60, phase: 'CAPITULATION' }), 10);
+  });
+
+  test('Floor clamp: never below 5%', () => {
+    const t = m42StableTarget({ yearProgress: 0.10, phase: 'CAPITULATION' });
+    assert.ok(t >= 5);
+  });
+
+  test('Ceiling clamp: never above 50%', () => {
+    const t = m42StableTarget({ yearProgress: 0.99, phase: 'DISTRIBUTION' });
+    assert.ok(t <= 50);
   });
 });
 
