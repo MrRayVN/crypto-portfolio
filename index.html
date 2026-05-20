@@ -4485,6 +4485,9 @@ function renderRequiredCAGR(M) {
       <div style="font-size:0.78rem;color:var(--text2)">📈 Tương đương BTC EOY cần: <b style="color:${c.color}">${fmt$(reqBtcEoy,0)}</b> (${c.reqBtcChg>=0?'+':''}${c.reqBtcChg.toFixed(1)}% từ ${fmt$(btcP,0)} với β danh mục ~0.85)</div>
       <div style="font-size:0.78rem">P(hit) GBM MC: <b style="color:${pHit>=50?'var(--green)':pHit>=30?'var(--yellow)':'var(--red)'}">${pHit.toFixed(1)}%</b></div>
     </div>
+    <div style="grid-column:1/-1;font-size:0.72rem;color:var(--muted);padding-top:0.6rem;margin-top:0.3rem;line-height:1.65;border-top:1px dashed var(--border2)">
+      🌐 <b style="color:var(--text2)">Benchmark ngành</b>: Target <b style="color:${c.color}">${state.target_pct}%/năm</b> bám sát TB quỹ crypto toàn cầu 2025 ≈ <b>36%</b> <span style="color:var(--text3)">(Cayman Finance 7th Annual + PwC Crypto Hedge Fund Report)</span>. Phân hóa: Quant/HFT <b style="color:var(--green)">48%</b> · DeFi <b>28%</b> · Long-only <b>21%</b> · Arbitrage <b>16%</b> · Market-Neutral <b>13%</b>. Quỹ truyền thống (HFR) chỉ <b style="color:var(--red)">16.6%</b>. → Khả thi nếu giữ <b>Kelly clamp 6% NAV</b> + <b>MaxDD &lt; 20%</b>.
+    </div>
   </div>`;
 }
 

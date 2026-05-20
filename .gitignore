@@ -8,6 +8,7 @@
 !CLAUDE.md
 !DECISIONS.md
 !SESSION_CONTEXT.md
+!ENGINE_SUMMARY.md
 # Test infrastructure (Node native runner, no deps)
 !package.json
 !engine-pure.mjs
