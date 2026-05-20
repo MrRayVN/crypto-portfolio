@@ -293,6 +293,21 @@ LLM khi chỉ thấy partial code (CSS hoặc đầu file) thường **fabricate
 ### ❌ Halucinate #9: "Thiếu correlation adjustment giữa coin"
 **Sự thật**: M19 Correlation Matrix + M25 Correlation Regime (CRISIS detect ρ ≥ 0.85).
 
+### ❌ Halucinate #10: "50K historical trades sẽ block event loop / cần Web Workers / O(n²)"
+**Sự thật**: Engine **không xử lý trade history**. avg cost = user input. Klines max ~400 daily candles × 4 coins = ~1.6K data points. Bootstrap MC ~200ms × 4 scenarios là acceptable. Không có code path nào touch >2K records.
+
+### ❌ Halucinate #11: "Phải implement FIFO cost basis với queue/dequeue algorithm"
+**Sự thật**: Cost basis = `qty × avg` ở M1. `avg` lấy từ Binance UI (Binance đã FIFO/WAC ở phía họ). User nhập tay vào `localStorage.manualAvg`. Engine **không tính cost basis từ trades**.
+
+### ❌ Halucinate #12: "IEEE 754 Float64 precision loss với token micro-cap (vd MARVIN $0.0000006744)"
+**Sự thật**: Portfolio chỉ chứa blue-chip: BTC/WBETH/BNB/LINK/BNSOL/USDC/USDT. Range giá $1-$80K, qty 8dp. Phép tính (qty × price) nằm hoàn toàn trong band Float64 precision (15-17 chữ số có nghĩa). Cherry-pick token không tồn tại trong holdings là pattern halucinate phổ biến.
+
+### ❌ Halucinate #13: "Cần Immutable.js + normalized by-id lookup tables để fix GC pressure"
+**Sự thật**: State data ~3KB (7 coins × ~400 klines + metadata). GC pressure không phải vấn đề ở scale này. Immutable.js sẽ thêm 30-50KB bundle để fix non-issue. Over-engineering.
+
+### ❌ Halucinate #14: "Cần liquidity discount model (constant product x·y=k) để chiết khấu paper valuation"
+**Sự thật**: Portfolio không chứa low-cap. BTC/ETH/BNB có thanh khoản 9-10 figures USD/24h. Slippage thoát vị thế nằm trong noise của 60s price refresh. Liquidity discount chỉ relevant cho memecoin tracker.
+
 ---
 
 ## 8. CÁCH AUDIT ĐÚNG

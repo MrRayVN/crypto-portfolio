@@ -1,4 +1,4 @@
-# CLAUDE.md (v6 — packed 2026-05-19 · M34/M35 + decision pipeline)
+# CLAUDE.md (v7 — packed 2026-05-20 · external LLM audit hardening)
 
 Hướng dẫn cho Claude (Cowork + Claude Code) khi tiếp tục project này từ session mới.
 
@@ -7,21 +7,34 @@ Hướng dẫn cho Claude (Cowork + Claude Code) khi tiếp tục project này t
 ## ⚡ QUICK START (đọc TRƯỚC khi làm bất cứ gì)
 
 **Live URL**: https://mrrayvn.github.io/crypto-portfolio/
-**Engine version**: v47 + Quantum v74 + Strategic v75 + **Decision Pipeline v76** (M34/M35 + confidence/entropy/checklist wrappers)
-**Module count**: 35 modules (M1–M35) + 4 decision wrapper helpers
-**Last session**: 2026-05-19 — ChatGPT critique remediation (Kelly clamp, M34 Vol State, M35 Survival, Decision Confidence/Entropy, Bootstrap MC, Dynamic TP, Execution Checklist, Sensitivity test) + 5 self-audit fixes
+**Engine version**: v47 + Quantum v74 + Strategic v75 + **Decision Pipeline v76** (M34/M35/M36/M37/M40/M41/M42 + confidence/entropy/checklist wrappers)
+**Last session**: 2026-05-20 — Audit hardening (industry benchmark line + ENGINE_SUMMARY.md for external LLM audits, defending against 14 halucination patterns)
 
 ### File locations
 
 | File | Path | Notes |
 |---|---|---|
-| `index.html` (production) | `C:\Users\datnl\OneDrive - VIP\Tài liệu\Claude\Projects\Danh mục đầu tư tiền điện tử – Siêu Lastui Nhuậnn\index.html` | Source-of-truth, edit ở đây (~497KB) |
+| `index.html` (production) | `C:\Users\datnl\OneDrive - VIP\Tài liệu\Claude\Projects\Danh mục đầu tư tiền điện tử – Siêu Lastui Nhuậnn\index.html` | Source-of-truth, edit ở đây (~500KB) |
 | `index.html` (git mirror) | `C:\Users\datnl\github-repos\crypto-portfolio\index.html` | Synced via .NET copy, deploys to GitHub Pages |
+| `engine-pure.mjs` | `C:\Users\datnl\github-repos\crypto-portfolio\engine-pure.mjs` | Pure deterministic functions (~300 LoC), mirror từ index.html cho test |
+| `tests/engine.test.mjs` | `C:\Users\datnl\github-repos\crypto-portfolio\tests\engine.test.mjs` | Node native test runner — `npm test` (103 tests) |
+| `ENGINE_SUMMARY.md` | `C:\Users\datnl\github-repos\crypto-portfolio\ENGINE_SUMMARY.md` | Cô đọng kiến trúc (~17KB) cho external LLM audit, document 14 halucination patterns |
 | `worker.js` | `C:\Users\datnl\github-repos\crypto-portfolio\worker.js` | gitignored, Cloudflare Worker source (deploy thủ công) |
 | `capital_flows.json` | `C:\Users\datnl\github-repos\crypto-portfolio\capital_flows.json` | Committed, parsed from xlsx, dashboard fetches |
 | `parse_capital_flows.py` | `C:\Users\datnl\github-repos\crypto-portfolio\parse_capital_flows.py` | Unified parser for C2C + Fiat xlsx |
 | C2C xlsx | `C:\Users\datnl\github-repos\crypto-portfolio\Binance-Lịch-sử-lệnh-C2C-*.xlsx` | gitignored |
 | Fiat xlsx | `C:\Users\datnl\github-repos\crypto-portfolio\Binance-Lịch-sử-mua-tiền-pháp-định-*.xlsx` | gitignored |
+
+### External LLM audit protocol
+
+Khi muốn nhờ ChatGPT/Gemini audit, **CHỈ đưa 2 raw links**, không paste index.html:
+
+```
+https://raw.githubusercontent.com/MrRayVN/crypto-portfolio/main/ENGINE_SUMMARY.md
+https://raw.githubusercontent.com/MrRayVN/crypto-portfolio/main/engine-pure.mjs
+```
+
+Prompt: *"Đọc §0 và §7 ENGINE_SUMMARY.md TRƯỚC khi audit để tránh 14 halucination patterns. Engine là read-only dashboard, không phải auto-trading bot."*
 
 ### Deploy workflow (chuẩn)
 
