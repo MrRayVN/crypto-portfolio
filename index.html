@@ -2675,14 +2675,19 @@ function m35_survival_mode(M, market) {
     info: M.m17 ? `M17 maxDD ${ddPct.toFixed(1)}% ${ddBreach ? '> 20%' : '≤ 20%'}` : 'M17 N/A'});
   if (ddBreach) triggers.push('DD_BREACH');
 
-  // Trigger 5: Funding inversion (longs overheated paying) — squeeze setup INVERTED for our side
-  // Threshold 0.001 raw decimal = 0.1%/8h (achievable extremum). 0.015 cũ là 1.5% never-fire bug.
-  // OR via M28 grade detection (self-consistent với squeeze_score logic).
+  // Trigger 5: Funding inversion (longs overheated paying)
+  // CONVENTION: state.coinalyze.funding_current đã × 100 tại fetch line 8723 → unit là % points
+  // Normal: ~0.005-0.015%/8h · Mild overheated: 0.02-0.05% · Severe: 0.05-0.15% · Anomaly: > 0.5%
+  // M28 grade là time-series filtered → primary signal. Raw funding chỉ là fallback có sanity bounds.
   const fundingNow = state.coinalyze?.funding_current ?? market.funding_btc_pct ?? 0;
-  const m28Overheated = M.m28?.grade === 'OVERHEATED_LONGS' || M.m28?.grade === 'NO_EDGE';
-  const fundingInv = fundingNow > 0.001 || m28Overheated;
+  const m28OverheatedGrade = M.m28?.grade === 'OVERHEATED_LONGS' || M.m28?.grade === 'NO_EDGE';
+  const fundingExtremeSane = fundingNow > 0.05 && fundingNow < 0.5;
+  const fundingDataAnomaly = fundingNow >= 0.5;
+  const fundingInv = m28OverheatedGrade || fundingExtremeSane;
   checks.push({name: 'Funding inversion', triggered: fundingInv,
-    info: `funding ${(fundingNow*100).toFixed(3)}% (raw ${fundingNow.toFixed(5)}) ${fundingInv ? `> 0.001 OR M28=${M.m28?.grade}` : 'OK'}`});
+    info: fundingDataAnomaly
+      ? `funding ${fundingNow.toFixed(3)}%/8h ANOMALY (>0.5%) — ignored, rely on M28=${M.m28?.grade ?? 'N/A'}`
+      : `funding ${fundingNow.toFixed(3)}%/8h · M28=${M.m28?.grade ?? 'N/A'} · ${fundingInv ? 'OVERHEATED' : 'normal'}`});
   if (fundingInv) triggers.push('FUNDING_INVERSION');
 
   const triggerCount = triggers.length;

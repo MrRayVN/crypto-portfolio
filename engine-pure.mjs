@@ -101,6 +101,9 @@ export function m34VolState({ realizedVol, garchVol, gapIntensity = 0, move24h =
 }
 
 // ===================== M35: Survival Mode =====================
+// fundingNow in % points (sau × 100 conversion tại fetch). Range:
+//   Normal: ~0.005-0.015 · Mild overheated: 0.02-0.05 · Severe: 0.05-0.15 · Anomaly: > 0.5
+// M28 grade là primary signal (time-series filtered), raw funding fallback có sanity bounds.
 export function m35Survival({ corrCrisis = false, pBull = 0.5, realizedVol = null,
                               maxDDPct = 0, fundingNow = 0, m28Grade = null }) {
   const triggers = [];
@@ -108,9 +111,10 @@ export function m35Survival({ corrCrisis = false, pBull = 0.5, realizedVol = nul
   if (pBull < 0.20) triggers.push('M22_REGIME_COLLAPSE');
   if (realizedVol != null && realizedVol > 90) triggers.push('VOL_PANIC');
   if (maxDDPct > 20) triggers.push('DD_BREACH');
-  if (fundingNow > 0.001 || m28Grade === 'OVERHEATED_LONGS' || m28Grade === 'NO_EDGE') {
-    triggers.push('FUNDING_INVERSION');
-  }
+  // Funding: M28 grade chính, raw funding chỉ trigger nếu trong sane range 0.05-0.5
+  const m28Overheated = m28Grade === 'OVERHEATED_LONGS' || m28Grade === 'NO_EDGE';
+  const fundingExtremeSane = fundingNow > 0.05 && fundingNow < 0.5;
+  if (m28Overheated || fundingExtremeSane) triggers.push('FUNDING_INVERSION');
   const triggerCount = triggers.length;
   const active = triggerCount >= 3;
   let severity;

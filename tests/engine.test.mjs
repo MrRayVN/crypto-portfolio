@@ -167,19 +167,34 @@ describe('M35 Survival Mode (≥3/5 triggers active)', () => {
 
   test('5/5 triggers → EXTREME', () => {
     const r = m35Survival({
-      corrCrisis: true, pBull: 0.10, realizedVol: 100, maxDDPct: 25, fundingNow: 0.005,
+      corrCrisis: true, pBull: 0.10, realizedVol: 100, maxDDPct: 25, fundingNow: 0.08, // in sane overheated range
     });
     assert.equal(r.trigger_count, 5);
     assert.equal(r.severity, 'EXTREME');
   });
 
-  test('Funding inversion threshold 0.001 (not 0.015 dead-bug)', () => {
-    const r = m35Survival({ fundingNow: 0.0015 }); // 0.15%/8h
+  test('Funding inversion threshold 0.05 in sane range (% points unit)', () => {
+    const r = m35Survival({ fundingNow: 0.08 }); // 0.08%/8h overheated
     assert.ok(r.triggers.includes('FUNDING_INVERSION'));
+  });
+
+  test('Funding 0.01 (normal range) does NOT trigger', () => {
+    const r = m35Survival({ fundingNow: 0.01 });
+    assert.ok(!r.triggers.includes('FUNDING_INVERSION'));
+  });
+
+  test('Funding > 0.5 (data anomaly) does NOT trigger (sanity bound)', () => {
+    const r = m35Survival({ fundingNow: 1.0 }); // screenshot bug
+    assert.ok(!r.triggers.includes('FUNDING_INVERSION'));
   });
 
   test('M28 grade NO_EDGE also fires funding inversion', () => {
     const r = m35Survival({ m28Grade: 'NO_EDGE' });
+    assert.ok(r.triggers.includes('FUNDING_INVERSION'));
+  });
+
+  test('M28 grade OVERHEATED_LONGS fires regardless of funding raw', () => {
+    const r = m35Survival({ m28Grade: 'OVERHEATED_LONGS', fundingNow: 0.01 });
     assert.ok(r.triggers.includes('FUNDING_INVERSION'));
   });
 });
