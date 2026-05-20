@@ -1965,7 +1965,14 @@ function buildMaster(s) {
   M.m21 = m21_kelly_sizing(state.futures);
   M.m27 = m27_onchain_signals(state.onchain);
   M.m30 = m30_macro_overlay(state.onchain);
-  M.m31 = m31_top_trader(state.onchain);
+  // M31: fallback Coinalyze aggregate L/S → top_trader_position nếu onchain endpoint missing
+  // (BG fetch overwrites state.onchain wholesale, nên pipe trực tiếp tại call site, không tại fetch handler)
+  const m31Input = state.onchain ? {
+    ...state.onchain,
+    top_trader_position: state.onchain.top_trader_position ?? state.coinalyze?.ls_current,
+    top_trader_account: state.onchain.top_trader_account ?? state.coinalyze?.ls_current,
+  } : null;
+  M.m31 = m31_top_trader(m31Input);
   M.m22 = m22_regime(s.market, M.m27, M.m30, M.m31);
   M.m25 = m25_correlation_regime(M.m19);
   M.m28 = m28_funding_forecast(s.market, state.coinalyze);
