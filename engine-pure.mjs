@@ -220,40 +220,53 @@ export function m41Tier(drawdownPct) {
   return { tier: 'EMERGENCY_LOCK', severity: 'EXTREME', is_active: true };
 }
 
-// ===================== M37 Cycle Phase Classifier (simplified pure version) =====================
-export function m37CyclePhase({ pBull, mvrv, nupl, fundingNow, m28Grade, ret30, ret90, fg }) {
-  // CAPITULATION
+// ===================== M37 Cycle Phase Classifier (no-gap version) =====================
+// Restructured: gate by pBull range FIRST → sub-classify by MVRV/funding/F&G.
+// 8 phases: CAPITULATION, BEAR, EARLY_BEAR, DISTRIBUTION, NEUTRAL, EARLY_BULL, MID_BULL, LATE_BULL
+export function m37CyclePhase({ pBull, mvrv, nupl, fundingNow = 0, m28Grade, ret30 = 0, ret90 = 0, fg = 50 }) {
+  const m28Overheated = m28Grade === 'OVERHEATED_LONGS' || m28Grade === 'NO_EDGE';
+
+  // BEAR ZONE (pBull < 0.40)
   if (pBull < TH.PBULL_CAPITULATION || (fg <= TH.FG_EXTREME_FEAR && ret30 < TH.MOMENTUM_CAPITULATION)) {
     return { phase: 'CAPITULATION', target_crypto_pct: 90, hedge_pct_nav: 0 };
   }
-  // BEAR
-  if (pBull < 0.30 || (pBull < TH.PBULL_CAUTIOUS_BEAR && ret90 < -15)) {
+  if (pBull < 0.30) {
     return {
       phase: 'BEAR',
       target_crypto_pct: 80,
-      hedge_pct_nav: m28Grade === 'OVERHEATED_LONGS' ? 1.5 : 0,
+      hedge_pct_nav: m28Overheated ? 1.5 : 0,
     };
   }
-  // EARLY_BEAR
-  if (pBull < TH.PBULL_CAUTIOUS_BEAR && ret30 < -5) {
-    return { phase: 'EARLY_BEAR', target_crypto_pct: 70, hedge_pct_nav: 1.5 };
+  if (pBull < TH.PBULL_CAUTIOUS_BEAR /* 0.35 */) {
+    return {
+      phase: 'EARLY_BEAR',
+      target_crypto_pct: 70,
+      hedge_pct_nav: (ret30 < -5 || m28Overheated) ? 1.5 : 1.0,
+    };
   }
-  // DISTRIBUTION
-  if (pBull >= 0.40 && pBull < TH.PBULL_BULL_TILT
-      && ((mvrv != null && mvrv > 2.5) || fg > 75)) {
-    return { phase: 'DISTRIBUTION', target_crypto_pct: 60, hedge_pct_nav: 0.5 };
+  if (pBull < 0.40) {
+    return {
+      phase: 'EARLY_BEAR',
+      target_crypto_pct: 75,
+      hedge_pct_nav: m28Overheated ? 1.5 : (ret30 < -5 ? 1.0 : 0.5),
+    };
   }
-  // LATE_BULL
-  if (pBull >= TH.PBULL_BULL_TILT
-      && ((mvrv != null && mvrv > 2) || fundingNow > 0.0003 || fg > 70)) {
+
+  // NEUTRAL/DISTRIBUTION ZONE (0.40 ≤ pBull < 0.55)
+  if (pBull < TH.PBULL_BULL_TILT /* 0.55 */) {
+    if ((mvrv != null && mvrv > 2.5) || fg > 75) {
+      return { phase: 'DISTRIBUTION', target_crypto_pct: 60, hedge_pct_nav: 0.5 };
+    }
+    return { phase: 'NEUTRAL', target_crypto_pct: 90, hedge_pct_nav: 0 };
+  }
+
+  // BULL ZONE (pBull ≥ 0.55)
+  if ((mvrv != null && mvrv > 2) || fundingNow > 0.03 || fg > 70) {
     return { phase: 'LATE_BULL', target_crypto_pct: 80, hedge_pct_nav: 0 };
   }
-  // EARLY_BULL
-  if (pBull >= TH.PBULL_BULL_TILT
-      && ((mvrv != null && mvrv < 1.2) || fundingNow < 0)) {
+  if ((mvrv != null && mvrv < 1.2) || fundingNow < 0) {
     return { phase: 'EARLY_BULL', target_crypto_pct: 120, hedge_pct_nav: 0 };
   }
-  // MID_BULL
   return { phase: 'MID_BULL', target_crypto_pct: 100, hedge_pct_nav: 0 };
 }
 

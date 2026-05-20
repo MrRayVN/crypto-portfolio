@@ -534,6 +534,35 @@ describe('M37 Cycle Phase classifier', () => {
     assert.equal(r.phase, 'MID_BULL');
     assert.equal(r.target_crypto_pct, 100);
   });
+
+  // === GAP-EDGE REGRESSION TESTS (fixed sau screenshot user) ===
+  test('GAP-FIX: pBull 0.30 exact + no crash momentum → EARLY_BEAR (NOT MID_BULL)', () => {
+    const r = m37CyclePhase({ pBull: 0.30, mvrv: 1.43, fundingNow: 0.005, fg: 27, ret30: -2, ret90: -5 });
+    assert.equal(r.phase, 'EARLY_BEAR');
+    assert.equal(r.target_crypto_pct, 70);
+  });
+
+  test('GAP-FIX: pBull 0.35 boundary → still EARLY_BEAR (window 2)', () => {
+    const r = m37CyclePhase({ pBull: 0.35, mvrv: 1.5, fg: 35, ret30: 0 });
+    assert.equal(r.phase, 'EARLY_BEAR');
+    assert.equal(r.target_crypto_pct, 75);
+  });
+
+  test('GAP-FIX: pBull 0.45 with neutral signals → NEUTRAL phase 90%', () => {
+    const r = m37CyclePhase({ pBull: 0.45, mvrv: 1.8, fg: 50 });
+    assert.equal(r.phase, 'NEUTRAL');
+    assert.equal(r.target_crypto_pct, 90);
+  });
+
+  test('Boundary pBull 0.40 → NEUTRAL (not EARLY_BEAR)', () => {
+    const r = m37CyclePhase({ pBull: 0.40, mvrv: 1.5, fg: 50 });
+    assert.equal(r.phase, 'NEUTRAL');
+  });
+
+  test('Boundary pBull 0.55 → MID_BULL', () => {
+    const r = m37CyclePhase({ pBull: 0.55, mvrv: 1.5, fundingNow: 0, fg: 50 });
+    assert.equal(r.phase, 'MID_BULL');
+  });
 });
 
 // ===================== M40 DEPOSIT TIMING =====================
