@@ -104,14 +104,14 @@ export function m34VolState({ realizedVol, garchVol, gapIntensity = 0, move24h =
 // fundingNow in % points (sau × 100 conversion tại fetch). Range:
 //   Normal: ~0.005-0.015 · Mild overheated: 0.02-0.05 · Severe: 0.05-0.15 · Anomaly: > 0.5
 // M28 grade là primary signal (time-series filtered), raw funding fallback có sanity bounds.
+// portfolioDDPct: M41 portfolio drawdown (peak-tracked), KHÔNG phải M17 BTC kline maxDD.
 export function m35Survival({ corrCrisis = false, pBull = 0.5, realizedVol = null,
-                              maxDDPct = 0, fundingNow = 0, m28Grade = null }) {
+                              portfolioDDPct = 0, fundingNow = 0, m28Grade = null }) {
   const triggers = [];
   if (corrCrisis) triggers.push('M25_CORR_CRISIS');
   if (pBull < 0.20) triggers.push('M22_REGIME_COLLAPSE');
   if (realizedVol != null && realizedVol > 90) triggers.push('VOL_PANIC');
-  if (maxDDPct > 20) triggers.push('DD_BREACH');
-  // Funding: M28 grade chính, raw funding chỉ trigger nếu trong sane range 0.05-0.5
+  if (portfolioDDPct > 20) triggers.push('DD_BREACH');
   const m28Overheated = m28Grade === 'OVERHEATED_LONGS' || m28Grade === 'NO_EDGE';
   const fundingExtremeSane = fundingNow > 0.05 && fundingNow < 0.5;
   if (m28Overheated || fundingExtremeSane) triggers.push('FUNDING_INVERSION');
@@ -123,6 +123,18 @@ export function m35Survival({ corrCrisis = false, pBull = 0.5, realizedVol = nul
   else if (triggerCount >= 2) severity = 'WATCH';
   else severity = 'IDLE';
   return { active, severity, trigger_count: triggerCount, trigger_total: 5, triggers };
+}
+
+// ===================== fgRegimeBayes (Bayesian F&G posterior) =====================
+// Widened sigmas (20/18 thay vì 13/11) + floor 0.10/ceiling 0.90 để bớt extreme.
+export function fgRegimeBayes(fg, prior = 0.5) {
+  const muBull = 65, sigBull = 20, muBear = 32, sigBear = 18;
+  const pdf = (x, m, s) => Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
+  const likeBull = pdf(fg, muBull, sigBull);
+  const likeBear = pdf(fg, muBear, sigBear);
+  const evidence = likeBull * prior + likeBear * (1 - prior);
+  const posterior = evidence > 0 ? (likeBull * prior) / evidence : 0.5;
+  return Math.max(0.10, Math.min(0.90, posterior));
 }
 
 // ===================== Confidence Tier =====================

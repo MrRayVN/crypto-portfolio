@@ -10,6 +10,7 @@ import {
   adjustTpMultForVol, shouldDeferOnBigCandle, entropyRegime,
   m36CumulativeTarget, softTPFires, activeHedgeFires,
   m41Tier, m37CyclePhase, m40DepositMultiplier, m42StableTarget,
+  fgRegimeBayes,
 } from '../engine-pure.mjs';
 
 // ===================== M1 PORTFOLIO =====================
@@ -139,27 +140,27 @@ describe('M34 Volatility State Machine', () => {
 // ===================== M35 SURVIVAL MODE =====================
 describe('M35 Survival Mode (≥3/5 triggers active)', () => {
   test('Healthy market → IDLE', () => {
-    const r = m35Survival({ pBull: 0.6, realizedVol: 50, maxDDPct: 10, fundingNow: 0 });
+    const r = m35Survival({ pBull: 0.6, realizedVol: 50, portfolioDDPct: 10, fundingNow: 0 });
     assert.equal(r.active, false);
     assert.equal(r.severity, 'IDLE');
     assert.equal(r.trigger_count, 0);
   });
 
   test('1 trigger → WATCH (not active)', () => {
-    const r = m35Survival({ pBull: 0.6, maxDDPct: 25 }); // only DD breach
+    const r = m35Survival({ pBull: 0.6, portfolioDDPct: 25 }); // only DD breach
     assert.equal(r.trigger_count, 1);
     assert.equal(r.active, false);
   });
 
   test('2 triggers → WATCH (not active yet)', () => {
-    const r = m35Survival({ pBull: 0.10, maxDDPct: 25 });
+    const r = m35Survival({ pBull: 0.10, portfolioDDPct: 25 });
     assert.equal(r.trigger_count, 2);
     assert.equal(r.severity, 'WATCH');
     assert.equal(r.active, false);
   });
 
   test('3 triggers → HIGH (active!)', () => {
-    const r = m35Survival({ corrCrisis: true, pBull: 0.10, maxDDPct: 25 });
+    const r = m35Survival({ corrCrisis: true, pBull: 0.10, portfolioDDPct: 25 });
     assert.equal(r.trigger_count, 3);
     assert.equal(r.active, true);
     assert.equal(r.severity, 'HIGH');
@@ -167,7 +168,7 @@ describe('M35 Survival Mode (≥3/5 triggers active)', () => {
 
   test('5/5 triggers → EXTREME', () => {
     const r = m35Survival({
-      corrCrisis: true, pBull: 0.10, realizedVol: 100, maxDDPct: 25, fundingNow: 0.08, // in sane overheated range
+      corrCrisis: true, pBull: 0.10, realizedVol: 100, portfolioDDPct: 25, fundingNow: 0.08, // in sane overheated range
     });
     assert.equal(r.trigger_count, 5);
     assert.equal(r.severity, 'EXTREME');
@@ -619,6 +620,36 @@ describe('M42 Stablecoin Floor Target', () => {
   test('Ceiling clamp: never above 50%', () => {
     const t = m42StableTarget({ yearProgress: 0.99, phase: 'DISTRIBUTION' });
     assert.ok(t <= 50);
+  });
+});
+
+// ===================== fgRegimeBayes (TUNED for less oversensitivity) =====================
+describe('fgRegimeBayes — Bayesian posterior from F&G', () => {
+  test('F&G 27 + prior 0.65 (above 200WMA) → posterior NOT crash < 0.10 (live audit regression)', () => {
+    const p = fgRegimeBayes(27, 0.65);
+    // Trước fix posterior = 0.0215 (crash). Sau fix với sigBull/sigBear widened + floor 0.10
+    assert.ok(p >= 0.10, `Expected ≥ 0.10 (floor), got ${p}`);
+    assert.ok(p < 0.40, `Expected < 0.40 (still bearish), got ${p}`);
+  });
+
+  test('F&G 50 (neutral) + prior 0.50 → posterior gần 0.5', () => {
+    const p = fgRegimeBayes(50, 0.50);
+    assert.ok(Math.abs(p - 0.5) < 0.15, `Expected ~0.5, got ${p}`);
+  });
+
+  test('F&G 80 (greed) + prior 0.65 → posterior > 0.5', () => {
+    assert.ok(fgRegimeBayes(80, 0.65) > 0.5);
+  });
+
+  test('F&G 10 (extreme fear) → posterior near floor 0.10', () => {
+    const p = fgRegimeBayes(10, 0.5);
+    assert.ok(p >= 0.10);
+    assert.ok(p < 0.30);
+  });
+
+  test('Floor + ceiling clamps: posterior ∈ [0.10, 0.90]', () => {
+    assert.ok(fgRegimeBayes(0, 0.99) >= 0.10);
+    assert.ok(fgRegimeBayes(100, 0.01) <= 0.90);
   });
 });
 

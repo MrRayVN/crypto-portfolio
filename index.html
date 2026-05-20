@@ -977,14 +977,19 @@ QF.riskParity = sigmas => {
 
 // ----- Bayesian F&G Regime Posterior -----
 // P(bull | F&G) using historical conditional distributions
-// Likelihoods empirically calibrated: bull F&G ~ N(70, 12), bear F&G ~ N(30, 10)
+// Likelihoods widened (sig 13→20, 11→18) để giảm oversensitivity. Trước đây F&G=27 + prior=0.65
+// cho posterior 0.02 (crash), giờ cho ~0.20 (bearish nhưng không extreme).
+// Empirically: bull F&G centered ~65 ± 20, bear F&G centered ~32 ± 18. Wider sigma = smoother
+// transitions giữa regimes, ít gãy đột ngột ở boundary values.
 QF.fgRegimeBayes = (fg, prior=0.5) => {
-  const muBull = 65, sigBull = 13, muBear = 28, sigBear = 11;
+  const muBull = 65, sigBull = 20, muBear = 32, sigBear = 18;
   const pdf = (x, m, s) => Math.exp(-0.5*((x-m)/s)**2) / (s*Math.sqrt(2*Math.PI));
   const likeBull = pdf(fg, muBull, sigBull);
   const likeBear = pdf(fg, muBear, sigBear);
   const evidence = likeBull * prior + likeBear * (1 - prior);
-  return evidence > 0 ? (likeBull * prior) / evidence : 0.5;
+  const posterior = evidence > 0 ? (likeBull * prior) / evidence : 0.5;
+  // Floor 0.10 / ceiling 0.90 — never zero-out extreme signals (regime can shift fast)
+  return Math.max(0.10, Math.min(0.90, posterior));
 };
 
 // ----- Jump-Diffusion Monte Carlo (Merton model) -----
@@ -2668,11 +2673,13 @@ function m35_survival_mode(M, market) {
     info: realizedVol != null ? `BTC realized vol ${realizedVol.toFixed(0)}%/yr ${volPanic ? '> 90% (panic)' : '≤ 90%'}` : 'realized vol N/A'});
   if (volPanic) triggers.push('VOL_PANIC');
 
-  // Trigger 4: Drawdown breach (M17 maxDD > 20%) — historical capital loss zone
-  const ddPct = M.m17?.maxDD_pct ?? 0;
-  const ddBreach = ddPct > 20;
-  checks.push({name: 'Drawdown > 20%', triggered: ddBreach,
-    info: M.m17 ? `M17 maxDD ${ddPct.toFixed(1)}% ${ddBreach ? '> 20%' : '≤ 20%'}` : 'M17 N/A'});
+  // Trigger 4: Portfolio drawdown breach (M41 peak-tracked > 20%) — current portfolio loss
+  // FIXED: dùng M41 portfolio peak thay vì M17 BTC kline maxDD (semantic mismatch trước)
+  // M17 maxDD là historical BTC volatility (400d kline), không phản ánh current portfolio PnL
+  const portfolioDDPct = M.m41?.drawdown_pct ?? 0;
+  const ddBreach = portfolioDDPct > 20;
+  checks.push({name: 'Portfolio drawdown > 20%', triggered: ddBreach,
+    info: M.m41 ? `M41 portfolio DD ${portfolioDDPct.toFixed(1)}% từ peak ${fmt$(M.m41.peak_net)} ${ddBreach ? '> 20%' : '≤ 20%'}` : 'M41 N/A'});
   if (ddBreach) triggers.push('DD_BREACH');
 
   // Trigger 5: Funding inversion (longs overheated paying)
@@ -2992,13 +2999,13 @@ function m37_cycle_phase(M, s) {
     phase = 'EARLY_BEAR';
     target_crypto_pct = 70;
     hedge_pct_nav = (ret30 < -5 || m28Overheated) ? 1.5 : 1.0;
-    narrative = `Bear sớm: pBull ${(pBull*100).toFixed(0)}% [30-35%]. F&G ${fg}, momentum 30d ${ret30.toFixed(1)}%. Scale out 30% sang USDC, hedge ${hedge_pct_nav}% NAV.`;
+    narrative = `Bear sớm: pBull ${(pBull*100).toFixed(0)}% [30-35%]. F&G ${fg}, momentum 30d ${ret30.toFixed(1)}%. Target crypto ${target_crypto_pct}% (defensive), hedge ${hedge_pct_nav}% NAV.`;
   } else if (pBull < 0.40) {
     // EARLY_BEAR window 2: pBull 0.35-0.40, mild bear
     phase = 'EARLY_BEAR';
     target_crypto_pct = 75;
     hedge_pct_nav = m28Overheated ? 1.5 : (ret30 < -5 ? 1.0 : 0.5);
-    narrative = `Bear mild: pBull ${(pBull*100).toFixed(0)}% [35-40%]. Scale out 25% sang USDC, hedge ${hedge_pct_nav}% NAV.`;
+    narrative = `Bear mild: pBull ${(pBull*100).toFixed(0)}% [35-40%]. Target crypto ${target_crypto_pct}%, hedge ${hedge_pct_nav}% NAV.`;
   }
 
   // === NEUTRAL/DISTRIBUTION ZONE (pBull 0.40 - 0.55) ===
@@ -3008,25 +3015,28 @@ function m37_cycle_phase(M, s) {
       phase = 'DISTRIBUTION';
       target_crypto_pct = 60;
       hedge_pct_nav = 0.5;
-      narrative = `Phân phối (distribution): pBull ${(pBull*100).toFixed(0)}% [40-55%] + MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2.5 hoặc F&G ${fg} > 75. Cá voi đang bán. Scale out 40% sang USDC.`;
+      narrative = `Phân phối (distribution): pBull ${(pBull*100).toFixed(0)}% [40-55%] + MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2.5 hoặc F&G ${fg} > 75. Cá voi đang bán. Target crypto ${target_crypto_pct}%.`;
     } else {
       // NEUTRAL (sub-bull) — cautious bullish
       phase = 'NEUTRAL';
       target_crypto_pct = 90;
       hedge_pct_nav = 0;
-      narrative = `Trung tính: pBull ${(pBull*100).toFixed(0)}% [40-55%], MVRV ${mvrv?.toFixed(2) ?? 'N/A'}, F&G ${fg}. Hơi defensive — target 90% crypto, không leverage thêm.`;
+      narrative = `Trung tính: pBull ${(pBull*100).toFixed(0)}% [40-55%], MVRV ${mvrv?.toFixed(2) ?? 'N/A'}, F&G ${fg}. Hơi defensive — target ${target_crypto_pct}% crypto, không leverage thêm.`;
     }
   }
 
   // === BULL ZONE (pBull >= 0.55) — sub-classify by MVRV/funding/F&G ===
   else {
-    if ((mvrv != null && mvrv > 2) || fundingNow > 0.03 || fg > 70) {
+    // Funding anomaly check: > 0.5%/8h likely data spike, ignore
+    const fundingAnomaly = fundingNow >= 0.5;
+    const fundingForGate = fundingAnomaly ? 0 : fundingNow;
+    if ((mvrv != null && mvrv > 2) || fundingForGate > 0.03 || fg > 70) {
       // LATE_BULL — bull đỉnh, sắp distribution
       phase = 'LATE_BULL';
       target_crypto_pct = 80;
       hedge_pct_nav = 0;
-      narrative = `Bull muộn: pBull ${(pBull*100).toFixed(0)}% > 55% + (MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2 hoặc funding ${fundingNow.toFixed(3)}%/8h > 0.03 hoặc F&G ${fg} > 70). Soft TP aggressive, scale-out 20% sang USDC.`;
-    } else if ((mvrv != null && mvrv < 1.2) || fundingNow < 0) {
+      narrative = `Bull muộn: pBull ${(pBull*100).toFixed(0)}% > 55% + (MVRV ${mvrv?.toFixed(2) ?? 'N/A'} > 2 hoặc funding ${fundingForGate.toFixed(3)}%/8h > 0.03 hoặc F&G ${fg} > 70). Target crypto ${target_crypto_pct}%.${fundingAnomaly ? ` ⚠ funding raw ${fundingNow.toFixed(2)} anomaly — ignored.` : ''}`;
+    } else if ((mvrv != null && mvrv < 1.2) || fundingForGate < 0) {
       // EARLY_BULL — bull mới, full leverage allowed
       phase = 'EARLY_BULL';
       target_crypto_pct = 120;
@@ -8758,6 +8768,11 @@ async function fetchFromBinance() {
         if (Array.isArray(history) && history.length > 0) {
           state.coinalyze.ls_current = parseFloat(history[history.length - 1].r || history[history.length - 1].ratio || history[history.length - 1].c || 1);
           state.coinalyze.ls_avg_7d = history.reduce((s,h) => s + parseFloat(h.r || h.ratio || h.c || 1), 0) / history.length;
+          // Pipe aggregate L/S to onchain.top_trader_position cho M31 sentiment signal feed M22
+          // Aggregate L/S là proxy cho top trader positioning (không có endpoint riêng top_trader)
+          // Sentiment contrarian: L/S cao = longs crowded = bear setup
+          if (!state.onchain) state.onchain = {};
+          state.onchain.top_trader_position = state.coinalyze.ls_current;
         }
       }
     }
