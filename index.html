@@ -5635,7 +5635,23 @@ function renderPoolROI(M) {
 function renderDCA(M) {
   const a = state.pool.plan_alloc;
   const prevA = state.prev.pool_alloc;
-  const dailyTotal = 20; // assume $20/d (default v73)
+  // === FIX v77: pull daily DCA amount from Binance Auto-Invest plan API ===
+  // state.pool.api_subscription_amount = per-execution amount (e.g., $25)
+  // state.pool.api_subscription_cycle = 'DAILY' | 'WEEKLY' | 'BI_WEEKLY' | 'MONTHLY'
+  const subAmt = state.pool?.api_subscription_amount || 0;
+  const cycle = (state.pool?.api_subscription_cycle || 'DAILY').toUpperCase();
+  let dailyTotal;
+  let cycleNote = '';
+  if (subAmt > 0) {
+    if (cycle === 'DAILY') { dailyTotal = subAmt; cycleNote = 'API'; }
+    else if (cycle === 'WEEKLY') { dailyTotal = subAmt / 7; cycleNote = `API ($${subAmt}/wk)`; }
+    else if (cycle === 'BI_WEEKLY') { dailyTotal = subAmt / 14; cycleNote = `API ($${subAmt}/2wk)`; }
+    else if (cycle === 'MONTHLY') { dailyTotal = subAmt / 30; cycleNote = `API ($${subAmt}/mo)`; }
+    else { dailyTotal = subAmt; cycleNote = `API (${cycle})`; }
+  } else {
+    dailyTotal = 20; // fallback if API unavailable
+    cycleNote = 'fallback (API chưa load)';
+  }
   let rows = '';
   for (const sym of ['LINK','BNB','BTC','WBETH']) {
     const bep = M.m2[sym]?.bep_gap;
@@ -5648,7 +5664,7 @@ function renderDCA(M) {
   }
   return `<div id="dca" class="section-title">💎 Hồ DCA — kế hoạch hiện tại</div>
   <div class="dca-card">
-  <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">${fmt$(dailyTotal,2)}/day · plan side-by-side (prev vs current)</div>
+  <div style="font-family:var(--display);font-size:1.3rem;font-weight:700;margin-bottom:0.5rem">${fmt$(dailyTotal,2)}/day <span style="font-size:0.7rem;color:var(--muted);font-weight:400">[${cycleNote}]</span> · plan side-by-side (prev vs current)</div>
   <table>
   <thead><tr><th rowspan="2">Asset</th><th rowspan="2">BEP gap</th>
   <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border2)">PREV</th>
