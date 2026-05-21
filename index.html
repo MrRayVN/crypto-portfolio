@@ -8616,6 +8616,25 @@ async function fetchFromBinance() {
         if (plan.firstExecutionDateTime) {
           state.pool.api_days_running = Math.floor((Date.now() - plan.firstExecutionDateTime) / 86400000);
         }
+        // === Auto-sync state.funding_yearly từ Auto-Invest plan ===
+        // User principle: $10/day là ngân sách tối thiểu (floor), API > floor thì dùng API
+        // (cái gì API có sẵn → auto-fetch, không cần manual setting)
+        const subAmt = state.pool.api_subscription_amount || 0;
+        const cycleStr = (state.pool.api_subscription_cycle || 'DAILY').toUpperCase();
+        let apiDaily = 0;
+        if (subAmt > 0) {
+          if (cycleStr === 'DAILY') apiDaily = subAmt;
+          else if (cycleStr === 'WEEKLY') apiDaily = subAmt / 7;
+          else if (cycleStr === 'BI_WEEKLY') apiDaily = subAmt / 14;
+          else if (cycleStr === 'MONTHLY') apiDaily = subAmt / 30;
+          else apiDaily = subAmt; // unknown cycle → assume daily
+        }
+        const MIN_DAILY = 10; // $10/day floor — user committed minimum
+        const effectiveDaily = Math.max(MIN_DAILY, apiDaily);
+        const effectiveYearly = Math.round(effectiveDaily * 365);
+        state.funding_yearly = effectiveYearly;
+        state.pool.api_effective_daily = effectiveDaily;
+        state.pool.funding_source = apiDaily >= MIN_DAILY ? 'auto-invest-api' : 'floor-min';
       }
     }
 
