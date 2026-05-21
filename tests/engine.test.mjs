@@ -10,7 +10,7 @@ import {
   adjustTpMultForVol, shouldDeferOnBigCandle, entropyRegime,
   m36CumulativeTarget, softTPFires, activeHedgeFires,
   m41Tier, m37CyclePhase, m40DepositMultiplier, m42StableTarget,
-  fgRegimeBayes,
+  fgRegimeBayes, m43LeverageSafety,
 } from '../engine-pure.mjs';
 
 // ===================== M1 PORTFOLIO =====================
@@ -675,5 +675,81 @@ describe('TH constants (single source of truth)', () => {
     assert.ok(TH.PBULL_CAUTIOUS_BEAR < TH.PBULL_DIP_BUY_MIN);
     assert.ok(TH.PBULL_DIP_BUY_MIN < TH.PBULL_SQUEEZE_MIN);
     assert.ok(TH.PBULL_SQUEEZE_MIN < TH.PBULL_BULL_TILT);
+  });
+});
+
+// ===================== M43 COMPOSITE LEVERAGE SAFETY =====================
+describe('M43 leverage safety', () => {
+  test('All signals bull-safe → AGGRESSIVE tier, max 50% NAV', () => {
+    const r = m43LeverageSafety({
+      pBull: 0.65, volState: 'QUIET', survivalSeverity: 'IDLE',
+      corrRegime: 'NORMAL', m28Grade: 'HEALTHY', mvrv: 0.9,
+      drawdownPct: 3, stanceNet: 6, gross: 5000, loan: 500,
+    });
+    assert.ok(r.score >= 80, `score ${r.score} should be ≥80`);
+    assert.equal(r.tier, 'AGGRESSIVE');
+    assert.equal(r.max_leverage_pct, 50);
+  });
+
+  test('Bear mild + normal vol (anh\'s exact scenario screenshot) → MODERATE, leverage 25% OK', () => {
+    // pBull 39%, vol normal, all else neutral, leverage 23.6% — engine should NOT force scale-out
+    const r = m43LeverageSafety({
+      pBull: 0.39, volState: 'NORMAL', survivalSeverity: 'IDLE',
+      corrRegime: 'NORMAL', m28Grade: null, mvrv: null,
+      drawdownPct: 5, stanceNet: -4, gross: 5065, loan: 1196,
+    });
+    // Expected: 50 base + 0 (pBull bear-mild) + 10 (vol) + 0 (others) ≈ 60
+    assert.ok(r.score >= 50 && r.score < 65, `score ${r.score} should be MODERATE range`);
+    assert.equal(r.tier, 'MODERATE');
+    assert.equal(r.max_leverage_pct, 25);
+    assert.ok(r.current_lev_pct < 25, 'current leverage should be under max');
+    assert.ok(r.status === 'OPTIMAL' || r.status === 'CAN_INCREASE',
+      `status ${r.status} should allow leverage (M37 P3.7 should skip)`);
+  });
+
+  test('Survival EXTREME → forces NO_LEVERAGE regardless of other signals', () => {
+    const r = m43LeverageSafety({
+      pBull: 0.60, volState: 'NORMAL', survivalSeverity: 'EXTREME',
+      corrRegime: 'NORMAL', drawdownPct: 0, stanceNet: 5,
+      gross: 5000, loan: 0,
+    });
+    assert.equal(r.tier, 'NO_LEVERAGE');
+    assert.equal(r.max_leverage_pct, 0);
+  });
+
+  test('Severely over-leveraged → SEVERELY_OVER status', () => {
+    const r = m43LeverageSafety({
+      pBull: 0.30, volState: 'PANIC', survivalSeverity: 'HIGH',
+      drawdownPct: 25, gross: 5000, loan: 2500, // 50% leverage but score very low
+    });
+    assert.equal(r.status, 'SEVERELY_OVER');
+    assert.ok(r.headroom_pct < -10);
+  });
+
+  test('Score clamped [0, 100]', () => {
+    const minScore = m43LeverageSafety({
+      pBull: 0.05, volState: 'PANIC', survivalSeverity: 'EXTREME',
+      corrRegime: 'CORRELATION_CRISIS', m28Grade: 'OVERHEATED_LONGS',
+      mvrv: 3, drawdownPct: 50, stanceNet: -10, gross: 1000, loan: 500,
+    });
+    const maxScore = m43LeverageSafety({
+      pBull: 0.70, volState: 'QUIET', survivalSeverity: 'IDLE',
+      corrRegime: 'NORMAL', m28Grade: 'BACKWARDATION',
+      mvrv: 0.5, drawdownPct: 0, stanceNet: 10, gross: 1000, loan: 0,
+    });
+    assert.ok(minScore.score >= 0 && minScore.score <= 100);
+    assert.ok(maxScore.score >= 0 && maxScore.score <= 100);
+  });
+
+  test('Doctrine validation: high-safety + low leverage = CAN_INCREASE', () => {
+    const r = m43LeverageSafety({
+      pBull: 0.60, volState: 'QUIET', survivalSeverity: 'IDLE',
+      corrRegime: 'NORMAL', m28Grade: 'HEALTHY', mvrv: 1.1,
+      drawdownPct: 2, stanceNet: 7,
+      gross: 5000, loan: 200, // only 4% leverage
+    });
+    assert.ok(r.score >= 65);
+    assert.equal(r.status, 'CAN_INCREASE',
+      'Engine should signal "leverage strong when all signals safe" per doctrine');
   });
 });

@@ -1568,7 +1568,12 @@ function m23_unified_decision(M, s) {
   // ---- P3.7: M37 EXPOSURE REBALANCE — scale crypto/stable theo cycle phase ----
   // Fires khi delta giữa target và effective crypto pct > 8pp (high priority adjust)
   // Skip nếu M41 đang fire SCALE_OUT severe (M41 ưu tiên hơn)
-  if (M.m37 && Math.abs(M.m37.delta_pp) >= 8 && !(M.m41?.is_breaker_active && M.m41.drawdown_pct >= 25)) {
+  // ⭐ NEW: Defer to M43 Composite Safety — skip SCALE_OUT khi composite signal OK
+  // Doctrine: "leverage mạnh nếu tính toán thấy an toàn với mọi signal là nguồn dữ liệu"
+  // → Pure DCA philosophy thắng phase-based market timing khi safety score đủ cao.
+  const m43OkForLeverage = M.m43 && (M.m43.status === 'CAN_INCREASE' || M.m43.status === 'OPTIMAL');
+  const skipP37ScaleOut = M.m37?.exposure_action === 'SCALE_OUT' && m43OkForLeverage;
+  if (M.m37 && Math.abs(M.m37.delta_pp) >= 8 && !(M.m41?.is_breaker_active && M.m41.drawdown_pct >= 25) && !skipP37ScaleOut) {
     const isScaleOut = M.m37.exposure_action === 'SCALE_OUT';
     const absPp = Math.abs(M.m37.delta_pp);
     const adjustUsd = M.m1.gross * absPp / 100;
@@ -1596,9 +1601,10 @@ function m23_unified_decision(M, s) {
         `Target crypto: ${M.m37.target_crypto_pct}% · Delta: ${M.m37.delta_pp >= 0 ? '+' : ''}${M.m37.delta_pp.toFixed(1)}pp → ${M.m37.exposure_action}`,
         `Hedge target: ${M.m37.hedge_pct_nav}% NAV (active nếu phase BEAR/EARLY_BEAR/DISTRIBUTION)`,
         `Doctrine #2: cycle timing > intuition. Edge từ scale-out near top + scale-in near bottom.`,
-      ],
+        M.m43 ? `<b>M43 Composite Safety</b>: ${M.m43.score}/100 = ${M.m43.tier} → max leverage ${M.m43.max_leverage_pct}% NAV. Status: <b>${M.m43.status}</b> (current ${M.m43.current_lev_pct.toFixed(1)}%, headroom ${M.m43.headroom_pct >= 0 ? '+' : ''}${M.m43.headroom_pct.toFixed(1)}pp). Vì composite signal KHÔNG OK → P3.7 fire không bị skip.` : '',
+      ].filter(Boolean),
       blocks: [],
-      sources_fired: ['M37 Cycle Phase', 'M22 Regime', 'M27 On-chain MVRV', 'M28 Funding'],
+      sources_fired: ['M37 Cycle Phase', 'M22 Regime', 'M27 On-chain MVRV', 'M28 Funding', 'M43 Composite Safety'],
     };
   }
 
@@ -1995,6 +2001,8 @@ function buildMaster(s) {
   try { M.m39 = m39_earn_yield_max(s, M); } catch (e) { console.error('[M39] failed:', e); M.m39 = null; }
   // M41 Drawdown Circuit Breaker: track peak NET, trigger defensive cascade tại drawdown tiers
   try { M.m41 = m41_drawdown_breaker(M, s); } catch (e) { console.error('[M41] failed:', e); M.m41 = null; }
+  // M43 Composite Leverage Safety: aggregate 8 signals → dynamic leverage allowance
+  try { M.m43 = m43_leverage_safety(M, s); } catch (e) { console.error('[M43] failed:', e); M.m43 = null; }
   // === M32/M33 must be computed BEFORE m23 (cascade uses them) ===
   try { M.m32 = m32_dca_capacity(M.holdings); } catch (e) { console.error('[M32] failed:', e); M.m32 = null; }
   try { M.m33 = m33_path_to_target(M); } catch (e) { console.error('[M33] failed:', e); M.m33 = null; }
@@ -3133,6 +3141,130 @@ function m41_drawdown_breaker(M, s) {
     drawdown_usd: peakNet - currentNet,
     tier, severity, color, action_block, allowed_actions,
     is_breaker_active: drawdownPct >= 10,
+  };
+}
+
+// ===================== M43: COMPOSITE LEVERAGE SAFETY SCORE =====================
+// Aggregate 8 signals → leverage allowance dynamic. Phục vụ doctrine:
+// "leverage mạnh nếu tính toán thấy an toàn với mọi signal là nguồn dữ liệu"
+// Override M37 P3.7 SCALE_OUT khi composite signal OK (avoid whipsaw bear mild).
+function m43_leverage_safety(M, s) {
+  let score = 50; // baseline neutral
+  const reasons = [];
+
+  // 1. M22 pBull (regime) ±30 pts
+  const pBull = M.m22?.pBull_final ?? 0.5;
+  if (pBull >= 0.55) { score += 30; reasons.push(`pBull ${(pBull*100).toFixed(0)}% BULL (+30)`); }
+  else if (pBull >= 0.45) { score += 15; reasons.push(`pBull ${(pBull*100).toFixed(0)}% lean-bull (+15)`); }
+  else if (pBull >= 0.40) { score += 5; reasons.push(`pBull ${(pBull*100).toFixed(0)}% neutral+ (+5)`); }
+  else if (pBull >= 0.35) { score += 0; reasons.push(`pBull ${(pBull*100).toFixed(0)}% bear-mild (0)`); }
+  else if (pBull >= 0.20) { score -= 20; reasons.push(`pBull ${(pBull*100).toFixed(0)}% BEAR (-20)`); }
+  else { score -= 35; reasons.push(`pBull ${(pBull*100).toFixed(0)}% CAPITULATION (-35)`); }
+
+  // 2. M34 Volatility State ±20 pts
+  const volState = M.m34?.state;
+  if (volState === 'QUIET') { score += 20; reasons.push('vol QUIET (+20)'); }
+  else if (volState === 'NORMAL') { score += 10; reasons.push('vol NORMAL (+10)'); }
+  else if (volState === 'EXPANDING') { score -= 5; reasons.push('vol EXPANDING (-5)'); }
+  else if (volState === 'PANIC') { score -= 20; reasons.push('vol PANIC (-20)'); }
+  else if (volState === 'EUPHORIA') { score -= 15; reasons.push('vol EUPHORIA (-15)'); }
+
+  // 3. M35 Survival severity ±40 pts (hardest gate)
+  const survSev = M.m35?.severity;
+  if (survSev === 'EXTREME') { score -= 40; reasons.push('Survival EXTREME (-40)'); }
+  else if (survSev === 'HIGH') { score -= 25; reasons.push('Survival HIGH (-25)'); }
+  else if (survSev === 'WATCH') { score -= 5; reasons.push('Survival WATCH (-5)'); }
+  // IDLE: no change
+
+  // 4. M25 Correlation Regime ±20 pts
+  const corrRegime = M.m25?.regime;
+  if (corrRegime === 'CORRELATION_CRISIS') { score -= 20; reasons.push('Corr CRISIS (-20)'); }
+  else if (corrRegime === 'HIGH_CORRELATION') { score -= 5; reasons.push('Corr HIGH (-5)'); }
+  // NORMAL: no change
+
+  // 5. M28 Funding grade ±15 pts
+  const m28grade = M.m28?.grade;
+  if (m28grade === 'BACKWARDATION' || m28grade === 'CONTANGO_REVERSAL') { score += 15; reasons.push(`Funding ${m28grade} (+15)`); }
+  else if (m28grade === 'HEALTHY' || m28grade === 'NEUTRAL') { score += 5; reasons.push('Funding healthy (+5)'); }
+  else if (m28grade === 'OVERHEATED_LONGS') { score -= 15; reasons.push('Funding OVERHEATED (-15)'); }
+  else if (m28grade === 'NO_EDGE') { score -= 10; reasons.push('Funding NO_EDGE (-10)'); }
+
+  // 6. M27 MVRV on-chain ±20 pts
+  const mvrv = s.onchain?.mvrv;
+  if (mvrv != null) {
+    if (mvrv < 1.0) { score += 20; reasons.push(`MVRV ${mvrv.toFixed(2)} undervalued (+20)`); }
+    else if (mvrv < 1.5) { score += 10; reasons.push(`MVRV ${mvrv.toFixed(2)} fair (+10)`); }
+    else if (mvrv < 2.0) { score += 0; }
+    else if (mvrv < 2.5) { score -= 10; reasons.push(`MVRV ${mvrv.toFixed(2)} stretched (-10)`); }
+    else { score -= 20; reasons.push(`MVRV ${mvrv.toFixed(2)} top zone (-20)`); }
+  }
+
+  // 7. M41 Portfolio drawdown ±30 pts
+  const ddPct = M.m41?.drawdown_pct ?? 0;
+  if (ddPct < 5) { score += 5; reasons.push(`DD ${ddPct.toFixed(1)}% (+5)`); }
+  else if (ddPct < 10) { /* no change */ }
+  else if (ddPct < 15) { score -= 5; reasons.push(`DD ${ddPct.toFixed(1)}% (-5)`); }
+  else if (ddPct < 25) { score -= 15; reasons.push(`DD ${ddPct.toFixed(1)}% (-15)`); }
+  else { score -= 30; reasons.push(`DD ${ddPct.toFixed(1)}% severe (-30)`); }
+
+  // 8. M9 Stance ±5 pts
+  const stanceNet = M.m9?.net ?? 0;
+  if (stanceNet >= 5) { score += 5; reasons.push(`Stance +${stanceNet} bull (+5)`); }
+  else if (stanceNet <= -5) { score -= 5; reasons.push(`Stance ${stanceNet} bear (-5)`); }
+
+  // Clamp 0-100
+  score = Math.max(0, Math.min(100, score));
+
+  // Map to leverage allowance (% NAV)
+  let max_leverage_pct, tier, color, instruction;
+  if (score >= 80) {
+    max_leverage_pct = 50; tier = 'AGGRESSIVE'; color = '#10b981';
+    instruction = 'All signals aligned bull-safe — leverage tới 50% NAV cho phép';
+  } else if (score >= 65) {
+    max_leverage_pct = 35; tier = 'BULL_SAFE'; color = '#84cc16';
+    instruction = 'Composite signal favorable — leverage tới 35% NAV';
+  } else if (score >= 50) {
+    max_leverage_pct = 25; tier = 'MODERATE'; color = '#f59e0b';
+    instruction = 'Tín hiệu trung tính — leverage tới 25% NAV, không tăng thêm';
+  } else if (score >= 35) {
+    max_leverage_pct = 15; tier = 'CAUTIOUS'; color = '#fb923c';
+    instruction = 'Risk signals lên cao — giới hạn leverage ≤ 15% NAV';
+  } else if (score >= 20) {
+    max_leverage_pct = 8; tier = 'DEFENSIVE'; color = '#ef4444';
+    instruction = 'Multiple bearish signals — deleverage xuống ≤ 8% NAV';
+  } else {
+    max_leverage_pct = 0; tier = 'NO_LEVERAGE'; color = '#7f1d1d';
+    instruction = 'Composite signal cực xấu — repay toàn bộ leverage';
+  }
+
+  // Hard overrides: M35 Survival cap tier regardless of composite score
+  if (survSev === 'EXTREME') {
+    max_leverage_pct = 0; tier = 'NO_LEVERAGE'; color = '#7f1d1d';
+    instruction = 'OVERRIDE M35 EXTREME — repay toàn bộ leverage ngay';
+    reasons.push('⛔ OVERRIDE: M35 EXTREME → force NO_LEVERAGE');
+  } else if (survSev === 'HIGH' && max_leverage_pct > 8) {
+    max_leverage_pct = 8; tier = 'DEFENSIVE'; color = '#ef4444';
+    instruction = 'OVERRIDE M35 HIGH — cap leverage tại DEFENSIVE 8% NAV';
+    reasons.push('⛔ OVERRIDE: M35 HIGH → cap at DEFENSIVE');
+  }
+
+  // Current vs allowed
+  const grossVal = M.m1.gross;
+  const loanVal = M.loan || 0;
+  const current_lev_pct = grossVal > 0 ? (loanVal / grossVal) * 100 : 0;
+  const headroom_pct = max_leverage_pct - current_lev_pct;
+  const headroom_usd = grossVal * headroom_pct / 100;
+
+  let status;
+  if (headroom_pct > 10) status = 'CAN_INCREASE';
+  else if (headroom_pct > -3) status = 'OPTIMAL';
+  else if (headroom_pct > -10) status = 'OVER_LEVERAGED';
+  else status = 'SEVERELY_OVER';
+
+  return {
+    score, tier, color, instruction, reasons,
+    max_leverage_pct, current_lev_pct, headroom_pct, headroom_usd, status,
+    inputs: { pBull, volState, survSev, corrRegime, m28grade, mvrv, ddPct, stanceNet },
   };
 }
 
@@ -4401,6 +4533,7 @@ function render() {
     + safeRender('PlanEvaluation', renderPlanEvaluation)
     + safeRender('DCA', renderDCA)
     + safeRender('LoanOrdersPrecise', renderLoanOrdersPrecise)
+    + safeRender('M43Safety', renderM43Safety)
     + safeRender('TradesJournal', renderTradesJournal)
     + safeRender('Exposure', renderExposure);
   document.getElementById('panel-positions').innerHTML = positionsHTML;
@@ -5729,6 +5862,56 @@ function renderLoan(M) {
   <div class="metric"><div class="metric-label">BTC liq price</div><div class="metric-value" style="color:var(--red)">${fmt$(M.m7.btc_liq,0)}</div><div class="metric-sub">at current loan</div></div>
   </div>
   <table><thead><tr><th>Loan size</th><th>% Net</th><th>Liq distance</th><th>BTC liq price</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+
+// === M43 COMPOSITE LEVERAGE SAFETY — render score + tier + signal breakdown ===
+function renderM43Safety(M) {
+  if (!M.m43) return '';
+  const m = M.m43;
+  const statusColor = m.status === 'CAN_INCREASE' ? 'var(--green)' :
+                      m.status === 'OPTIMAL' ? 'var(--cyan)' :
+                      m.status === 'OVER_LEVERAGED' ? 'var(--yellow)' : 'var(--red)';
+  const statusText = m.status === 'CAN_INCREASE' ? '🟢 Có thể tăng leverage' :
+                     m.status === 'OPTIMAL' ? '🔵 Leverage hiện tại OK' :
+                     m.status === 'OVER_LEVERAGED' ? '🟡 Hơi over — deleverage nhẹ' :
+                     '🔴 SEVERELY OVER — repay loan';
+  const reasonsHTML = m.reasons.map(r => `<li style="margin-bottom:0.25rem;font-size:0.78rem;color:var(--text2)">${r}</li>`).join('');
+  return `<div id="m43" class="section-title">🛡️ M43 Composite Leverage Safety</div>
+  <div class="card">
+    <div style="background:linear-gradient(135deg, ${m.color}20, rgba(0,0,0,0.2));border:2px solid ${m.color};border-radius:14px;padding:1.2rem;margin-bottom:1rem">
+      <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr;gap:1rem;align-items:center">
+        <div>
+          <div style="font-size:0.7rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:0.08em;color:${m.color};font-weight:700">Composite Score · 8 signals aggregate</div>
+          <div style="font-family:var(--display);font-size:2.2rem;font-weight:700;color:${m.color};margin-top:0.3rem">${m.score}<span style="font-size:1rem;color:var(--text2)">/100</span></div>
+          <div style="font-size:0.85rem;font-weight:700;color:${m.color};margin-top:0.1rem">${m.tier}</div>
+          <div style="font-size:0.75rem;color:var(--text2);margin-top:0.3rem;line-height:1.45">${m.instruction}</div>
+        </div>
+        <div style="text-align:center;border-left:1px solid var(--border)">
+          <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">Max Allowed</div>
+          <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:${m.color}">${m.max_leverage_pct.toFixed(0)}%</div>
+          <div style="font-size:0.7rem;color:var(--muted)">% NAV</div>
+        </div>
+        <div style="text-align:center;border-left:1px solid var(--border)">
+          <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">Current</div>
+          <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700">${m.current_lev_pct.toFixed(1)}%</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${fmt$(M.loan)}</div>
+        </div>
+        <div style="text-align:center;border-left:1px solid var(--border)">
+          <div style="font-size:0.65rem;color:var(--muted);font-family:var(--mono);text-transform:uppercase">Headroom</div>
+          <div style="font-family:var(--mono);font-size:1.5rem;font-weight:700;color:${m.headroom_pct >= 0 ? 'var(--green)' : 'var(--red)'}">${m.headroom_pct >= 0 ? '+' : ''}${m.headroom_pct.toFixed(1)}pp</div>
+          <div style="font-size:0.7rem;color:var(--muted)">${m.headroom_pct >= 0 ? '+' : ''}${fmt$(m.headroom_usd, 0)}</div>
+        </div>
+      </div>
+      <div style="grid-column:1/-1;border-top:1px dashed var(--border2);padding-top:0.8rem;margin-top:0.8rem;font-size:0.82rem;color:${statusColor};font-weight:700">
+        ${statusText}
+      </div>
+    </div>
+    <div style="font-size:0.82rem;color:var(--text2);margin-bottom:0.5rem;font-weight:700">📋 Signal breakdown (8 sources):</div>
+    <ul style="padding-left:1.5rem;margin:0">${reasonsHTML}</ul>
+    <div style="border-top:1px dashed var(--border2);padding-top:0.7rem;margin-top:0.8rem;font-size:0.72rem;color:var(--muted);line-height:1.55">
+      <b>Doctrine</b>: "leverage mạnh nếu tính toán thấy an toàn với mọi signal là nguồn dữ liệu". M43 override M37 P3.7 SCALE_OUT khi status = CAN_INCREASE/OPTIMAL — pure DCA philosophy thắng phase-based market timing trong trường hợp đó. Sources: M22 regime, M34 vol, M35 survival, M25 corr, M28 funding, M27 MVRV, M41 DD, M9 stance.
+    </div>
   </div>`;
 }
 

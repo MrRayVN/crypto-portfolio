@@ -305,3 +305,89 @@ export function m42StableTarget({ yearProgress, phase }) {
   const adjustment = phaseAdj[phase] ?? 0;
   return Math.max(5, Math.min(50, base + adjustment));
 }
+
+// ===================== M43: COMPOSITE LEVERAGE SAFETY SCORE =====================
+// Aggregate 8 signals into a 0-100 score → dynamic leverage allowance.
+// Doctrine: leverage strong when ALL signals confirm safe.
+// Used by M37 P3.7 to override SCALE_OUT when composite signal OK.
+export function m43LeverageSafety({
+  pBull = 0.5, volState = null, survivalSeverity = null, corrRegime = null,
+  m28Grade = null, mvrv = null, drawdownPct = 0, stanceNet = 0,
+  gross = 0, loan = 0,
+}) {
+  let score = 50;
+  const reasons = [];
+
+  if (pBull >= 0.55) { score += 30; reasons.push('pBull BULL +30'); }
+  else if (pBull >= 0.45) { score += 15; reasons.push('pBull lean-bull +15'); }
+  else if (pBull >= 0.40) { score += 5; reasons.push('pBull neutral+ +5'); }
+  else if (pBull >= 0.35) { reasons.push('pBull bear-mild 0'); }
+  else if (pBull >= 0.20) { score -= 20; reasons.push('pBull BEAR -20'); }
+  else { score -= 35; reasons.push('pBull CAPITULATION -35'); }
+
+  if (volState === 'QUIET') { score += 20; reasons.push('vol QUIET +20'); }
+  else if (volState === 'NORMAL') { score += 10; reasons.push('vol NORMAL +10'); }
+  else if (volState === 'EXPANDING') { score -= 5; reasons.push('vol EXPANDING -5'); }
+  else if (volState === 'PANIC') { score -= 20; reasons.push('vol PANIC -20'); }
+  else if (volState === 'EUPHORIA') { score -= 15; reasons.push('vol EUPHORIA -15'); }
+
+  if (survivalSeverity === 'EXTREME') { score -= 40; reasons.push('Survival EXTREME -40'); }
+  else if (survivalSeverity === 'HIGH') { score -= 25; reasons.push('Survival HIGH -25'); }
+  else if (survivalSeverity === 'WATCH') { score -= 5; reasons.push('Survival WATCH -5'); }
+
+  if (corrRegime === 'CORRELATION_CRISIS') { score -= 20; reasons.push('Corr CRISIS -20'); }
+  else if (corrRegime === 'HIGH_CORRELATION') { score -= 5; reasons.push('Corr HIGH -5'); }
+
+  if (m28Grade === 'BACKWARDATION' || m28Grade === 'CONTANGO_REVERSAL') { score += 15; reasons.push('Funding inv +15'); }
+  else if (m28Grade === 'HEALTHY' || m28Grade === 'NEUTRAL') { score += 5; reasons.push('Funding healthy +5'); }
+  else if (m28Grade === 'OVERHEATED_LONGS') { score -= 15; reasons.push('Funding OVERHEATED -15'); }
+  else if (m28Grade === 'NO_EDGE') { score -= 10; reasons.push('Funding NO_EDGE -10'); }
+
+  if (mvrv != null) {
+    if (mvrv < 1.0) { score += 20; reasons.push('MVRV undervalued +20'); }
+    else if (mvrv < 1.5) { score += 10; reasons.push('MVRV fair +10'); }
+    else if (mvrv < 2.0) { /* 0 */ }
+    else if (mvrv < 2.5) { score -= 10; reasons.push('MVRV stretched -10'); }
+    else { score -= 20; reasons.push('MVRV top zone -20'); }
+  }
+
+  if (drawdownPct < 5) { score += 5; reasons.push('DD <5% +5'); }
+  else if (drawdownPct < 10) { /* 0 */ }
+  else if (drawdownPct < 15) { score -= 5; reasons.push('DD 10-15% -5'); }
+  else if (drawdownPct < 25) { score -= 15; reasons.push('DD 15-25% -15'); }
+  else { score -= 30; reasons.push('DD severe -30'); }
+
+  if (stanceNet >= 5) { score += 5; reasons.push('Stance bull +5'); }
+  else if (stanceNet <= -5) { score -= 5; reasons.push('Stance bear -5'); }
+
+  score = Math.max(0, Math.min(100, score));
+
+  let max_leverage_pct, tier;
+  if (score >= 80) { max_leverage_pct = 50; tier = 'AGGRESSIVE'; }
+  else if (score >= 65) { max_leverage_pct = 35; tier = 'BULL_SAFE'; }
+  else if (score >= 50) { max_leverage_pct = 25; tier = 'MODERATE'; }
+  else if (score >= 35) { max_leverage_pct = 15; tier = 'CAUTIOUS'; }
+  else if (score >= 20) { max_leverage_pct = 8; tier = 'DEFENSIVE'; }
+  else { max_leverage_pct = 0; tier = 'NO_LEVERAGE'; }
+
+  // Hard overrides: M35 Survival cap tier regardless of composite score
+  // (M35 EXTREME means ≥4/5 catastrophic triggers — engine should never green-light leverage)
+  if (survivalSeverity === 'EXTREME') {
+    max_leverage_pct = 0; tier = 'NO_LEVERAGE';
+    reasons.push('OVERRIDE: M35 EXTREME → force NO_LEVERAGE');
+  } else if (survivalSeverity === 'HIGH' && max_leverage_pct > 8) {
+    max_leverage_pct = 8; tier = 'DEFENSIVE';
+    reasons.push('OVERRIDE: M35 HIGH → cap at DEFENSIVE');
+  }
+
+  const current_lev_pct = gross > 0 ? (loan / gross) * 100 : 0;
+  const headroom_pct = max_leverage_pct - current_lev_pct;
+
+  let status;
+  if (headroom_pct > 10) status = 'CAN_INCREASE';
+  else if (headroom_pct > -3) status = 'OPTIMAL';
+  else if (headroom_pct > -10) status = 'OVER_LEVERAGED';
+  else status = 'SEVERELY_OVER';
+
+  return { score, tier, max_leverage_pct, current_lev_pct, headroom_pct, status, reasons };
+}
