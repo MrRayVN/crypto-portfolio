@@ -5,6 +5,7 @@
 !.gitignore
 !capital_flows.json
 !parse_capital_flows.py
+!parse_trade_history.py
 !CLAUDE.md
 !DECISIONS.md
 !SESSION_CONTEXT.md
