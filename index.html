@@ -4329,21 +4329,37 @@ function getCumulativeWithdrawals() {
   return { value: 0, source: 'none' };
 }
 
-// Fetch combined capital flows JSON (parsed from C2C + Fiat xlsx); override anchor date
+// Tải dữ liệu dòng tiền tự động hóa lai ghép Realtime từ Cloudflare KV
 async function loadCapitalFlowsData() {
   try {
-    const r = await fetch('./capital_flows.json?v=' + Date.now()); // bust cache
+    const { url: workerUrl, token: proxyToken } = getCreds();
+    let r;
+    
+    // Nếu máy đã cấu hình kết nối Worker Proxy thành công
+    if (workerUrl && proxyToken) {
+      r = await fetch(`${workerUrl.replace(/\/$/, '')}/binance/capital-flows`, {
+        headers: { 'X-Auth-Token': proxyToken }
+      });
+    }
+    
+    // Cơ chế Fallback dự phòng: Nếu chưa cấu hình Worker hoặc Worker lỗi mạng, đọc file json tĩnh gốc
+    if (!r || !r.ok) {
+      console.log('[CapFlows] Worker không phản hồi, đang dùng fallback file tĩnh cũ...');
+      r = await fetch('./capital_flows.json?v=' + Date.now());
+    }
+    
     if (!r.ok) return;
     const data = await r.json();
     state.capital_flows_data = data;
-    // Override anchor date if period_start exists and Pool API doesn't have it
+    
+    // Tự động đồng bộ mốc thời gian bắt đầu DCA (Anchor Date) lên trình duyệt
     if (data.period_start_ts_ms && !state.pool?.api_first_execution) {
       localStorage.setItem('kpiYearStart', String(data.period_start_ts_ms));
     }
     const srcSummary = (data.sources || []).map(s => `${s.type}=${s.order_count}`).join(',');
-    console.log(`[CapFlows] loaded ${data.deposit_count} deposits $${data.total_deposits_usd} + ${data.withdraw_count} withdrawals $${data.total_withdrawals_usd} since ${data.period_start} (sources: ${srcSummary})`);
+    console.log(`[CapFlows] [REALTIME-KV] loaded ${data.deposit_count} deposits $${data.total_deposits_usd} + ${data.withdraw_count} withdrawals $${data.total_withdrawals_usd} since ${data.period_start} (sources: ${srcSummary})`);
   } catch (e) {
-    console.warn('[CapFlows] could not load capital_flows.json:', e.message);
+    console.warn('[CapFlows] Lỗi đồng bộ dòng tiền:', e.message);
   }
 }
 // CORRECT PnL FORMULA — PnL tính trên COST BASIS của crypto holdings
